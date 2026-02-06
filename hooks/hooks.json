@@ -1,0 +1,14 @@
+{
+  "SessionStart": [
+    {
+      "matcher": "",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "tak reindex 2>/dev/null || true",
+          "timeout": 10
+        }
+      ]
+    }
+  ]
+}

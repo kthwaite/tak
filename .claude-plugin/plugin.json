@@ -1,0 +1,5 @@
+{
+  "name": "tak",
+  "version": "0.1.0",
+  "description": "Git-native task management for agentic workflows. Provides skills for task tracking, epic planning, and multi-agent coordination via the tak CLI."
+}
