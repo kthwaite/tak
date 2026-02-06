@@ -124,20 +124,36 @@ fn run() -> tak::error::Result<()> {
         Commands::Show { id } => {
             tak::commands::show::run(&cwd, id, cli.pretty)?;
         }
-        Commands::List { .. } => {
-            eprintln!("list command not yet implemented");
+        Commands::List {
+            status,
+            kind,
+            tag,
+            assignee,
+            available,
+            blocked,
+            children_of,
+        } => {
+            tak::commands::list::run(
+                &cwd, status, kind, tag, assignee, available, blocked, children_of, cli.pretty,
+            )?;
         }
-        Commands::Edit { .. } => {
-            eprintln!("edit command not yet implemented");
+        Commands::Edit {
+            id,
+            title,
+            description,
+            kind,
+            tag,
+        } => {
+            tak::commands::edit::run(&cwd, id, title, description, kind, tag, cli.pretty)?;
         }
-        Commands::Start { .. } => {
-            eprintln!("start command not yet implemented");
+        Commands::Start { id, assignee } => {
+            tak::commands::lifecycle::start(&cwd, id, assignee, cli.pretty)?;
         }
-        Commands::Finish { .. } => {
-            eprintln!("finish command not yet implemented");
+        Commands::Finish { id } => {
+            tak::commands::lifecycle::finish(&cwd, id, cli.pretty)?;
         }
-        Commands::Cancel { .. } => {
-            eprintln!("cancel command not yet implemented");
+        Commands::Cancel { id } => {
+            tak::commands::lifecycle::cancel(&cwd, id, cli.pretty)?;
         }
         Commands::Depend { .. } => {
             eprintln!("depend command not yet implemented");
