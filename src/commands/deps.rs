@@ -15,6 +15,8 @@ pub fn depend(repo_root: &Path, id: u64, on: Vec<u64>, format: Format) -> Result
         }
         if !task.depends_on.contains(dep_id) {
             task.depends_on.push(*dep_id);
+            // Update index immediately so subsequent cycle checks see this edge
+            repo.index.upsert(&task)?;
         }
     }
 
@@ -40,6 +42,9 @@ pub fn undepend(repo_root: &Path, id: u64, on: Vec<u64>, format: Format) -> Resu
 pub fn reparent(repo_root: &Path, id: u64, to: u64, format: Format) -> Result<()> {
     let repo = Repo::open(repo_root)?;
     repo.store.read(to)?; // validate parent exists
+    if repo.index.would_parent_cycle(id, to)? {
+        return Err(TakError::CycleDetected(id));
+    }
     let mut task = repo.store.read(id)?;
 
     task.parent = Some(to);

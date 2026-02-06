@@ -59,6 +59,8 @@ impl Index {
     pub fn rebuild(&self, tasks: &[Task]) -> Result<()> {
         let tx = self.conn.unchecked_transaction()?;
         tx.execute_batch("DELETE FROM tags; DELETE FROM dependencies; DELETE FROM tasks;")?;
+
+        // Pass 1: insert all task rows (avoids FK failures from forward-pointing deps)
         for task in tasks {
             tx.execute(
                 "INSERT INTO tasks (id, title, description, status, kind, parent_id, assignee, created_at, updated_at)
@@ -70,6 +72,10 @@ impl Index {
                     task.created_at.to_rfc3339(), task.updated_at.to_rfc3339(),
                 ],
             )?;
+        }
+
+        // Pass 2: insert all dependencies and tags
+        for task in tasks {
             for dep in &task.depends_on {
                 tx.execute(
                     "INSERT INTO dependencies (task_id, depends_on_id) VALUES (?1, ?2)",
@@ -83,12 +89,15 @@ impl Index {
                 )?;
             }
         }
+
         tx.commit()?;
         Ok(())
     }
 
     pub fn upsert(&self, task: &Task) -> Result<()> {
-        self.conn.execute(
+        let tx = self.conn.unchecked_transaction()?;
+
+        tx.execute(
             "INSERT OR REPLACE INTO tasks (id, title, description, status, kind, parent_id, assignee, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
@@ -98,20 +107,22 @@ impl Index {
                 task.created_at.to_rfc3339(), task.updated_at.to_rfc3339(),
             ],
         )?;
-        self.conn.execute("DELETE FROM dependencies WHERE task_id = ?1", params![task.id])?;
+        tx.execute("DELETE FROM dependencies WHERE task_id = ?1", params![task.id])?;
         for dep in &task.depends_on {
-            self.conn.execute(
+            tx.execute(
                 "INSERT INTO dependencies (task_id, depends_on_id) VALUES (?1, ?2)",
                 params![task.id, dep],
             )?;
         }
-        self.conn.execute("DELETE FROM tags WHERE task_id = ?1", params![task.id])?;
+        tx.execute("DELETE FROM tags WHERE task_id = ?1", params![task.id])?;
         for tag in &task.tags {
-            self.conn.execute(
+            tx.execute(
                 "INSERT INTO tags (task_id, tag) VALUES (?1, ?2)",
                 params![task.id, tag],
             )?;
         }
+
+        tx.commit()?;
         Ok(())
     }
 
@@ -139,6 +150,29 @@ impl Index {
         let ids = stmt.query_map([], |row| row.get(0))?
             .collect::<std::result::Result<Vec<u64>, _>>()?;
         Ok(ids)
+    }
+
+    pub fn available_for(&self, assignee: Option<&str>) -> Result<Vec<u64>> {
+        match assignee {
+            Some(name) => {
+                let mut stmt = self.conn.prepare(
+                    "SELECT t.id FROM tasks t
+                     WHERE t.status = 'pending'
+                     AND (t.assignee IS NULL OR t.assignee = ?1)
+                     AND NOT EXISTS (
+                         SELECT 1 FROM dependencies d
+                         JOIN tasks dep ON d.depends_on_id = dep.id
+                         WHERE d.task_id = t.id
+                         AND dep.status NOT IN ('done', 'cancelled')
+                     )
+                     ORDER BY t.id",
+                )?;
+                let ids = stmt.query_map(params![name], |row| row.get(0))?
+                    .collect::<std::result::Result<Vec<u64>, _>>()?;
+                Ok(ids)
+            }
+            None => self.available(),
+        }
     }
 
     pub fn blocked(&self) -> Result<Vec<u64>> {
@@ -187,6 +221,26 @@ impl Index {
             SELECT EXISTS(SELECT 1 FROM reachable WHERE id = ?2)",
         )?;
         let exists: bool = stmt.query_row(params![depends_on_id, task_id], |row| row.get(0))?;
+        Ok(exists)
+    }
+
+    /// Check if making `child_id` a child of `parent_id` would create a parent-child cycle.
+    pub fn would_parent_cycle(&self, child_id: u64, parent_id: u64) -> Result<bool> {
+        if child_id == parent_id {
+            return Ok(true);
+        }
+        // Check if child_id is an ancestor of parent_id via parent edges
+        let mut stmt = self.conn.prepare(
+            "WITH RECURSIVE ancestors(id) AS (
+                SELECT parent_id FROM tasks WHERE id = ?1
+                UNION
+                SELECT t.parent_id FROM tasks t
+                JOIN ancestors a ON t.id = a.id
+                WHERE t.parent_id IS NOT NULL
+            )
+            SELECT EXISTS(SELECT 1 FROM ancestors WHERE id = ?2)",
+        )?;
+        let exists: bool = stmt.query_row(params![parent_id, child_id], |row| row.get(0))?;
         Ok(exists)
     }
 
@@ -265,5 +319,39 @@ mod tests {
         assert_eq!(idx.roots().unwrap(), vec![1, 4]);
         assert_eq!(idx.children_of(1).unwrap(), vec![2, 3]);
         assert_eq!(idx.children_of(4).unwrap(), Vec::<u64>::new());
+    }
+
+    #[test]
+    fn rebuild_with_forward_pointing_deps() {
+        // Task 1 depends on task 3, which appears later in ID order.
+        // With foreign keys ON, a single-pass rebuild would fail because
+        // task 3's row doesn't exist yet when inserting the dependency.
+        let idx = Index::open_memory().unwrap();
+        let tasks = vec![
+            make_task(1, Status::Pending, vec![3], None),
+            make_task(2, Status::Pending, vec![], None),
+            make_task(3, Status::Pending, vec![], None),
+        ];
+        idx.rebuild(&tasks).unwrap();
+        // Task 1 is blocked by task 3; tasks 2 and 3 are available
+        assert_eq!(idx.available().unwrap(), vec![2, 3]);
+        assert_eq!(idx.blocked().unwrap(), vec![1]);
+    }
+
+    #[test]
+    fn would_parent_cycle_detection() {
+        let idx = Index::open_memory().unwrap();
+        let tasks = vec![
+            make_task(1, Status::Pending, vec![], None),
+            make_task(2, Status::Pending, vec![], Some(1)),
+            make_task(3, Status::Pending, vec![], Some(2)),
+        ];
+        idx.rebuild(&tasks).unwrap();
+        // Reparenting task 1 under task 3 would create 1 -> 3 -> 2 -> 1
+        assert!(idx.would_parent_cycle(1, 3).unwrap());
+        // Self-parenting is a cycle
+        assert!(idx.would_parent_cycle(1, 1).unwrap());
+        // Reparenting task 3 under task 1 is fine (it's already transitively there)
+        assert!(!idx.would_parent_cycle(3, 1).unwrap());
     }
 }
