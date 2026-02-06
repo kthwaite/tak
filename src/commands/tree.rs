@@ -2,6 +2,7 @@ use std::collections::HashSet;
 use std::path::Path;
 use serde::Serialize;
 use crate::error::Result;
+use crate::output::Format;
 use crate::store::files::FileStore;
 use crate::store::index::Index;
 use crate::store::repo::Repo;
@@ -69,16 +70,30 @@ fn print_tree_pretty(node: &TreeNode, prefix: &str, is_last: bool, is_root: bool
     }
 }
 
-pub fn run(repo_root: &Path, id: Option<u64>, pretty: bool) -> Result<()> {
+fn print_tree_minimal(node: &TreeNode, depth: usize) {
+    let indent = "  ".repeat(depth);
+    let title: String = if node.title.len() > 12 {
+        format!("{}...", &node.title[..9])
+    } else {
+        node.title.clone()
+    };
+    let blocked_marker = if node.blocked { " [B]" } else { "" };
+    println!("{}{:>4} {:12} {:6} {:10}{}", indent, node.id, title, node.kind, node.status, blocked_marker);
+    for child in &node.children {
+        print_tree_minimal(child, depth + 1);
+    }
+}
+
+pub fn run(repo_root: &Path, id: Option<u64>, format: Format) -> Result<()> {
     let repo = Repo::open(repo_root)?;
     let blocked_ids: HashSet<u64> = repo.index.blocked()?.into_iter().collect();
 
     if let Some(root_id) = id {
         let tree = build_tree(root_id, &repo.store, &repo.index, &blocked_ids)?;
-        if pretty {
-            print_tree_pretty(&tree, "", true, true);
-        } else {
-            println!("{}", serde_json::to_string(&tree).unwrap());
+        match format {
+            Format::Json => println!("{}", serde_json::to_string(&tree).unwrap()),
+            Format::Pretty => print_tree_pretty(&tree, "", true, true),
+            Format::Minimal => print_tree_minimal(&tree, 0),
         }
     } else {
         let root_ids = repo.index.roots()?;
@@ -87,13 +102,19 @@ pub fn run(repo_root: &Path, id: Option<u64>, pretty: bool) -> Result<()> {
             .map(|rid| build_tree(rid, &repo.store, &repo.index, &blocked_ids))
             .collect::<Result<Vec<_>>>()?;
 
-        if pretty {
-            for tree in &trees {
-                print_tree_pretty(tree, "", true, true);
-                println!();
+        match format {
+            Format::Json => println!("{}", serde_json::to_string(&trees).unwrap()),
+            Format::Pretty => {
+                for tree in &trees {
+                    print_tree_pretty(tree, "", true, true);
+                    println!();
+                }
             }
-        } else {
-            println!("{}", serde_json::to_string(&trees).unwrap());
+            Format::Minimal => {
+                for tree in &trees {
+                    print_tree_minimal(&tree, 0);
+                }
+            }
         }
     }
 

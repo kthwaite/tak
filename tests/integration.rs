@@ -5,6 +5,7 @@ use tak::error::TakError;
 use tak::model::{Kind, Status};
 use tak::store::files::FileStore;
 use tak::store::index::Index;
+use tak::output::Format;
 use tak::store::repo::Repo;
 
 #[test]
@@ -180,7 +181,7 @@ fn test_status_transitions() {
     drop(idx);
 
     // pending -> done is INVALID (must go through in_progress)
-    let result = tak::commands::lifecycle::finish(dir.path(), 1, false);
+    let result = tak::commands::lifecycle::finish(dir.path(), 1, Format::Json);
     assert!(result.is_err());
     match result.unwrap_err() {
         TakError::InvalidTransition(from, to) => {
@@ -191,17 +192,17 @@ fn test_status_transitions() {
     }
 
     // pending -> in_progress is valid
-    tak::commands::lifecycle::start(dir.path(), 1, None, false).unwrap();
+    tak::commands::lifecycle::start(dir.path(), 1, None, Format::Json).unwrap();
     let t = store.read(1).unwrap();
     assert_eq!(t.status, Status::InProgress);
 
     // in_progress -> done is valid
-    tak::commands::lifecycle::finish(dir.path(), 1, false).unwrap();
+    tak::commands::lifecycle::finish(dir.path(), 1, Format::Json).unwrap();
     let t = store.read(1).unwrap();
     assert_eq!(t.status, Status::Done);
 
     // done -> in_progress is INVALID
-    let result = tak::commands::lifecycle::start(dir.path(), 1, None, false);
+    let result = tak::commands::lifecycle::start(dir.path(), 1, None, Format::Json);
     assert!(result.is_err());
     match result.unwrap_err() {
         TakError::InvalidTransition(from, to) => {

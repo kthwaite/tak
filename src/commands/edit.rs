@@ -2,7 +2,7 @@ use std::path::Path;
 use chrono::Utc;
 use crate::error::Result;
 use crate::model::Kind;
-use crate::output;
+use crate::output::{self, Format};
 use crate::store::repo::Repo;
 
 pub fn run(
@@ -12,7 +12,7 @@ pub fn run(
     description: Option<String>,
     kind: Option<String>,
     tags: Option<Vec<String>>,
-    pretty: bool,
+    format: Format,
 ) -> Result<()> {
     let repo = Repo::open(repo_root)?;
     let mut task = repo.store.read(id)?;
@@ -42,6 +42,6 @@ pub fn run(
     repo.store.write(&task)?;
     repo.index.upsert(&task)?;
 
-    output::print_task(&task, pretty);
+    output::print_task(&task, format);
     Ok(())
 }

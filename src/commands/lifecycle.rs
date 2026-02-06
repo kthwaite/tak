@@ -2,7 +2,7 @@ use std::path::Path;
 use chrono::Utc;
 use crate::error::{Result, TakError};
 use crate::model::Status;
-use crate::output;
+use crate::output::{self, Format};
 use crate::store::repo::Repo;
 
 fn transition(current: Status, target: Status) -> std::result::Result<(), (String, String)> {
@@ -24,7 +24,7 @@ fn set_status(
     id: u64,
     target: Status,
     assignee: Option<String>,
-    pretty: bool,
+    format: Format,
 ) -> Result<()> {
     let repo = Repo::open(repo_root)?;
     let mut task = repo.store.read(id)?;
@@ -40,18 +40,18 @@ fn set_status(
     repo.store.write(&task)?;
     repo.index.upsert(&task)?;
 
-    output::print_task(&task, pretty);
+    output::print_task(&task, format);
     Ok(())
 }
 
-pub fn start(repo_root: &Path, id: u64, assignee: Option<String>, pretty: bool) -> Result<()> {
-    set_status(repo_root, id, Status::InProgress, assignee, pretty)
+pub fn start(repo_root: &Path, id: u64, assignee: Option<String>, format: Format) -> Result<()> {
+    set_status(repo_root, id, Status::InProgress, assignee, format)
 }
 
-pub fn finish(repo_root: &Path, id: u64, pretty: bool) -> Result<()> {
-    set_status(repo_root, id, Status::Done, None, pretty)
+pub fn finish(repo_root: &Path, id: u64, format: Format) -> Result<()> {
+    set_status(repo_root, id, Status::Done, None, format)
 }
 
-pub fn cancel(repo_root: &Path, id: u64, pretty: bool) -> Result<()> {
-    set_status(repo_root, id, Status::Cancelled, None, pretty)
+pub fn cancel(repo_root: &Path, id: u64, format: Format) -> Result<()> {
+    set_status(repo_root, id, Status::Cancelled, None, format)
 }
