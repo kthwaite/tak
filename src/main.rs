@@ -155,26 +155,26 @@ fn run() -> tak::error::Result<()> {
         Commands::Cancel { id } => {
             tak::commands::lifecycle::cancel(&cwd, id, cli.pretty)?;
         }
-        Commands::Depend { .. } => {
-            eprintln!("depend command not yet implemented");
+        Commands::Depend { id, on } => {
+            tak::commands::deps::depend(&cwd, id, on, cli.pretty)?;
         }
-        Commands::Undepend { .. } => {
-            eprintln!("undepend command not yet implemented");
+        Commands::Undepend { id, on } => {
+            tak::commands::deps::undepend(&cwd, id, on, cli.pretty)?;
         }
-        Commands::Reparent { .. } => {
-            eprintln!("reparent command not yet implemented");
+        Commands::Reparent { id, to } => {
+            tak::commands::deps::reparent(&cwd, id, to, cli.pretty)?;
         }
-        Commands::Orphan { .. } => {
-            eprintln!("orphan command not yet implemented");
+        Commands::Orphan { id } => {
+            tak::commands::deps::orphan(&cwd, id, cli.pretty)?;
         }
-        Commands::Tree { .. } => {
-            eprintln!("tree command not yet implemented");
+        Commands::Tree { id } => {
+            tak::commands::tree::run(&cwd, id, cli.pretty)?;
         }
-        Commands::Next { .. } => {
-            eprintln!("next command not yet implemented");
+        Commands::Next { assignee } => {
+            tak::commands::next::run(&cwd, assignee, cli.pretty)?;
         }
         Commands::Reindex => {
-            eprintln!("reindex command not yet implemented");
+            tak::commands::reindex::run(&cwd)?;
         }
     }
 

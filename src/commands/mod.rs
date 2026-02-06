@@ -1,6 +1,10 @@
 pub mod create;
+pub mod deps;
 pub mod edit;
 pub mod init;
 pub mod lifecycle;
 pub mod list;
+pub mod next;
+pub mod reindex;
 pub mod show;
+pub mod tree;
