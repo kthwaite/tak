@@ -60,22 +60,28 @@ impl Index {
         let tx = self.conn.unchecked_transaction()?;
         tx.execute_batch("DELETE FROM tags; DELETE FROM dependencies; DELETE FROM tasks;")?;
 
-        // Pass 1: insert all task rows (avoids FK failures from forward-pointing deps)
+        // Pass 1: insert all task rows with parent_id deferred (avoids FK failures)
         for task in tasks {
             tx.execute(
                 "INSERT INTO tasks (id, title, description, status, kind, parent_id, assignee, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                 VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, ?7, ?8)",
                 params![
                     task.id, task.title, task.description,
                     task.status.to_string(), task.kind.to_string(),
-                    task.parent, task.assignee,
+                    task.assignee,
                     task.created_at.to_rfc3339(), task.updated_at.to_rfc3339(),
                 ],
             )?;
         }
 
-        // Pass 2: insert all dependencies and tags
+        // Pass 2: set parent_id, insert dependencies and tags
         for task in tasks {
+            if let Some(parent) = task.parent {
+                tx.execute(
+                    "UPDATE tasks SET parent_id = ?1 WHERE id = ?2",
+                    params![parent, task.id],
+                )?;
+            }
             for dep in &task.depends_on {
                 tx.execute(
                     "INSERT INTO dependencies (task_id, depends_on_id) VALUES (?1, ?2)",
@@ -127,10 +133,12 @@ impl Index {
     }
 
     pub fn remove(&self, id: u64) -> Result<()> {
-        self.conn.execute("DELETE FROM tags WHERE task_id = ?1", params![id])?;
-        self.conn.execute("DELETE FROM dependencies WHERE task_id = ?1", params![id])?;
-        self.conn.execute("DELETE FROM dependencies WHERE depends_on_id = ?1", params![id])?;
-        self.conn.execute("DELETE FROM tasks WHERE id = ?1", params![id])?;
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute("DELETE FROM tags WHERE task_id = ?1", params![id])?;
+        tx.execute("DELETE FROM dependencies WHERE task_id = ?1", params![id])?;
+        tx.execute("DELETE FROM dependencies WHERE depends_on_id = ?1", params![id])?;
+        tx.execute("DELETE FROM tasks WHERE id = ?1", params![id])?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -336,6 +344,21 @@ mod tests {
         // Task 1 is blocked by task 3; tasks 2 and 3 are available
         assert_eq!(idx.available().unwrap(), vec![2, 3]);
         assert_eq!(idx.blocked().unwrap(), vec![1]);
+    }
+
+    #[test]
+    fn rebuild_with_forward_pointing_parent() {
+        // Task 1 is a child of task 3 — parent ID points forward in ID order.
+        // Without deferred parent_id in pass 1, FK constraint would fail.
+        let idx = Index::open_memory().unwrap();
+        let tasks = vec![
+            make_task(1, Status::Pending, vec![], Some(3)),
+            make_task(2, Status::Pending, vec![], None),
+            make_task(3, Status::Pending, vec![], None),
+        ];
+        idx.rebuild(&tasks).unwrap();
+        assert_eq!(idx.children_of(3).unwrap(), vec![1]);
+        assert_eq!(idx.roots().unwrap(), vec![2, 3]);
     }
 
     #[test]

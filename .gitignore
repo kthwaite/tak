@@ -1,3 +1,4 @@
 /target
-.tak/index.db
+.tak/index.db*
 .tak/locks/
+.tak/counter.lock

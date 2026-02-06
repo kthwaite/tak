@@ -44,13 +44,18 @@ pub fn print_task(task: &Task, format: Format) {
         }
         Format::Minimal => {
             let assignee = task.assignee.as_deref().unwrap_or("-");
-            let title: String = if task.title.len() > 12 {
-                format!("{}...", &task.title[..9])
-            } else {
-                task.title.clone()
-            };
+            let title = truncate_title(&task.title, 12);
             println!("{:>4} {:12} {:6} {:10} {}", task.id, title, task.kind, task.status, assignee);
         }
+    }
+}
+
+fn truncate_title(title: &str, max_len: usize) -> String {
+    if title.chars().count() > max_len {
+        let truncated: String = title.chars().take(max_len - 3).collect();
+        format!("{}...", truncated)
+    } else {
+        title.to_string()
     }
 }
 
@@ -68,11 +73,7 @@ pub fn print_tasks(tasks: &[Task], format: Format) {
             println!("{}", "-".repeat(50));
             for task in tasks {
                 let assignee = task.assignee.as_deref().unwrap_or("-");
-                let title: String = if task.title.len() > 12 {
-                    format!("{}...", &task.title[..9])
-                } else {
-                    task.title.clone()
-                };
+                let title = truncate_title(&task.title, 12);
                 println!("{:>4} {:12} {:6} {:10} {}", task.id, title, task.kind, task.status, assignee);
             }
         }

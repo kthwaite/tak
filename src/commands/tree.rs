@@ -70,13 +70,18 @@ fn print_tree_pretty(node: &TreeNode, prefix: &str, is_last: bool, is_root: bool
     }
 }
 
+fn truncate_title(title: &str, max_len: usize) -> String {
+    if title.chars().count() > max_len {
+        let truncated: String = title.chars().take(max_len - 3).collect();
+        format!("{}...", truncated)
+    } else {
+        title.to_string()
+    }
+}
+
 fn print_tree_minimal(node: &TreeNode, depth: usize) {
     let indent = "  ".repeat(depth);
-    let title: String = if node.title.len() > 12 {
-        format!("{}...", &node.title[..9])
-    } else {
-        node.title.clone()
-    };
+    let title = truncate_title(&node.title, 12);
     let blocked_marker = if node.blocked { " [B]" } else { "" };
     println!("{}{:>4} {:12} {:6} {:10}{}", indent, node.id, title, node.kind, node.status, blocked_marker);
     for child in &node.children {
