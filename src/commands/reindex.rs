@@ -1,13 +1,11 @@
 use std::path::Path;
 use crate::error::Result;
-use crate::store::files::FileStore;
-use crate::store::index::Index;
+use crate::store::repo::Repo;
 
 pub fn run(repo_root: &Path) -> Result<()> {
-    let store = FileStore::open(repo_root)?;
-    let tasks = store.list_all()?;
-    let idx = Index::open(&store.root().join("index.db"))?;
-    idx.rebuild(&tasks)?;
+    let repo = Repo::open(repo_root)?;
+    let tasks = repo.store.list_all()?;
+    repo.index.rebuild(&tasks)?;
     eprintln!("Reindexed {} tasks", tasks.len());
     Ok(())
 }

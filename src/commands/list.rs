@@ -1,8 +1,7 @@
 use std::path::Path;
 use crate::error::Result;
 use crate::output;
-use crate::store::files::FileStore;
-use crate::store::index::Index;
+use crate::store::repo::Repo;
 
 pub fn run(
     repo_root: &Path,
@@ -15,20 +14,19 @@ pub fn run(
     children_of: Option<u64>,
     pretty: bool,
 ) -> Result<()> {
-    let store = FileStore::open(repo_root)?;
-    let idx = Index::open(&store.root().join("index.db"))?;
+    let repo = Repo::open(repo_root)?;
 
     let tasks = if available {
-        let ids = idx.available()?;
-        ids.into_iter().map(|id| store.read(id)).collect::<Result<Vec<_>>>()?
+        let ids = repo.index.available()?;
+        ids.into_iter().map(|id| repo.store.read(id)).collect::<Result<Vec<_>>>()?
     } else if blocked {
-        let ids = idx.blocked()?;
-        ids.into_iter().map(|id| store.read(id)).collect::<Result<Vec<_>>>()?
+        let ids = repo.index.blocked()?;
+        ids.into_iter().map(|id| repo.store.read(id)).collect::<Result<Vec<_>>>()?
     } else if let Some(parent_id) = children_of {
-        let ids = idx.children_of(parent_id)?;
-        ids.into_iter().map(|id| store.read(id)).collect::<Result<Vec<_>>>()?
+        let ids = repo.index.children_of(parent_id)?;
+        ids.into_iter().map(|id| repo.store.read(id)).collect::<Result<Vec<_>>>()?
     } else {
-        let mut all = store.list_all()?;
+        let mut all = repo.store.list_all()?;
 
         if let Some(ref s) = status {
             all.retain(|t| t.status.to_string() == *s);

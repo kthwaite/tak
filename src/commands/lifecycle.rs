@@ -3,8 +3,7 @@ use chrono::Utc;
 use crate::error::{Result, TakError};
 use crate::model::Status;
 use crate::output;
-use crate::store::files::FileStore;
-use crate::store::index::Index;
+use crate::store::repo::Repo;
 
 fn transition(current: Status, target: Status) -> std::result::Result<(), (String, String)> {
     let allowed = match current {
@@ -27,8 +26,8 @@ fn set_status(
     assignee: Option<String>,
     pretty: bool,
 ) -> Result<()> {
-    let store = FileStore::open(repo_root)?;
-    let mut task = store.read(id)?;
+    let repo = Repo::open(repo_root)?;
+    let mut task = repo.store.read(id)?;
 
     transition(task.status, target)
         .map_err(|(from, to)| TakError::InvalidTransition(from, to))?;
@@ -38,10 +37,8 @@ fn set_status(
         task.assignee = Some(a);
     }
     task.updated_at = Utc::now();
-    store.write(&task)?;
-
-    let idx = Index::open(&store.root().join("index.db"))?;
-    idx.upsert(&task)?;
+    repo.store.write(&task)?;
+    repo.index.upsert(&task)?;
 
     output::print_task(&task, pretty);
     Ok(())

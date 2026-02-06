@@ -4,6 +4,7 @@ use serde::Serialize;
 use crate::error::Result;
 use crate::store::files::FileStore;
 use crate::store::index::Index;
+use crate::store::repo::Repo;
 
 #[derive(Serialize)]
 struct TreeNode {
@@ -69,22 +70,21 @@ fn print_tree_pretty(node: &TreeNode, prefix: &str, is_last: bool, is_root: bool
 }
 
 pub fn run(repo_root: &Path, id: Option<u64>, pretty: bool) -> Result<()> {
-    let store = FileStore::open(repo_root)?;
-    let idx = Index::open(&store.root().join("index.db"))?;
-    let blocked_ids: HashSet<u64> = idx.blocked()?.into_iter().collect();
+    let repo = Repo::open(repo_root)?;
+    let blocked_ids: HashSet<u64> = repo.index.blocked()?.into_iter().collect();
 
     if let Some(root_id) = id {
-        let tree = build_tree(root_id, &store, &idx, &blocked_ids)?;
+        let tree = build_tree(root_id, &repo.store, &repo.index, &blocked_ids)?;
         if pretty {
             print_tree_pretty(&tree, "", true, true);
         } else {
             println!("{}", serde_json::to_string(&tree).unwrap());
         }
     } else {
-        let root_ids = idx.roots()?;
+        let root_ids = repo.index.roots()?;
         let trees: Vec<TreeNode> = root_ids
             .into_iter()
-            .map(|rid| build_tree(rid, &store, &idx, &blocked_ids))
+            .map(|rid| build_tree(rid, &repo.store, &repo.index, &blocked_ids))
             .collect::<Result<Vec<_>>>()?;
 
         if pretty {

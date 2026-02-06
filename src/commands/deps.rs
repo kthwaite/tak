@@ -2,17 +2,15 @@ use std::path::Path;
 use chrono::Utc;
 use crate::error::{Result, TakError};
 use crate::output;
-use crate::store::files::FileStore;
-use crate::store::index::Index;
+use crate::store::repo::Repo;
 
 pub fn depend(repo_root: &Path, id: u64, on: Vec<u64>, pretty: bool) -> Result<()> {
-    let store = FileStore::open(repo_root)?;
-    let idx = Index::open(&store.root().join("index.db"))?;
-    let mut task = store.read(id)?;
+    let repo = Repo::open(repo_root)?;
+    let mut task = repo.store.read(id)?;
 
     for dep_id in &on {
-        store.read(*dep_id)?; // validate exists
-        if idx.would_cycle(id, *dep_id)? {
+        repo.store.read(*dep_id)?; // validate exists
+        if repo.index.would_cycle(id, *dep_id)? {
             return Err(TakError::CycleDetected(id));
         }
         if !task.depends_on.contains(dep_id) {
@@ -21,48 +19,45 @@ pub fn depend(repo_root: &Path, id: u64, on: Vec<u64>, pretty: bool) -> Result<(
     }
 
     task.updated_at = Utc::now();
-    store.write(&task)?;
-    idx.upsert(&task)?;
+    repo.store.write(&task)?;
+    repo.index.upsert(&task)?;
     output::print_task(&task, pretty);
     Ok(())
 }
 
 pub fn undepend(repo_root: &Path, id: u64, on: Vec<u64>, pretty: bool) -> Result<()> {
-    let store = FileStore::open(repo_root)?;
-    let idx = Index::open(&store.root().join("index.db"))?;
-    let mut task = store.read(id)?;
+    let repo = Repo::open(repo_root)?;
+    let mut task = repo.store.read(id)?;
 
     task.depends_on.retain(|d| !on.contains(d));
     task.updated_at = Utc::now();
-    store.write(&task)?;
-    idx.upsert(&task)?;
+    repo.store.write(&task)?;
+    repo.index.upsert(&task)?;
     output::print_task(&task, pretty);
     Ok(())
 }
 
 pub fn reparent(repo_root: &Path, id: u64, to: u64, pretty: bool) -> Result<()> {
-    let store = FileStore::open(repo_root)?;
-    let idx = Index::open(&store.root().join("index.db"))?;
-    store.read(to)?; // validate parent exists
-    let mut task = store.read(id)?;
+    let repo = Repo::open(repo_root)?;
+    repo.store.read(to)?; // validate parent exists
+    let mut task = repo.store.read(id)?;
 
     task.parent = Some(to);
     task.updated_at = Utc::now();
-    store.write(&task)?;
-    idx.upsert(&task)?;
+    repo.store.write(&task)?;
+    repo.index.upsert(&task)?;
     output::print_task(&task, pretty);
     Ok(())
 }
 
 pub fn orphan(repo_root: &Path, id: u64, pretty: bool) -> Result<()> {
-    let store = FileStore::open(repo_root)?;
-    let idx = Index::open(&store.root().join("index.db"))?;
-    let mut task = store.read(id)?;
+    let repo = Repo::open(repo_root)?;
+    let mut task = repo.store.read(id)?;
 
     task.parent = None;
     task.updated_at = Utc::now();
-    store.write(&task)?;
-    idx.upsert(&task)?;
+    repo.store.write(&task)?;
+    repo.index.upsert(&task)?;
     output::print_task(&task, pretty);
     Ok(())
 }

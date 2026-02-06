@@ -3,8 +3,7 @@ use chrono::Utc;
 use crate::error::Result;
 use crate::model::Kind;
 use crate::output;
-use crate::store::files::FileStore;
-use crate::store::index::Index;
+use crate::store::repo::Repo;
 
 pub fn run(
     repo_root: &Path,
@@ -15,8 +14,8 @@ pub fn run(
     tags: Option<Vec<String>>,
     pretty: bool,
 ) -> Result<()> {
-    let store = FileStore::open(repo_root)?;
-    let mut task = store.read(id)?;
+    let repo = Repo::open(repo_root)?;
+    let mut task = repo.store.read(id)?;
 
     if let Some(t) = title {
         task.title = t;
@@ -40,10 +39,8 @@ pub fn run(
     }
 
     task.updated_at = Utc::now();
-    store.write(&task)?;
-
-    let idx = Index::open(&store.root().join("index.db"))?;
-    idx.upsert(&task)?;
+    repo.store.write(&task)?;
+    repo.index.upsert(&task)?;
 
     output::print_task(&task, pretty);
     Ok(())
