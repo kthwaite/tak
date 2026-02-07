@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 cargo build                    # Build debug
 cargo build --release          # Build release
-cargo test                     # Run all 39 tests (26 unit + 13 integration)
+cargo test                     # Run all 41 tests (27 unit + 14 integration)
 cargo test model::tests        # Run unit tests in a specific module
 cargo test integration         # Run only integration tests (tests/integration.rs)
 cargo test test_name           # Run a single test by name
@@ -71,17 +71,17 @@ Errors are structured JSON on stderr when `--format json`: `{"error":"<code>","m
 
 ### Key Patterns
 
-- Status transitions are validated by a hard state machine in `lifecycle.rs`
+- Status transitions are validated by a hard state machine in `lifecycle.rs`; `start` also rejects blocked tasks
 - Cycle detection (both dependency and parent) uses SQL `WITH RECURSIVE` CTEs — check before adding edges
 - `FileStore::create()` validates parent/dependency existence before writing
-- `Task::normalize()` deduplicates and sorts `depends_on`/`tags` before every file write
+- `Task::normalize()` trims whitespace, drops empty tags, then deduplicates and sorts `depends_on`/`tags` before every file write
 - Mutation commands use validate-then-commit: all validation before any file/index write
 - `claim` serializes concurrent access via an exclusive file lock (`claim.lock`); lock acquisition retries with exponential backoff
 - `Index::upsert()` is transactional (delete old deps/tags, insert new); uses `INSERT OR IGNORE` for resilience against duplicates
 - `Index::rebuild()` uses two-pass insertion: first insert tasks without parent_id, then update parent_id (handles forward references and FK constraints); uses `INSERT OR IGNORE` for deps/tags
 - `delete` validates referential integrity (children + dependents); `--force` cascades (orphans children, removes incoming deps)
 - Sequential integer IDs via `counter.json` with OS-level file locking (fs2); lock file kept permanently
-- Stale index detection via file fingerprint: `Repo::open()` compares task ID + size + mtime against stored metadata, auto-rebuilds on mismatch
+- Stale index detection via file fingerprint: `Repo::open()` compares task ID + size + nanosecond mtime against stored metadata, auto-rebuilds on mismatch
 - Tree command pre-loads all tasks into a HashMap — no per-node file I/O or SQL queries
 
 ### On-Disk Layout
