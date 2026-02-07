@@ -8,22 +8,27 @@ pub fn depend(repo_root: &Path, id: u64, on: Vec<u64>, format: Format) -> Result
     let repo = Repo::open(repo_root)?;
     let mut task = repo.store.read(id)?;
 
-    for dep_id in &on {
-        repo.store.read(*dep_id)?; // validate exists
-        if repo.index.would_cycle(id, *dep_id)? {
+    // Phase 1: validate all deps exist and won't cycle
+    for &dep_id in &on {
+        repo.store.read(dep_id)?; // validate exists
+        if repo.index.would_cycle(id, dep_id)? {
             return Err(TakError::CycleDetected(id));
-        }
-        if !task.depends_on.contains(dep_id) {
-            task.depends_on.push(*dep_id);
-            // Update index immediately so subsequent cycle checks see this edge
-            repo.index.upsert(&task)?;
         }
     }
 
+    // Phase 2: mutate task in memory
+    for &dep_id in &on {
+        if !task.depends_on.contains(&dep_id) {
+            task.depends_on.push(dep_id);
+        }
+    }
     task.normalize();
     task.updated_at = Utc::now();
+
+    // Phase 3: single commit — file then index
     repo.store.write(&task)?;
     repo.index.upsert(&task)?;
+
     output::print_task(&task, format)?;
     Ok(())
 }

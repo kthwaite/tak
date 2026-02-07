@@ -307,3 +307,30 @@ fn test_list_filters() {
     let still_pending: Vec<_> = all.iter().filter(|t| t.status == Status::Pending).collect();
     assert_eq!(still_pending.len(), 2);
 }
+
+#[test]
+fn test_depend_rolls_back_on_partial_failure() {
+    let dir = tempdir().unwrap();
+    let store = FileStore::init(dir.path()).unwrap();
+
+    store.create("A".into(), Kind::Task, None, None, vec![], vec![]).unwrap();
+    store.create("B".into(), Kind::Task, None, None, vec![], vec![]).unwrap();
+
+    // Build index
+    let idx = Index::open(&store.root().join("index.db")).unwrap();
+    idx.rebuild(&store.list_all().unwrap()).unwrap();
+    drop(idx);
+
+    // Try to depend 1 on [2, 999]. 999 doesn't exist, so this should fail entirely.
+    let result = tak::commands::deps::depend(dir.path(), 1, vec![2, 999], Format::Json);
+    assert!(result.is_err());
+
+    // Task 1's file should still have no dependencies
+    let task = store.read(1).unwrap();
+    assert!(task.depends_on.is_empty(), "file should be unchanged on failure");
+
+    // Index should also have no deps for task 1
+    let repo = Repo::open(dir.path()).unwrap();
+    let avail = repo.index.available().unwrap();
+    assert!(avail.contains(&1), "task 1 should still be available (not blocked)");
+}
