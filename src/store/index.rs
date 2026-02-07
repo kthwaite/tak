@@ -88,13 +88,13 @@ impl Index {
             }
             for dep in &task.depends_on {
                 tx.execute(
-                    "INSERT INTO dependencies (task_id, depends_on_id) VALUES (?1, ?2)",
+                    "INSERT OR IGNORE INTO dependencies (task_id, depends_on_id) VALUES (?1, ?2)",
                     params![task.id, dep],
                 )?;
             }
             for tag in &task.tags {
                 tx.execute(
-                    "INSERT INTO tags (task_id, tag) VALUES (?1, ?2)",
+                    "INSERT OR IGNORE INTO tags (task_id, tag) VALUES (?1, ?2)",
                     params![task.id, tag],
                 )?;
             }
@@ -120,14 +120,14 @@ impl Index {
         tx.execute("DELETE FROM dependencies WHERE task_id = ?1", params![task.id])?;
         for dep in &task.depends_on {
             tx.execute(
-                "INSERT INTO dependencies (task_id, depends_on_id) VALUES (?1, ?2)",
+                "INSERT OR IGNORE INTO dependencies (task_id, depends_on_id) VALUES (?1, ?2)",
                 params![task.id, dep],
             )?;
         }
         tx.execute("DELETE FROM tags WHERE task_id = ?1", params![task.id])?;
         for tag in &task.tags {
             tx.execute(
-                "INSERT INTO tags (task_id, tag) VALUES (?1, ?2)",
+                "INSERT OR IGNORE INTO tags (task_id, tag) VALUES (?1, ?2)",
                 params![task.id, tag],
             )?;
         }
@@ -411,6 +411,46 @@ mod tests {
         let repo = Repo::open(dir.path()).unwrap();
         let avail = repo.index.available(None).unwrap();
         assert_eq!(avail, vec![1]); // task 2 is gone
+    }
+
+    #[test]
+    fn rebuild_tolerates_duplicate_deps_and_tags() {
+        let idx = Index::open_memory().unwrap();
+        let now = Utc::now();
+        let tasks = vec![
+            Task {
+                id: 1, title: "A".into(), description: None,
+                status: Status::Pending, kind: Kind::Task, parent: None,
+                depends_on: vec![], assignee: None,
+                tags: vec!["x".into(), "x".into()],
+                created_at: now, updated_at: now,
+            },
+            Task {
+                id: 2, title: "B".into(), description: None,
+                status: Status::Pending, kind: Kind::Task, parent: None,
+                depends_on: vec![1, 1], assignee: None,
+                tags: vec![], created_at: now, updated_at: now,
+            },
+        ];
+        idx.rebuild(&tasks).unwrap();
+        assert_eq!(idx.available(None).unwrap(), vec![1]);
+    }
+
+    #[test]
+    fn upsert_tolerates_duplicate_deps_and_tags() {
+        let idx = Index::open_memory().unwrap();
+        let now = Utc::now();
+        let t1 = make_task(1, Status::Pending, vec![], None);
+        idx.rebuild(&[t1]).unwrap();
+
+        let t_duped = Task {
+            id: 1, title: "A".into(), description: None,
+            status: Status::Pending, kind: Kind::Task, parent: None,
+            depends_on: vec![], assignee: None,
+            tags: vec!["x".into(), "x".into()],
+            created_at: now, updated_at: now,
+        };
+        idx.upsert(&t_duped).unwrap();
     }
 
     #[test]
