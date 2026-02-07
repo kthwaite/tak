@@ -31,6 +31,9 @@ enum Commands {
         #[arg(long, value_delimiter = ',')]
         tag: Vec<String>,
     },
+    Delete {
+        id: u64,
+    },
     Show {
         id: u64,
     },
@@ -135,6 +138,7 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
                 &root, title, kind, description, parent, depends_on, tag, format,
             )
         }
+        Commands::Delete { id } => tak::commands::delete::run(&root, id, format),
         Commands::Show { id } => tak::commands::show::run(&root, id, format),
         Commands::List {
             status,

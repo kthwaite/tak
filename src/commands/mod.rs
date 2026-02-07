@@ -1,5 +1,6 @@
 pub mod claim;
 pub mod create;
+pub mod delete;
 pub mod deps;
 pub mod edit;
 pub mod init;

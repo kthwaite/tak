@@ -3,9 +3,9 @@ use tempfile::tempdir;
 use chrono::Utc;
 use tak::error::TakError;
 use tak::model::{Kind, Status};
+use tak::output::Format;
 use tak::store::files::FileStore;
 use tak::store::index::Index;
-use tak::output::Format;
 use tak::store::repo::Repo;
 
 #[test]
@@ -380,4 +380,26 @@ fn test_depend_rolls_back_on_partial_failure() {
     let repo = Repo::open(dir.path()).unwrap();
     let avail = repo.index.available(None).unwrap();
     assert!(avail.contains(&1), "task 1 should still be available (not blocked)");
+}
+
+#[test]
+fn test_delete_removes_task() {
+    let dir = tempdir().unwrap();
+    let store = FileStore::init(dir.path()).unwrap();
+    store.create("To delete".into(), Kind::Task, None, None, vec![], vec![]).unwrap();
+    store.create("Keeper".into(), Kind::Task, None, None, vec![], vec![]).unwrap();
+
+    let idx = Index::open(&store.root().join("index.db")).unwrap();
+    idx.rebuild(&store.list_all().unwrap()).unwrap();
+    drop(idx);
+
+    tak::commands::delete::run(dir.path(), 1, Format::Json).unwrap();
+
+    // File should be gone
+    assert!(store.read(1).is_err());
+
+    // Index should not have task 1
+    let repo = Repo::open(dir.path()).unwrap();
+    let avail = repo.index.available(None).unwrap();
+    assert_eq!(avail, vec![2]);
 }
