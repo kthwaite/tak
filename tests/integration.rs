@@ -224,6 +224,34 @@ fn test_status_transitions() {
 }
 
 #[test]
+fn test_start_rejects_blocked_task() {
+    let dir = tempdir().unwrap();
+    let store = FileStore::init(dir.path()).unwrap();
+
+    store.create("Blocker".into(), Kind::Task, None, None, vec![], vec![]).unwrap();
+    store.create("Blocked".into(), Kind::Task, None, None, vec![1], vec![]).unwrap();
+
+    let idx = Index::open(&store.root().join("index.db")).unwrap();
+    idx.rebuild(&store.list_all().unwrap()).unwrap();
+    drop(idx);
+
+    // Starting the blocked task should fail
+    let result = tak::commands::lifecycle::start(dir.path(), 2, None, Format::Json);
+    assert!(matches!(result.unwrap_err(), TakError::TaskBlocked(2)));
+
+    // Task should still be pending
+    let t = store.read(2).unwrap();
+    assert_eq!(t.status, Status::Pending);
+
+    // Finishing the blocker should unblock task 2
+    tak::commands::lifecycle::start(dir.path(), 1, None, Format::Json).unwrap();
+    tak::commands::lifecycle::finish(dir.path(), 1, Format::Json).unwrap();
+    tak::commands::lifecycle::start(dir.path(), 2, None, Format::Json).unwrap();
+    let t = store.read(2).unwrap();
+    assert_eq!(t.status, Status::InProgress);
+}
+
+#[test]
 fn test_list_filters() {
     let dir = tempdir().unwrap();
     let store = FileStore::init(dir.path()).unwrap();

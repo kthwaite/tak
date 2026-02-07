@@ -203,6 +203,20 @@ impl Index {
         Ok(ids)
     }
 
+    /// Check whether a specific task is blocked by unfinished dependencies.
+    pub fn is_blocked(&self, id: u64) -> Result<bool> {
+        let mut stmt = self.conn.prepare(
+            "SELECT EXISTS(
+                SELECT 1 FROM dependencies d
+                JOIN tasks dep ON d.depends_on_id = dep.id
+                WHERE d.task_id = ?1
+                AND dep.status NOT IN ('done', 'cancelled')
+            )",
+        )?;
+        let blocked: bool = stmt.query_row(params![id], |row| row.get(0))?;
+        Ok(blocked)
+    }
+
     /// Return IDs of tasks that depend on the given task.
     pub fn dependents_of(&self, id: u64) -> Result<Vec<u64>> {
         let mut stmt = self.conn.prepare(

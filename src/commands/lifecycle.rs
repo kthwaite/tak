@@ -45,7 +45,26 @@ fn set_status(
 }
 
 pub fn start(repo_root: &Path, id: u64, assignee: Option<String>, format: Format) -> Result<()> {
-    set_status(repo_root, id, Status::InProgress, assignee, format)
+    let repo = Repo::open(repo_root)?;
+    let mut task = repo.store.read(id)?;
+
+    transition(task.status, Status::InProgress)
+        .map_err(|(from, to)| TakError::InvalidTransition(from, to))?;
+
+    if repo.index.is_blocked(id)? {
+        return Err(TakError::TaskBlocked(id));
+    }
+
+    task.status = Status::InProgress;
+    if let Some(a) = assignee {
+        task.assignee = Some(a);
+    }
+    task.updated_at = Utc::now();
+    repo.store.write(&task)?;
+    repo.index.upsert(&task)?;
+
+    output::print_task(&task, format)?;
+    Ok(())
 }
 
 pub fn finish(repo_root: &Path, id: u64, format: Format) -> Result<()> {
