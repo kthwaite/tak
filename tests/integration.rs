@@ -333,6 +333,29 @@ fn test_claim_assigns_next_available() {
 }
 
 #[test]
+fn test_reopen_transitions() {
+    let dir = tempdir().unwrap();
+    let store = FileStore::init(dir.path()).unwrap();
+    store.create("Test".into(), Kind::Task, None, None, vec![], vec![]).unwrap();
+
+    let idx = Index::open(&store.root().join("index.db")).unwrap();
+    idx.rebuild(&store.list_all().unwrap()).unwrap();
+    drop(idx);
+
+    // pending -> in_progress -> done
+    tak::commands::lifecycle::start(dir.path(), 1, None, Format::Json).unwrap();
+    tak::commands::lifecycle::finish(dir.path(), 1, Format::Json).unwrap();
+    let t = store.read(1).unwrap();
+    assert_eq!(t.status, Status::Done);
+
+    // done -> pending (reopen)
+    tak::commands::lifecycle::reopen(dir.path(), 1, Format::Json).unwrap();
+    let t = store.read(1).unwrap();
+    assert_eq!(t.status, Status::Pending);
+    assert!(t.assignee.is_none(), "reopen should clear assignee");
+}
+
+#[test]
 fn test_depend_rolls_back_on_partial_failure() {
     let dir = tempdir().unwrap();
     let store = FileStore::init(dir.path()).unwrap();

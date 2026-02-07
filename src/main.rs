@@ -79,6 +79,12 @@ enum Commands {
         #[arg(long)]
         tag: Option<String>,
     },
+    Reopen {
+        id: u64,
+    },
+    Unassign {
+        id: u64,
+    },
     Depend {
         id: u64,
         #[arg(long, required = true, value_delimiter = ',')]
@@ -158,6 +164,8 @@ fn run(cli: Cli) -> tak::error::Result<()> {
         Commands::Claim { assignee, tag } => {
             tak::commands::claim::run(&root, assignee, tag, format)
         }
+        Commands::Reopen { id } => tak::commands::lifecycle::reopen(&root, id, format),
+        Commands::Unassign { id } => tak::commands::lifecycle::unassign(&root, id, format),
         Commands::Depend { id, on } => tak::commands::deps::depend(&root, id, on, format),
         Commands::Undepend { id, on } => tak::commands::deps::undepend(&root, id, on, format),
         Commands::Reparent { id, to } => tak::commands::deps::reparent(&root, id, to, format),
