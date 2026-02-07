@@ -65,8 +65,15 @@ impl std::fmt::Display for Kind {
 }
 
 impl Task {
-    /// Deduplicate and sort `depends_on` and `tags` for deterministic storage.
+    /// Trim whitespace, drop empty tags, then deduplicate and sort for deterministic storage.
     pub fn normalize(&mut self) {
+        for tag in &mut self.tags {
+            let trimmed = tag.trim();
+            if trimmed.len() != tag.len() {
+                *tag = trimmed.to_string();
+            }
+        }
+        self.tags.retain(|t| !t.is_empty());
         self.depends_on.sort();
         self.depends_on.dedup();
         self.tags.sort();
@@ -130,5 +137,19 @@ mod tests {
         assert!(!json.contains("depends_on"));
         assert!(!json.contains("assignee"));
         assert!(!json.contains("tags"));
+    }
+
+    #[test]
+    fn normalize_trims_and_drops_empty_tags() {
+        let now = Utc::now();
+        let mut task = Task {
+            id: 1, title: "Test".into(), description: None,
+            status: Status::Pending, kind: Kind::Task, parent: None,
+            depends_on: vec![], assignee: None,
+            tags: vec!["".into(), " ".into(), "  valid  ".into(), "keep".into(), "keep".into()],
+            created_at: now, updated_at: now,
+        };
+        task.normalize();
+        assert_eq!(task.tags, vec!["keep", "valid"]);
     }
 }
