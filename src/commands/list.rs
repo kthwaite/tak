@@ -19,7 +19,7 @@ pub fn run(
     let repo = Repo::open(repo_root)?;
 
     let mut tasks = if available {
-        repo.store.read_many(&repo.index.available()?)?
+        repo.store.read_many(&repo.index.available(None)?)?
     } else if blocked {
         repo.store.read_many(&repo.index.blocked()?)?
     } else if let Some(parent_id) = children_of {

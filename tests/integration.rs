@@ -60,7 +60,7 @@ fn test_full_workflow() {
 
     // Check available: tasks 1 and 2 have no unfinished deps
     // Task 3 is blocked by 2, task 4 is blocked by 3
-    let avail = idx.available().unwrap();
+    let avail = idx.available(None).unwrap();
     assert!(avail.contains(&1));
     assert!(avail.contains(&2));
     assert!(!avail.contains(&3));
@@ -79,7 +79,7 @@ fn test_full_workflow() {
     idx.upsert(&t2).unwrap();
 
     // Task 3 should now be available (its dependency task 2 is done)
-    let avail = idx.available().unwrap();
+    let avail = idx.available(None).unwrap();
     assert!(avail.contains(&3));
     assert!(!avail.contains(&4)); // still blocked by 3
 
@@ -96,7 +96,7 @@ fn test_full_workflow() {
     idx.upsert(&t3).unwrap();
 
     // Task 4 should now be available
-    let avail = idx.available().unwrap();
+    let avail = idx.available(None).unwrap();
     assert!(avail.contains(&4));
 
     // Verify tree structure
@@ -159,7 +159,7 @@ fn test_reindex_after_delete() {
     let repo = Repo::open(dir.path()).unwrap();
 
     // Verify queries still work after auto-rebuild
-    let avail = repo.index.available().unwrap();
+    let avail = repo.index.available(None).unwrap();
     assert_eq!(avail, vec![1]);
     let blocked = repo.index.blocked().unwrap();
     assert_eq!(blocked, vec![2]);
@@ -378,6 +378,6 @@ fn test_depend_rolls_back_on_partial_failure() {
 
     // Index should also have no deps for task 1
     let repo = Repo::open(dir.path()).unwrap();
-    let avail = repo.index.available().unwrap();
+    let avail = repo.index.available(None).unwrap();
     assert!(avail.contains(&1), "task 1 should still be available (not blocked)");
 }

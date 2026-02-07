@@ -18,7 +18,7 @@ pub fn run(
     let lock_file = lock::acquire_lock(&lock_path)?;
 
     let repo = Repo::open(repo_root)?;
-    let available = repo.index.available_for(Some(&assignee))?;
+    let available = repo.index.available(Some(&assignee))?;
 
     let id = if let Some(ref tg) = tag {
         // Find first available task with matching tag

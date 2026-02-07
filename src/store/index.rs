@@ -146,45 +146,47 @@ impl Index {
         Ok(())
     }
 
-    pub fn available(&self) -> Result<Vec<u64>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT t.id FROM tasks t
-             WHERE t.status = 'pending'
-             AND t.assignee IS NULL
-             AND NOT EXISTS (
-                 SELECT 1 FROM dependencies d
-                 JOIN tasks dep ON d.depends_on_id = dep.id
-                 WHERE d.task_id = t.id
-                 AND dep.status NOT IN ('done', 'cancelled')
-             )
-             ORDER BY t.id",
-        )?;
-        let ids = stmt.query_map([], |row| row.get(0))?
-            .collect::<std::result::Result<Vec<u64>, _>>()?;
+    /// Return IDs of available (claimable) tasks.
+    /// If `assignee` is Some, also include tasks already assigned to that person.
+    /// If `assignee` is None, only unassigned tasks.
+    pub fn available(&self, assignee: Option<&str>) -> Result<Vec<u64>> {
+        let (sql, has_param) = match assignee {
+            Some(_) => (
+                "SELECT t.id FROM tasks t
+                 WHERE t.status = 'pending'
+                 AND (t.assignee IS NULL OR t.assignee = ?1)
+                 AND NOT EXISTS (
+                     SELECT 1 FROM dependencies d
+                     JOIN tasks dep ON d.depends_on_id = dep.id
+                     WHERE d.task_id = t.id
+                     AND dep.status NOT IN ('done', 'cancelled')
+                 )
+                 ORDER BY t.id",
+                true,
+            ),
+            None => (
+                "SELECT t.id FROM tasks t
+                 WHERE t.status = 'pending'
+                 AND t.assignee IS NULL
+                 AND NOT EXISTS (
+                     SELECT 1 FROM dependencies d
+                     JOIN tasks dep ON d.depends_on_id = dep.id
+                     WHERE d.task_id = t.id
+                     AND dep.status NOT IN ('done', 'cancelled')
+                 )
+                 ORDER BY t.id",
+                false,
+            ),
+        };
+        let mut stmt = self.conn.prepare(sql)?;
+        let ids = if has_param {
+            stmt.query_map(params![assignee.unwrap()], |row| row.get(0))?
+                .collect::<std::result::Result<Vec<u64>, _>>()?
+        } else {
+            stmt.query_map([], |row| row.get(0))?
+                .collect::<std::result::Result<Vec<u64>, _>>()?
+        };
         Ok(ids)
-    }
-
-    pub fn available_for(&self, assignee: Option<&str>) -> Result<Vec<u64>> {
-        match assignee {
-            Some(name) => {
-                let mut stmt = self.conn.prepare(
-                    "SELECT t.id FROM tasks t
-                     WHERE t.status = 'pending'
-                     AND (t.assignee IS NULL OR t.assignee = ?1)
-                     AND NOT EXISTS (
-                         SELECT 1 FROM dependencies d
-                         JOIN tasks dep ON d.depends_on_id = dep.id
-                         WHERE d.task_id = t.id
-                         AND dep.status NOT IN ('done', 'cancelled')
-                     )
-                     ORDER BY t.id",
-                )?;
-                let ids = stmt.query_map(params![name], |row| row.get(0))?
-                    .collect::<std::result::Result<Vec<u64>, _>>()?;
-                Ok(ids)
-            }
-            None => self.available(),
-        }
     }
 
     pub fn blocked(&self) -> Result<Vec<u64>> {
@@ -305,7 +307,7 @@ mod tests {
             make_task(3, Status::Pending, vec![], None),
         ];
         idx.rebuild(&tasks).unwrap();
-        assert_eq!(idx.available().unwrap(), vec![1, 3]);
+        assert_eq!(idx.available(None).unwrap(), vec![1, 3]);
         assert_eq!(idx.blocked().unwrap(), vec![2]);
     }
 
@@ -317,10 +319,10 @@ mod tests {
             make_task(2, Status::Pending, vec![1], None),
         ];
         idx.rebuild(&tasks).unwrap();
-        assert_eq!(idx.available().unwrap(), vec![1]);
+        assert_eq!(idx.available(None).unwrap(), vec![1]);
         tasks[0].status = Status::Done;
         idx.upsert(&tasks[0]).unwrap();
-        assert_eq!(idx.available().unwrap(), vec![2]);
+        assert_eq!(idx.available(None).unwrap(), vec![2]);
     }
 
     #[test]
@@ -366,7 +368,7 @@ mod tests {
         ];
         idx.rebuild(&tasks).unwrap();
         // Task 1 is blocked by task 3; tasks 2 and 3 are available
-        assert_eq!(idx.available().unwrap(), vec![2, 3]);
+        assert_eq!(idx.available(None).unwrap(), vec![2, 3]);
         assert_eq!(idx.blocked().unwrap(), vec![1]);
     }
 
@@ -398,7 +400,7 @@ mod tests {
 
         // First open builds index
         let repo = Repo::open(dir.path()).unwrap();
-        let avail = repo.index.available().unwrap();
+        let avail = repo.index.available(None).unwrap();
         assert_eq!(avail, vec![1, 2]);
         drop(repo);
 
@@ -407,7 +409,7 @@ mod tests {
 
         // Re-open should detect staleness and rebuild
         let repo = Repo::open(dir.path()).unwrap();
-        let avail = repo.index.available().unwrap();
+        let avail = repo.index.available(None).unwrap();
         assert_eq!(avail, vec![1]); // task 2 is gone
     }
 
