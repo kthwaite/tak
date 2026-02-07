@@ -148,6 +148,16 @@ impl FileStore {
         Ok(ids)
     }
 
+    /// Compute a fingerprint from the sorted list of task file names.
+    /// This is cheap (just readdir, no file reads) and changes whenever
+    /// tasks are added or removed.
+    pub fn fingerprint(&self) -> Result<String> {
+        let mut ids = self.list_ids()?;
+        ids.sort();
+        let fp = ids.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(",");
+        Ok(fp)
+    }
+
     pub fn list_all(&self) -> Result<Vec<Task>> {
         self.list_ids()?
             .into_iter()

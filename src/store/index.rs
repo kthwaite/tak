@@ -51,7 +51,11 @@ impl Index {
             );
             CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
             CREATE INDEX IF NOT EXISTS idx_tasks_kind ON tasks(kind);
-            CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_id);",
+            CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_id);
+            CREATE TABLE IF NOT EXISTS metadata (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );",
         )?;
         Ok(())
     }
@@ -252,6 +256,26 @@ impl Index {
         Ok(exists)
     }
 
+    pub fn get_fingerprint(&self) -> Result<Option<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT value FROM metadata WHERE key = 'fingerprint'"
+        )?;
+        let result = stmt.query_row([], |row| row.get::<_, String>(0));
+        match result {
+            Ok(fp) => Ok(Some(fp)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    pub fn set_fingerprint(&self, fingerprint: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO metadata (key, value) VALUES ('fingerprint', ?1)",
+            params![fingerprint],
+        )?;
+        Ok(())
+    }
+
     pub fn conn(&self) -> &Connection {
         &self.conn
     }
@@ -359,6 +383,32 @@ mod tests {
         idx.rebuild(&tasks).unwrap();
         assert_eq!(idx.children_of(3).unwrap(), vec![1]);
         assert_eq!(idx.roots().unwrap(), vec![2, 3]);
+    }
+
+    #[test]
+    fn stale_index_detected_after_file_change() {
+        use tempfile::tempdir;
+        use crate::store::files::FileStore;
+        use crate::store::repo::Repo;
+
+        let dir = tempdir().unwrap();
+        let store = FileStore::init(dir.path()).unwrap();
+        store.create("A".into(), Kind::Task, None, None, vec![], vec![]).unwrap();
+        store.create("B".into(), Kind::Task, None, None, vec![], vec![]).unwrap();
+
+        // First open builds index
+        let repo = Repo::open(dir.path()).unwrap();
+        let avail = repo.index.available().unwrap();
+        assert_eq!(avail, vec![1, 2]);
+        drop(repo);
+
+        // Simulate external change: delete task 2's file
+        std::fs::remove_file(dir.path().join(".tak/tasks/2.json")).unwrap();
+
+        // Re-open should detect staleness and rebuild
+        let repo = Repo::open(dir.path()).unwrap();
+        let avail = repo.index.available().unwrap();
+        assert_eq!(avail, vec![1]); // task 2 is gone
     }
 
     #[test]
