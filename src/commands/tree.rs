@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::path::Path;
 use serde::Serialize;
 use crate::error::Result;
-use crate::output::Format;
+use crate::output::{Format, truncate_title};
 use crate::store::files::FileStore;
 use crate::store::index::Index;
 use crate::store::repo::Repo;
@@ -67,15 +67,6 @@ fn print_tree_pretty(node: &TreeNode, prefix: &str, is_last: bool, is_root: bool
     for (i, child) in node.children.iter().enumerate() {
         let last = i == node.children.len() - 1;
         print_tree_pretty(child, &child_prefix, last, false);
-    }
-}
-
-fn truncate_title(title: &str, max_len: usize) -> String {
-    if title.chars().count() > max_len {
-        let truncated: String = title.chars().take(max_len - 3).collect();
-        format!("{}...", truncated)
-    } else {
-        title.to_string()
     }
 }
 

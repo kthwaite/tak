@@ -52,7 +52,7 @@ pub fn print_task(task: &Task, format: Format) -> Result<()> {
     Ok(())
 }
 
-fn truncate_title(title: &str, max_len: usize) -> String {
+pub fn truncate_title(title: &str, max_len: usize) -> String {
     if title.chars().count() > max_len {
         let truncated: String = title.chars().take(max_len - 3).collect();
         format!("{}...", truncated)
