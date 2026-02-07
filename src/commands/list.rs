@@ -1,12 +1,14 @@
 use std::path::Path;
 use crate::error::Result;
+use crate::model::{Kind, Status};
 use crate::output::{self, Format};
 use crate::store::repo::Repo;
 
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     repo_root: &Path,
-    status: Option<String>,
-    kind: Option<String>,
+    status: Option<Status>,
+    kind: Option<Kind>,
     tag: Option<String>,
     assignee: Option<String>,
     available: bool,
@@ -29,11 +31,11 @@ pub fn run(
         repo.store.list_all()?
     };
 
-    if let Some(ref s) = status {
-        tasks.retain(|t| t.status.to_string() == *s);
+    if let Some(s) = status {
+        tasks.retain(|t| t.status == s);
     }
-    if let Some(ref k) = kind {
-        tasks.retain(|t| t.kind.to_string() == *k);
+    if let Some(k) = kind {
+        tasks.retain(|t| t.kind == k);
     }
     if let Some(ref tg) = tag {
         tasks.retain(|t| t.tags.contains(tg));

@@ -138,10 +138,10 @@ impl FileStore {
             let entry = entry?;
             let name = entry.file_name();
             let name = name.to_string_lossy();
-            if let Some(stem) = name.strip_suffix(".json") {
-                if let Ok(id) = stem.parse::<u64>() {
-                    ids.push(id);
-                }
+            if let Some(stem) = name.strip_suffix(".json")
+                && let Ok(id) = stem.parse::<u64>()
+            {
+                ids.push(id);
             }
         }
         ids.sort();

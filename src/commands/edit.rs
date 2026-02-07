@@ -10,7 +10,7 @@ pub fn run(
     id: u64,
     title: Option<String>,
     description: Option<String>,
-    kind: Option<String>,
+    kind: Option<Kind>,
     tags: Option<Vec<String>>,
     format: Format,
 ) -> Result<()> {
@@ -28,7 +28,7 @@ pub fn run(
         }
     }
     if let Some(k) = kind {
-        task.kind = k.parse::<Kind>()?;
+        task.kind = k;
     }
     if let Some(t) = tags {
         task.tags = t;

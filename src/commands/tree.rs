@@ -108,7 +108,7 @@ pub fn run(repo_root: &Path, id: Option<u64>, format: Format) -> Result<()> {
             }
             Format::Minimal => {
                 for tree in &trees {
-                    print_tree_minimal(&tree, 0);
+                    print_tree_minimal(tree, 0);
                 }
             }
         }

@@ -1,11 +1,13 @@
 use clap::{Parser, Subcommand};
+use tak::model::{Kind, Status};
+use tak::output::Format;
 
 #[derive(Parser)]
 #[command(name = "tak", version, about = "Git-native task manager for agentic workflows")]
 struct Cli {
-    /// Output format: json (default), pretty (human-readable), minimal (one-line summaries)
-    #[arg(long, global = true, default_value = "json")]
-    format: String,
+    /// Output format
+    #[arg(long, global = true, value_enum, default_value = "json")]
+    format: Format,
     /// Shorthand for --format pretty
     #[arg(long, global = true, hide = true)]
     pretty: bool,
@@ -18,8 +20,8 @@ enum Commands {
     Init,
     Create {
         title: String,
-        #[arg(long, default_value = "task")]
-        kind: String,
+        #[arg(long, value_enum, default_value = "task")]
+        kind: Kind,
         #[arg(long)]
         parent: Option<u64>,
         #[arg(long, value_delimiter = ',')]
@@ -33,17 +35,17 @@ enum Commands {
         id: u64,
     },
     List {
-        #[arg(long)]
-        status: Option<String>,
-        #[arg(long)]
-        kind: Option<String>,
+        #[arg(long, value_enum)]
+        status: Option<Status>,
+        #[arg(long, value_enum)]
+        kind: Option<Kind>,
         #[arg(long)]
         tag: Option<String>,
         #[arg(long)]
         assignee: Option<String>,
-        #[arg(long)]
+        #[arg(long, conflicts_with = "blocked")]
         available: bool,
-        #[arg(long)]
+        #[arg(long, conflicts_with = "available")]
         blocked: bool,
         #[arg(long)]
         children_of: Option<u64>,
@@ -54,8 +56,8 @@ enum Commands {
         title: Option<String>,
         #[arg(long, short)]
         description: Option<String>,
-        #[arg(long)]
-        kind: Option<String>,
+        #[arg(long, value_enum)]
+        kind: Option<Kind>,
         #[arg(long, value_delimiter = ',')]
         tag: Option<Vec<String>>,
     },
@@ -99,7 +101,7 @@ enum Commands {
 }
 
 fn run(cli: Cli) -> tak::error::Result<()> {
-    let format = tak::output::Format::from_str_with_flag(&cli.format, cli.pretty);
+    let format = if cli.pretty { Format::Pretty } else { cli.format };
 
     if matches!(cli.command, Commands::Init) {
         let cwd = std::env::current_dir()?;
@@ -119,7 +121,7 @@ fn run(cli: Cli) -> tak::error::Result<()> {
             tag,
         } => {
             tak::commands::create::run(
-                &root, title, &kind, description, parent, depends_on, tag, format,
+                &root, title, kind, description, parent, depends_on, tag, format,
             )
         }
         Commands::Show { id } => tak::commands::show::run(&root, id, format),

@@ -1,24 +1,12 @@
+use clap::ValueEnum;
 use crate::error::Result;
 use crate::model::Task;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum Format {
     Json,
     Pretty,
     Minimal,
-}
-
-impl Format {
-    pub fn from_str_with_flag(format: &str, pretty_flag: bool) -> Self {
-        if pretty_flag {
-            return Self::Pretty;
-        }
-        match format {
-            "pretty" => Self::Pretty,
-            "minimal" => Self::Minimal,
-            _ => Self::Json,
-        }
-    }
 }
 
 pub fn print_task(task: &Task, format: Format) -> Result<()> {
@@ -71,7 +59,7 @@ pub fn print_tasks(tasks: &[Task], format: Format) -> Result<()> {
             }
         }
         Format::Minimal => {
-            println!("{:>4} {:12} {:6} {:10} {}", "ID", "TITLE", "KIND", "STATUS", "ASSIGNEE");
+            println!("{:>4} {:12} {:6} {:10} ASSIGNEE", "ID", "TITLE", "KIND", "STATUS");
             println!("{}", "-".repeat(50));
             for task in tasks {
                 let assignee = task.assignee.as_deref().unwrap_or("-");
