@@ -1,9 +1,9 @@
-use std::path::Path;
-use chrono::Utc;
 use crate::error::{Result, TakError};
 use crate::model::Status;
 use crate::output::{self, Format};
 use crate::store::repo::Repo;
+use chrono::Utc;
+use std::path::Path;
 
 fn transition(current: Status, target: Status) -> std::result::Result<(), (String, String)> {
     let allowed = match current {
@@ -29,8 +29,7 @@ fn set_status(
     let repo = Repo::open(repo_root)?;
     let mut task = repo.store.read(id)?;
 
-    transition(task.status, target)
-        .map_err(|(from, to)| TakError::InvalidTransition(from, to))?;
+    transition(task.status, target).map_err(|(from, to)| TakError::InvalidTransition(from, to))?;
 
     task.status = target;
     if let Some(a) = assignee {

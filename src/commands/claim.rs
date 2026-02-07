@@ -8,12 +8,7 @@ use crate::output::{self, Format};
 use crate::store::lock;
 use crate::store::repo::Repo;
 
-pub fn run(
-    repo_root: &Path,
-    assignee: String,
-    tag: Option<String>,
-    format: Format,
-) -> Result<()> {
+pub fn run(repo_root: &Path, assignee: String, tag: Option<String>, format: Format) -> Result<()> {
     let lock_path = repo_root.join(".tak").join("claim.lock");
     let lock_file = lock::acquire_lock(&lock_path)?;
 

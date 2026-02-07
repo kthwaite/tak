@@ -23,7 +23,9 @@ pub enum TakError {
     #[error("task {0} is blocked by unfinished dependencies")]
     TaskBlocked(u64),
 
-    #[error("task {0} is referenced by other tasks; use --force to cascade or resolve references first")]
+    #[error(
+        "task {0} is referenced by other tasks; use --force to cascade or resolve references first"
+    )]
     TaskInUse(u64),
 
     #[error("locked by another process: {0}")]

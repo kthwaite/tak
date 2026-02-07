@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 
 use crate::error::Result;
 use crate::model::Task;
@@ -117,7 +117,10 @@ impl Index {
                 task.created_at.to_rfc3339(), task.updated_at.to_rfc3339(),
             ],
         )?;
-        tx.execute("DELETE FROM dependencies WHERE task_id = ?1", params![task.id])?;
+        tx.execute(
+            "DELETE FROM dependencies WHERE task_id = ?1",
+            params![task.id],
+        )?;
         for dep in &task.depends_on {
             tx.execute(
                 "INSERT OR IGNORE INTO dependencies (task_id, depends_on_id) VALUES (?1, ?2)",
@@ -140,7 +143,10 @@ impl Index {
         let tx = self.conn.unchecked_transaction()?;
         tx.execute("DELETE FROM tags WHERE task_id = ?1", params![id])?;
         tx.execute("DELETE FROM dependencies WHERE task_id = ?1", params![id])?;
-        tx.execute("DELETE FROM dependencies WHERE depends_on_id = ?1", params![id])?;
+        tx.execute(
+            "DELETE FROM dependencies WHERE depends_on_id = ?1",
+            params![id],
+        )?;
         tx.execute("DELETE FROM tasks WHERE id = ?1", params![id])?;
         tx.commit()?;
         Ok(())
@@ -198,7 +204,8 @@ impl Index {
              AND dep.status NOT IN ('done', 'cancelled')
              ORDER BY t.id",
         )?;
-        let ids = stmt.query_map([], |row| row.get(0))?
+        let ids = stmt
+            .query_map([], |row| row.get(0))?
             .collect::<std::result::Result<Vec<u64>, _>>()?;
         Ok(ids)
     }
@@ -222,25 +229,28 @@ impl Index {
         let mut stmt = self.conn.prepare(
             "SELECT task_id FROM dependencies WHERE depends_on_id = ?1 ORDER BY task_id",
         )?;
-        let ids = stmt.query_map(params![id], |row| row.get(0))?
+        let ids = stmt
+            .query_map(params![id], |row| row.get(0))?
             .collect::<std::result::Result<Vec<u64>, _>>()?;
         Ok(ids)
     }
 
     pub fn children_of(&self, parent_id: u64) -> Result<Vec<u64>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id FROM tasks WHERE parent_id = ?1 ORDER BY id",
-        )?;
-        let ids = stmt.query_map(params![parent_id], |row| row.get(0))?
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id FROM tasks WHERE parent_id = ?1 ORDER BY id")?;
+        let ids = stmt
+            .query_map(params![parent_id], |row| row.get(0))?
             .collect::<std::result::Result<Vec<u64>, _>>()?;
         Ok(ids)
     }
 
     pub fn roots(&self) -> Result<Vec<u64>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id FROM tasks WHERE parent_id IS NULL ORDER BY id",
-        )?;
-        let ids = stmt.query_map([], |row| row.get(0))?
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id FROM tasks WHERE parent_id IS NULL ORDER BY id")?;
+        let ids = stmt
+            .query_map([], |row| row.get(0))?
             .collect::<std::result::Result<Vec<u64>, _>>()?;
         Ok(ids)
     }
@@ -283,9 +293,9 @@ impl Index {
     }
 
     pub fn get_fingerprint(&self) -> Result<Option<String>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT value FROM metadata WHERE key = 'fingerprint'"
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT value FROM metadata WHERE key = 'fingerprint'")?;
         let result = stmt.query_row([], |row| row.get::<_, String>(0));
         match result {
             Ok(fp) => Ok(Some(fp)),
@@ -316,9 +326,17 @@ mod tests {
     fn make_task(id: u64, status: Status, depends_on: Vec<u64>, parent: Option<u64>) -> Task {
         let now = Utc::now();
         Task {
-            id, title: format!("Task {}", id), description: None,
-            status, kind: Kind::Task, parent, depends_on,
-            assignee: None, tags: vec![], created_at: now, updated_at: now,
+            id,
+            title: format!("Task {}", id),
+            description: None,
+            status,
+            kind: Kind::Task,
+            parent,
+            depends_on,
+            assignee: None,
+            tags: vec![],
+            created_at: now,
+            updated_at: now,
         }
     }
 
@@ -413,14 +431,18 @@ mod tests {
 
     #[test]
     fn stale_index_detected_after_file_change() {
-        use tempfile::tempdir;
         use crate::store::files::FileStore;
         use crate::store::repo::Repo;
+        use tempfile::tempdir;
 
         let dir = tempdir().unwrap();
         let store = FileStore::init(dir.path()).unwrap();
-        store.create("A".into(), Kind::Task, None, None, vec![], vec![]).unwrap();
-        store.create("B".into(), Kind::Task, None, None, vec![], vec![]).unwrap();
+        store
+            .create("A".into(), Kind::Task, None, None, vec![], vec![])
+            .unwrap();
+        store
+            .create("B".into(), Kind::Task, None, None, vec![], vec![])
+            .unwrap();
 
         // First open builds index
         let repo = Repo::open(dir.path()).unwrap();
@@ -439,13 +461,15 @@ mod tests {
 
     #[test]
     fn stale_index_detected_after_in_place_edit() {
-        use tempfile::tempdir;
         use crate::store::files::FileStore;
         use crate::store::repo::Repo;
+        use tempfile::tempdir;
 
         let dir = tempdir().unwrap();
         let store = FileStore::init(dir.path()).unwrap();
-        store.create("A".into(), Kind::Task, None, None, vec![], vec![]).unwrap();
+        store
+            .create("A".into(), Kind::Task, None, None, vec![], vec![])
+            .unwrap();
 
         let repo = Repo::open(dir.path()).unwrap();
         let avail = repo.index.available(None).unwrap();
@@ -462,7 +486,10 @@ mod tests {
 
         let repo = Repo::open(dir.path()).unwrap();
         let avail = repo.index.available(None).unwrap();
-        assert!(avail.is_empty(), "task 1 is now in_progress, should not be available");
+        assert!(
+            avail.is_empty(),
+            "task 1 is now in_progress, should not be available"
+        );
     }
 
     #[test]
@@ -471,17 +498,30 @@ mod tests {
         let now = Utc::now();
         let tasks = vec![
             Task {
-                id: 1, title: "A".into(), description: None,
-                status: Status::Pending, kind: Kind::Task, parent: None,
-                depends_on: vec![], assignee: None,
+                id: 1,
+                title: "A".into(),
+                description: None,
+                status: Status::Pending,
+                kind: Kind::Task,
+                parent: None,
+                depends_on: vec![],
+                assignee: None,
                 tags: vec!["x".into(), "x".into()],
-                created_at: now, updated_at: now,
+                created_at: now,
+                updated_at: now,
             },
             Task {
-                id: 2, title: "B".into(), description: None,
-                status: Status::Pending, kind: Kind::Task, parent: None,
-                depends_on: vec![1, 1], assignee: None,
-                tags: vec![], created_at: now, updated_at: now,
+                id: 2,
+                title: "B".into(),
+                description: None,
+                status: Status::Pending,
+                kind: Kind::Task,
+                parent: None,
+                depends_on: vec![1, 1],
+                assignee: None,
+                tags: vec![],
+                created_at: now,
+                updated_at: now,
             },
         ];
         idx.rebuild(&tasks).unwrap();
@@ -496,11 +536,17 @@ mod tests {
         idx.rebuild(&[t1]).unwrap();
 
         let t_duped = Task {
-            id: 1, title: "A".into(), description: None,
-            status: Status::Pending, kind: Kind::Task, parent: None,
-            depends_on: vec![], assignee: None,
+            id: 1,
+            title: "A".into(),
+            description: None,
+            status: Status::Pending,
+            kind: Kind::Task,
+            parent: None,
+            depends_on: vec![],
+            assignee: None,
             tags: vec!["x".into(), "x".into()],
-            created_at: now, updated_at: now,
+            created_at: now,
+            updated_at: now,
         };
         idx.upsert(&t_duped).unwrap();
     }

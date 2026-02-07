@@ -1,10 +1,10 @@
-use std::collections::{HashMap, HashSet};
-use std::path::Path;
-use serde::Serialize;
 use crate::error::Result;
 use crate::model::Task;
 use crate::output::{Format, truncate_title};
 use crate::store::repo::Repo;
+use serde::Serialize;
+use std::collections::{HashMap, HashSet};
+use std::path::Path;
 
 #[derive(Serialize)]
 struct TreeNode {
@@ -51,8 +51,7 @@ fn print_tree_pretty(node: &TreeNode, prefix: &str, is_last: bool, is_root: bool
     let blocked_marker = if node.blocked { " [BLOCKED]" } else { "" };
     println!(
         "{}{}[{}] {} ({}, {}){}",
-        prefix, connector,
-        node.id, node.title, node.kind, node.status, blocked_marker
+        prefix, connector, node.id, node.title, node.kind, node.status, blocked_marker
     );
 
     let child_prefix = if is_root {
@@ -73,7 +72,10 @@ fn print_tree_minimal(node: &TreeNode, depth: usize) {
     let indent = "  ".repeat(depth);
     let title = truncate_title(&node.title, 12);
     let blocked_marker = if node.blocked { " [B]" } else { "" };
-    println!("{}{:>4} {:12} {:6} {:10}{}", indent, node.id, title, node.kind, node.status, blocked_marker);
+    println!(
+        "{}{:>4} {:12} {:6} {:10}{}",
+        indent, node.id, title, node.kind, node.status, blocked_marker
+    );
     for child in &node.children {
         print_tree_minimal(child, depth + 1);
     }

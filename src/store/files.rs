@@ -285,18 +285,24 @@ mod tests {
         let store = FileStore::init(dir.path()).unwrap();
 
         // Create two tasks so dep references are valid
-        store.create("Dep A".into(), Kind::Task, None, None, vec![], vec![]).unwrap();
-        store.create("Dep B".into(), Kind::Task, None, None, vec![], vec![]).unwrap();
+        store
+            .create("Dep A".into(), Kind::Task, None, None, vec![], vec![])
+            .unwrap();
+        store
+            .create("Dep B".into(), Kind::Task, None, None, vec![], vec![])
+            .unwrap();
 
         // Create a task with duplicate tags and deps
-        let task = store.create(
-            "Duped".into(),
-            Kind::Task,
-            None,
-            None,
-            vec![1, 2, 1, 2, 1],
-            vec!["x".into(), "y".into(), "x".into()],
-        ).unwrap();
+        let task = store
+            .create(
+                "Duped".into(),
+                Kind::Task,
+                None,
+                None,
+                vec![1, 2, 1, 2, 1],
+                vec!["x".into(), "y".into(), "x".into()],
+            )
+            .unwrap();
 
         assert_eq!(task.depends_on, vec![1, 2]);
         assert_eq!(task.tags, vec!["x", "y"]);
@@ -313,10 +319,20 @@ mod tests {
         let store = FileStore::init(dir.path()).unwrap();
         let lock_path = dir.path().join(".tak").join("counter.lock");
 
-        store.create("A".into(), Kind::Task, None, None, vec![], vec![]).unwrap();
-        assert!(lock_path.exists(), "lock file should persist after first allocation");
+        store
+            .create("A".into(), Kind::Task, None, None, vec![], vec![])
+            .unwrap();
+        assert!(
+            lock_path.exists(),
+            "lock file should persist after first allocation"
+        );
 
-        store.create("B".into(), Kind::Task, None, None, vec![], vec![]).unwrap();
-        assert!(lock_path.exists(), "lock file should persist after second allocation");
+        store
+            .create("B".into(), Kind::Task, None, None, vec![], vec![])
+            .unwrap();
+        assert!(
+            lock_path.exists(),
+            "lock file should persist after second allocation"
+        );
     }
 }

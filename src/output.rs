@@ -1,6 +1,6 @@
-use clap::ValueEnum;
 use crate::error::Result;
 use crate::model::Task;
+use clap::ValueEnum;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum Format {
@@ -34,7 +34,10 @@ pub fn print_task(task: &Task, format: Format) -> Result<()> {
         Format::Minimal => {
             let assignee = task.assignee.as_deref().unwrap_or("-");
             let title = truncate_title(&task.title, 12);
-            println!("{:>4} {:12} {:6} {:10} {}", task.id, title, task.kind, task.status, assignee);
+            println!(
+                "{:>4} {:12} {:6} {:10} {}",
+                task.id, title, task.kind, task.status, assignee
+            );
         }
     }
     Ok(())
@@ -59,12 +62,18 @@ pub fn print_tasks(tasks: &[Task], format: Format) -> Result<()> {
             }
         }
         Format::Minimal => {
-            println!("{:>4} {:12} {:6} {:10} ASSIGNEE", "ID", "TITLE", "KIND", "STATUS");
+            println!(
+                "{:>4} {:12} {:6} {:10} ASSIGNEE",
+                "ID", "TITLE", "KIND", "STATUS"
+            );
             println!("{}", "-".repeat(50));
             for task in tasks {
                 let assignee = task.assignee.as_deref().unwrap_or("-");
                 let title = truncate_title(&task.title, 12);
-                println!("{:>4} {:12} {:6} {:10} {}", task.id, title, task.kind, task.status, assignee);
+                println!(
+                    "{:>4} {:12} {:6} {:10} {}",
+                    task.id, title, task.kind, task.status, assignee
+                );
             }
         }
     }

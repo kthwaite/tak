@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 cargo build                    # Build debug
 cargo build --release          # Build release
-cargo test                     # Run all 41 tests (27 unit + 14 integration)
+cargo test                     # Run all 58 tests (37 unit + 21 integration)
 cargo test model::tests        # Run unit tests in a specific module
 cargo test integration         # Run only integration tests (tests/integration.rs)
 cargo test test_name           # Run a single test by name
@@ -38,12 +38,12 @@ Tasks are JSON files in `.tak/tasks/` (the git-committed source of truth). A git
 - **`src/store/files.rs`** — `FileStore`: CRUD on `.tak/tasks/*.json`, atomic ID allocation via counter.json + fs2 lock
 - **`src/store/index.rs`** — `Index`: SQLite with WAL mode, FK-enabled. Cycle detection via recursive CTEs. Two-pass rebuild to handle forward references.
 - **`src/store/repo.rs`** — `Repo`: wraps FileStore + Index. Walks up from CWD to find `.tak/`. Auto-rebuilds index on open if missing or stale (file fingerprint mismatch).
-- **`src/commands/`** — One file per command group. All take `&Path` (repo root) and return `Result<()>`.
-- **`src/main.rs`** — Clap derive CLI with 19 subcommands and global `--format`/`--pretty` flags. Uses `ValueEnum` for `Format`, `Kind`, `Status`; `conflicts_with` for `--available`/`--blocked`.
+- **`src/commands/`** — One file per command group. Most take `&Path` (repo root) and return `Result<()>`. `setup` and `doctor` don't require a repo.
+- **`src/main.rs`** — Clap derive CLI with 21 subcommands and global `--format`/`--pretty` flags. Uses `ValueEnum` for `Format`, `Kind`, `Status`; `conflicts_with` for `--available`/`--blocked`.
 
 ### CLI Commands
 
-19 subcommands. `--format json` (default), `--format pretty`, `--format minimal`.
+21 subcommands. `--format json` (default), `--format pretty`, `--format minimal`.
 
 | Command | Purpose |
 |---------|---------|
@@ -66,6 +66,8 @@ Tasks are JSON files in `.tak/tasks/` (the git-committed source of truth). A git
 | `tree [ID]` | Display parent-child hierarchy |
 | `next` | Show next available task (`--assignee`) |
 | `reindex` | Rebuild SQLite index from files |
+| `setup` | Install Claude Code integration (`--global`, `--check`, `--remove`, `--plugin`) |
+| `doctor` | Validate installation health (`--fix`) |
 
 Errors are structured JSON on stderr when `--format json`: `{"error":"<code>","message":"<text>"}`.
 
@@ -83,6 +85,9 @@ Errors are structured JSON on stderr when `--format json`: `{"error":"<code>","m
 - Sequential integer IDs via `counter.json` with OS-level file locking (fs2); lock file kept permanently
 - Stale index detection via file fingerprint: `Repo::open()` compares task ID + size + nanosecond mtime against stored metadata, auto-rebuilds on mismatch
 - Tree command pre-loads all tasks into a HashMap — no per-node file I/O or SQL queries
+- `setup` and `doctor` don't require a repo — they're dispatched before `find_repo_root()`
+- `setup` embeds plugin assets via `include_str!` at compile time; idempotent install/remove
+- `doctor` runs grouped health checks (Core/Index/Data Integrity/Environment) with auto-fix support
 
 ### On-Disk Layout
 
@@ -99,3 +104,5 @@ Errors are structured JSON on stderr when `--format json`: `{"error":"<code>","m
 ## Claude Code Plugin
 
 Three skills in `skills/`: **task-management** (CLI reference), **epic-planning** (structured decomposition), **task-execution** (agent claim-work-finish loop). A `SessionStart` hook in `hooks/` auto-runs `tak reindex` to refresh the index after git operations.
+
+`tak setup` installs the hook into Claude Code settings (project-local or global). `tak setup --plugin` also writes the plugin directory to CWD. `tak doctor` validates installation health.

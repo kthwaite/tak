@@ -143,11 +143,23 @@ mod tests {
     fn normalize_trims_and_drops_empty_tags() {
         let now = Utc::now();
         let mut task = Task {
-            id: 1, title: "Test".into(), description: None,
-            status: Status::Pending, kind: Kind::Task, parent: None,
-            depends_on: vec![], assignee: None,
-            tags: vec!["".into(), " ".into(), "  valid  ".into(), "keep".into(), "keep".into()],
-            created_at: now, updated_at: now,
+            id: 1,
+            title: "Test".into(),
+            description: None,
+            status: Status::Pending,
+            kind: Kind::Task,
+            parent: None,
+            depends_on: vec![],
+            assignee: None,
+            tags: vec![
+                "".into(),
+                " ".into(),
+                "  valid  ".into(),
+                "keep".into(),
+                "keep".into(),
+            ],
+            created_at: now,
+            updated_at: now,
         };
         task.normalize();
         assert_eq!(task.tags, vec!["keep", "valid"]);

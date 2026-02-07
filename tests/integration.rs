@@ -1,3 +1,5 @@
+use std::fs;
+
 use tempfile::tempdir;
 
 use chrono::Utc;
@@ -228,8 +230,12 @@ fn test_start_rejects_blocked_task() {
     let dir = tempdir().unwrap();
     let store = FileStore::init(dir.path()).unwrap();
 
-    store.create("Blocker".into(), Kind::Task, None, None, vec![], vec![]).unwrap();
-    store.create("Blocked".into(), Kind::Task, None, None, vec![1], vec![]).unwrap();
+    store
+        .create("Blocker".into(), Kind::Task, None, None, vec![], vec![])
+        .unwrap();
+    store
+        .create("Blocked".into(), Kind::Task, None, None, vec![1], vec![])
+        .unwrap();
 
     let idx = Index::open(&store.root().join("index.db")).unwrap();
     idx.rebuild(&store.list_all().unwrap()).unwrap();
@@ -341,8 +347,12 @@ fn test_claim_assigns_next_available() {
     let dir = tempdir().unwrap();
     let store = FileStore::init(dir.path()).unwrap();
 
-    store.create("Task A".into(), Kind::Task, None, None, vec![], vec![]).unwrap();
-    store.create("Task B".into(), Kind::Task, None, None, vec![1], vec![]).unwrap();
+    store
+        .create("Task A".into(), Kind::Task, None, None, vec![], vec![])
+        .unwrap();
+    store
+        .create("Task B".into(), Kind::Task, None, None, vec![1], vec![])
+        .unwrap();
 
     let idx = Index::open(&store.root().join("index.db")).unwrap();
     idx.rebuild(&store.list_all().unwrap()).unwrap();
@@ -364,7 +374,9 @@ fn test_claim_assigns_next_available() {
 fn test_reopen_transitions() {
     let dir = tempdir().unwrap();
     let store = FileStore::init(dir.path()).unwrap();
-    store.create("Test".into(), Kind::Task, None, None, vec![], vec![]).unwrap();
+    store
+        .create("Test".into(), Kind::Task, None, None, vec![], vec![])
+        .unwrap();
 
     let idx = Index::open(&store.root().join("index.db")).unwrap();
     idx.rebuild(&store.list_all().unwrap()).unwrap();
@@ -388,8 +400,12 @@ fn test_depend_rolls_back_on_partial_failure() {
     let dir = tempdir().unwrap();
     let store = FileStore::init(dir.path()).unwrap();
 
-    store.create("A".into(), Kind::Task, None, None, vec![], vec![]).unwrap();
-    store.create("B".into(), Kind::Task, None, None, vec![], vec![]).unwrap();
+    store
+        .create("A".into(), Kind::Task, None, None, vec![], vec![])
+        .unwrap();
+    store
+        .create("B".into(), Kind::Task, None, None, vec![], vec![])
+        .unwrap();
 
     // Build index
     let idx = Index::open(&store.root().join("index.db")).unwrap();
@@ -402,20 +418,30 @@ fn test_depend_rolls_back_on_partial_failure() {
 
     // Task 1's file should still have no dependencies
     let task = store.read(1).unwrap();
-    assert!(task.depends_on.is_empty(), "file should be unchanged on failure");
+    assert!(
+        task.depends_on.is_empty(),
+        "file should be unchanged on failure"
+    );
 
     // Index should also have no deps for task 1
     let repo = Repo::open(dir.path()).unwrap();
     let avail = repo.index.available(None).unwrap();
-    assert!(avail.contains(&1), "task 1 should still be available (not blocked)");
+    assert!(
+        avail.contains(&1),
+        "task 1 should still be available (not blocked)"
+    );
 }
 
 #[test]
 fn test_delete_removes_task() {
     let dir = tempdir().unwrap();
     let store = FileStore::init(dir.path()).unwrap();
-    store.create("To delete".into(), Kind::Task, None, None, vec![], vec![]).unwrap();
-    store.create("Keeper".into(), Kind::Task, None, None, vec![], vec![]).unwrap();
+    store
+        .create("To delete".into(), Kind::Task, None, None, vec![], vec![])
+        .unwrap();
+    store
+        .create("Keeper".into(), Kind::Task, None, None, vec![], vec![])
+        .unwrap();
 
     let idx = Index::open(&store.root().join("index.db")).unwrap();
     idx.rebuild(&store.list_all().unwrap()).unwrap();
@@ -436,8 +462,12 @@ fn test_delete_removes_task() {
 fn test_delete_rejects_when_task_has_children() {
     let dir = tempdir().unwrap();
     let store = FileStore::init(dir.path()).unwrap();
-    store.create("Parent".into(), Kind::Epic, None, None, vec![], vec![]).unwrap();
-    store.create("Child".into(), Kind::Task, None, Some(1), vec![], vec![]).unwrap();
+    store
+        .create("Parent".into(), Kind::Epic, None, None, vec![], vec![])
+        .unwrap();
+    store
+        .create("Child".into(), Kind::Task, None, Some(1), vec![], vec![])
+        .unwrap();
 
     let idx = Index::open(&store.root().join("index.db")).unwrap();
     idx.rebuild(&store.list_all().unwrap()).unwrap();
@@ -452,8 +482,12 @@ fn test_delete_rejects_when_task_has_children() {
 fn test_delete_rejects_when_task_is_dependency_target() {
     let dir = tempdir().unwrap();
     let store = FileStore::init(dir.path()).unwrap();
-    store.create("Dep target".into(), Kind::Task, None, None, vec![], vec![]).unwrap();
-    store.create("Dependent".into(), Kind::Task, None, None, vec![1], vec![]).unwrap();
+    store
+        .create("Dep target".into(), Kind::Task, None, None, vec![], vec![])
+        .unwrap();
+    store
+        .create("Dependent".into(), Kind::Task, None, None, vec![1], vec![])
+        .unwrap();
 
     let idx = Index::open(&store.root().join("index.db")).unwrap();
     idx.rebuild(&store.list_all().unwrap()).unwrap();
@@ -468,9 +502,15 @@ fn test_delete_rejects_when_task_is_dependency_target() {
 fn test_delete_force_cascades() {
     let dir = tempdir().unwrap();
     let store = FileStore::init(dir.path()).unwrap();
-    store.create("Parent".into(), Kind::Epic, None, None, vec![], vec![]).unwrap();
-    store.create("Child".into(), Kind::Task, None, Some(1), vec![], vec![]).unwrap();
-    store.create("Dependent".into(), Kind::Task, None, None, vec![1], vec![]).unwrap();
+    store
+        .create("Parent".into(), Kind::Epic, None, None, vec![], vec![])
+        .unwrap();
+    store
+        .create("Child".into(), Kind::Task, None, Some(1), vec![], vec![])
+        .unwrap();
+    store
+        .create("Dependent".into(), Kind::Task, None, None, vec![1], vec![])
+        .unwrap();
 
     let idx = Index::open(&store.root().join("index.db")).unwrap();
     idx.rebuild(&store.list_all().unwrap()).unwrap();
@@ -482,7 +522,10 @@ fn test_delete_force_cascades() {
     let child = store.read(2).unwrap();
     assert!(child.parent.is_none(), "child should be orphaned");
     let dep = store.read(3).unwrap();
-    assert!(dep.depends_on.is_empty(), "dep on deleted task should be removed");
+    assert!(
+        dep.depends_on.is_empty(),
+        "dep on deleted task should be removed"
+    );
 
     // Rebuild should succeed
     let repo = Repo::open(dir.path()).unwrap();
@@ -494,8 +537,12 @@ fn test_delete_force_cascades() {
 fn test_delete_leaf_without_force() {
     let dir = tempdir().unwrap();
     let store = FileStore::init(dir.path()).unwrap();
-    store.create("Leaf".into(), Kind::Task, None, None, vec![], vec![]).unwrap();
-    store.create("Other".into(), Kind::Task, None, None, vec![], vec![]).unwrap();
+    store
+        .create("Leaf".into(), Kind::Task, None, None, vec![], vec![])
+        .unwrap();
+    store
+        .create("Other".into(), Kind::Task, None, None, vec![], vec![])
+        .unwrap();
 
     let idx = Index::open(&store.root().join("index.db")).unwrap();
     idx.rebuild(&store.list_all().unwrap()).unwrap();
@@ -507,4 +554,219 @@ fn test_delete_leaf_without_force() {
     let repo = Repo::open(dir.path()).unwrap();
     let avail = repo.index.available(None).unwrap();
     assert_eq!(avail, vec![2]);
+}
+
+// === Setup tests ===
+
+#[test]
+fn test_setup_install_idempotent() {
+    let dir = tempdir().unwrap();
+    let settings_path = dir.path().join(".claude").join("settings.local.json");
+    fs::create_dir_all(settings_path.parent().unwrap()).unwrap();
+    fs::write(&settings_path, "{}").unwrap();
+
+    let hook_entry = serde_json::json!({
+        "matcher": "",
+        "hooks": [{"type": "command", "command": "tak reindex 2>/dev/null || true", "timeout": 10}]
+    });
+
+    // First install
+    let data = fs::read_to_string(&settings_path).unwrap();
+    let mut settings: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_str(&data).unwrap();
+
+    let hooks = settings
+        .entry("hooks")
+        .or_insert_with(|| serde_json::json!({}));
+    let hooks_obj = hooks.as_object_mut().unwrap();
+    let session_start = hooks_obj
+        .entry("SessionStart")
+        .or_insert_with(|| serde_json::json!([]));
+    let arr = session_start.as_array_mut().unwrap();
+    assert!(!arr.iter().any(|e| e == &hook_entry));
+    arr.push(hook_entry.clone());
+
+    fs::write(
+        &settings_path,
+        serde_json::to_string_pretty(&serde_json::Value::Object(settings)).unwrap(),
+    )
+    .unwrap();
+
+    // Second install attempt — hook already present
+    let data = fs::read_to_string(&settings_path).unwrap();
+    let settings: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&data).unwrap();
+    let arr = settings["hooks"]["SessionStart"].as_array().unwrap();
+    assert!(
+        arr.iter().any(|e| e == &hook_entry),
+        "hook installed after first write"
+    );
+    assert_eq!(arr.len(), 1, "only one hook entry");
+}
+
+#[test]
+fn test_setup_remove_cleans_hooks() {
+    let dir = tempdir().unwrap();
+    let settings_path = dir.path().join("settings.json");
+
+    let settings = serde_json::json!({
+        "hooks": {
+            "SessionStart": [{
+                "matcher": "",
+                "hooks": [{"type": "command", "command": "tak reindex 2>/dev/null || true", "timeout": 10}]
+            }]
+        }
+    });
+    fs::write(
+        &settings_path,
+        serde_json::to_string_pretty(&settings).unwrap(),
+    )
+    .unwrap();
+
+    let data = fs::read_to_string(&settings_path).unwrap();
+    let mut settings: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_str(&data).unwrap();
+
+    let target = serde_json::json!({
+        "matcher": "",
+        "hooks": [{"type": "command", "command": "tak reindex 2>/dev/null || true", "timeout": 10}]
+    });
+
+    let hooks = settings.get_mut("hooks").unwrap().as_object_mut().unwrap();
+    let arr = hooks
+        .get_mut("SessionStart")
+        .unwrap()
+        .as_array_mut()
+        .unwrap();
+    arr.retain(|e| e != &target);
+    assert!(arr.is_empty());
+
+    hooks.remove("SessionStart");
+    if hooks.is_empty() {
+        settings.remove("hooks");
+    }
+    assert!(
+        !settings.contains_key("hooks"),
+        "hooks key removed when empty"
+    );
+}
+
+#[test]
+fn test_setup_preserves_existing_settings() {
+    let dir = tempdir().unwrap();
+    let settings_path = dir.path().join("settings.json");
+
+    // Pre-existing settings
+    let initial = serde_json::json!({"model": "sonnet", "allowedTools": ["Bash"]});
+    fs::write(
+        &settings_path,
+        serde_json::to_string_pretty(&initial).unwrap(),
+    )
+    .unwrap();
+
+    let data = fs::read_to_string(&settings_path).unwrap();
+    let mut settings: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_str(&data).unwrap();
+
+    let hook_entry = serde_json::json!({
+        "matcher": "",
+        "hooks": [{"type": "command", "command": "tak reindex 2>/dev/null || true", "timeout": 10}]
+    });
+    let hooks = settings
+        .entry("hooks")
+        .or_insert_with(|| serde_json::json!({}));
+    let hooks_obj = hooks.as_object_mut().unwrap();
+    let session_start = hooks_obj
+        .entry("SessionStart")
+        .or_insert_with(|| serde_json::json!([]));
+    session_start.as_array_mut().unwrap().push(hook_entry);
+
+    fs::write(
+        &settings_path,
+        serde_json::to_string_pretty(&serde_json::Value::Object(settings)).unwrap(),
+    )
+    .unwrap();
+
+    let loaded: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_str(&fs::read_to_string(&settings_path).unwrap()).unwrap();
+    assert_eq!(loaded.get("model"), Some(&serde_json::json!("sonnet")));
+    assert!(loaded.contains_key("hooks"));
+    assert!(loaded.contains_key("allowedTools"));
+}
+
+// === Doctor tests ===
+
+#[test]
+fn test_doctor_healthy_repo_structure() {
+    let dir = tempdir().unwrap();
+    let store = FileStore::init(dir.path()).unwrap();
+    store
+        .create("Task A".into(), Kind::Task, None, None, vec![], vec![])
+        .unwrap();
+
+    let repo = Repo::open(dir.path()).unwrap();
+    let tasks = repo.store.list_all().unwrap();
+    repo.index.rebuild(&tasks).unwrap();
+    let fp = repo.store.fingerprint().unwrap();
+    repo.index.set_fingerprint(&fp).unwrap();
+
+    // Verify core structure
+    assert!(dir.path().join(".tak/config.json").exists());
+    let config: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(dir.path().join(".tak/config.json")).unwrap())
+            .unwrap();
+    assert_eq!(config["version"], 1);
+    assert!(dir.path().join(".tak/counter.json").exists());
+    assert!(dir.path().join(".tak/tasks").is_dir());
+    assert!(dir.path().join(".tak/tasks/1.json").exists());
+    assert!(dir.path().join(".tak/index.db").exists());
+}
+
+#[test]
+fn test_doctor_detects_dangling_parent() {
+    let dir = tempdir().unwrap();
+    let store = FileStore::init(dir.path()).unwrap();
+    store
+        .create("Parent".into(), Kind::Epic, None, None, vec![], vec![])
+        .unwrap();
+    store
+        .create("Child".into(), Kind::Task, None, Some(1), vec![], vec![])
+        .unwrap();
+
+    // Delete parent file directly
+    fs::remove_file(dir.path().join(".tak/tasks/1.json")).unwrap();
+
+    let child: tak::model::Task =
+        serde_json::from_str(&fs::read_to_string(dir.path().join(".tak/tasks/2.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        child.parent,
+        Some(1),
+        "child still references deleted parent"
+    );
+}
+
+#[test]
+fn test_doctor_detects_dangling_dep() {
+    let dir = tempdir().unwrap();
+    let store = FileStore::init(dir.path()).unwrap();
+    store
+        .create("Dep".into(), Kind::Task, None, None, vec![], vec![])
+        .unwrap();
+    store
+        .create("Dependent".into(), Kind::Task, None, None, vec![1], vec![])
+        .unwrap();
+
+    fs::remove_file(dir.path().join(".tak/tasks/1.json")).unwrap();
+
+    let task: tak::model::Task =
+        serde_json::from_str(&fs::read_to_string(dir.path().join(".tak/tasks/2.json")).unwrap())
+            .unwrap();
+    assert!(task.depends_on.contains(&1), "dep on deleted task remains");
+}
+
+#[test]
+fn test_doctor_missing_index() {
+    let dir = tempdir().unwrap();
+    FileStore::init(dir.path()).unwrap();
+    assert!(!dir.path().join(".tak/index.db").exists());
 }

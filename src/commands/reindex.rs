@@ -1,6 +1,6 @@
-use std::path::Path;
 use crate::error::Result;
 use crate::store::repo::Repo;
+use std::path::Path;
 
 pub fn run(repo_root: &Path) -> Result<()> {
     let repo = Repo::open(repo_root)?;

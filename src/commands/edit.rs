@@ -1,9 +1,9 @@
-use std::path::Path;
-use chrono::Utc;
 use crate::error::Result;
 use crate::model::Kind;
 use crate::output::{self, Format};
 use crate::store::repo::Repo;
+use chrono::Utc;
+use std::path::Path;
 
 pub fn run(
     repo_root: &Path,

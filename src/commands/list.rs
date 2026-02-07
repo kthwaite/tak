@@ -1,8 +1,8 @@
-use std::path::Path;
 use crate::error::Result;
 use crate::model::{Kind, Status};
 use crate::output::{self, Format};
 use crate::store::repo::Repo;
+use std::path::Path;
 
 #[allow(clippy::too_many_arguments)]
 pub fn run(
