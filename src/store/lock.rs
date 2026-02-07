@@ -5,7 +5,7 @@ use std::path::Path;
 use crate::error::{Result, TakError};
 
 /// Acquire an exclusive lock on a file, returning the locked File handle.
-/// The lock is released when the File is dropped.
+/// Retries with exponential backoff (1ms to 512ms, ~1s total) before failing.
 pub fn acquire_lock(path: &Path) -> Result<File> {
     let file = OpenOptions::new()
         .read(true)
@@ -14,11 +14,21 @@ pub fn acquire_lock(path: &Path) -> Result<File> {
         .truncate(false)
         .open(path)?;
 
-    file.try_lock_exclusive().map_err(|_| {
-        TakError::Locked(path.display().to_string())
-    })?;
+    let mut delay = std::time::Duration::from_millis(1);
+    let max_delay = std::time::Duration::from_millis(512);
 
-    Ok(file)
+    loop {
+        match file.try_lock_exclusive() {
+            Ok(()) => return Ok(file),
+            Err(_) if delay <= max_delay => {
+                std::thread::sleep(delay);
+                delay *= 2;
+            }
+            Err(_) => {
+                return Err(TakError::Locked(path.display().to_string()));
+            }
+        }
+    }
 }
 
 /// Release lock explicitly (normally handled by Drop).
@@ -44,5 +54,23 @@ mod tests {
         release_lock(file).unwrap();
         // Can acquire again
         let _file = acquire_lock(&lock_path).unwrap();
+    }
+
+    #[test]
+    fn acquire_fails_after_retries_exhausted() {
+        let dir = tempdir().unwrap();
+        let lock_path = dir.path().join("test-timeout.lock");
+
+        let _file = acquire_lock(&lock_path).unwrap();
+
+        let start = std::time::Instant::now();
+        let result = acquire_lock(&lock_path);
+        let elapsed = start.elapsed();
+
+        assert!(result.is_err(), "should fail when lock is held");
+        assert!(
+            elapsed >= std::time::Duration::from_millis(500),
+            "expected retry backoff, but elapsed was {elapsed:?}",
+        );
     }
 }
