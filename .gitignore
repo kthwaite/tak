@@ -3,3 +3,4 @@
 .tak/locks/
 .tak/counter.lock
 .tak/claim.lock
+.worktrees/
