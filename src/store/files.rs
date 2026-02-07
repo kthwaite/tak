@@ -150,7 +150,7 @@ impl FileStore {
 
     /// Compute a fingerprint from task file metadata (id, size, mtime).
     /// Cheap (stat calls, no file reads) and detects additions, deletions,
-    /// and in-place edits.
+    /// and in-place edits. Uses nanosecond mtime to catch rapid same-size edits.
     pub fn fingerprint(&self) -> Result<String> {
         let mut entries = Vec::new();
         for entry in fs::read_dir(self.tasks_dir())? {
@@ -165,7 +165,7 @@ impl FileStore {
                     .modified()?
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
-                    .as_secs();
+                    .as_nanos();
                 let size = meta.len();
                 entries.push((id, size, mtime));
             }
