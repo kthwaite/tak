@@ -158,6 +158,10 @@ impl FileStore {
         Ok(fp)
     }
 
+    pub fn read_many(&self, ids: &[u64]) -> Result<Vec<Task>> {
+        ids.iter().map(|&id| self.read(id)).collect()
+    }
+
     pub fn list_all(&self) -> Result<Vec<Task>> {
         self.list_ids()?
             .into_iter()

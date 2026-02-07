@@ -1,10 +1,9 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use serde::Serialize;
 use crate::error::Result;
+use crate::model::Task;
 use crate::output::{Format, truncate_title};
-use crate::store::files::FileStore;
-use crate::store::index::Index;
 use crate::store::repo::Repo;
 
 #[derive(Serialize)]
@@ -19,20 +18,20 @@ struct TreeNode {
 
 fn build_tree(
     id: u64,
-    store: &FileStore,
-    idx: &Index,
+    children_map: &HashMap<Option<u64>, Vec<u64>>,
+    tasks: &HashMap<u64, Task>,
     blocked_set: &HashSet<u64>,
-) -> Result<TreeNode> {
-    let task = store.read(id)?;
-    let child_ids = idx.children_of(id)?;
+) -> Option<TreeNode> {
+    let task = tasks.get(&id)?;
+    let child_ids = children_map.get(&Some(id)).cloned().unwrap_or_default();
     let children = child_ids
         .into_iter()
-        .map(|cid| build_tree(cid, store, idx, blocked_set))
-        .collect::<Result<Vec<_>>>()?;
+        .filter_map(|cid| build_tree(cid, children_map, tasks, blocked_set))
+        .collect();
 
-    Ok(TreeNode {
+    Some(TreeNode {
         id: task.id,
-        title: task.title,
+        title: task.title.clone(),
         kind: task.kind.to_string(),
         status: task.status.to_string(),
         blocked: blocked_set.contains(&task.id),
@@ -84,19 +83,34 @@ pub fn run(repo_root: &Path, id: Option<u64>, format: Format) -> Result<()> {
     let repo = Repo::open(repo_root)?;
     let blocked_ids: HashSet<u64> = repo.index.blocked()?.into_iter().collect();
 
+    // Pre-load all tasks into memory (one pass over files)
+    let all_tasks = repo.store.list_all()?;
+    let tasks: HashMap<u64, Task> = all_tasks.into_iter().map(|t| (t.id, t)).collect();
+
+    // Build parent→children index in memory
+    let mut children_map: HashMap<Option<u64>, Vec<u64>> = HashMap::new();
+    for task in tasks.values() {
+        children_map.entry(task.parent).or_default().push(task.id);
+    }
+    // Sort children by ID for deterministic output
+    for children in children_map.values_mut() {
+        children.sort();
+    }
+
     if let Some(root_id) = id {
-        let tree = build_tree(root_id, &repo.store, &repo.index, &blocked_ids)?;
-        match format {
-            Format::Json => println!("{}", serde_json::to_string(&tree)?),
-            Format::Pretty => print_tree_pretty(&tree, "", true, true),
-            Format::Minimal => print_tree_minimal(&tree, 0),
+        if let Some(tree) = build_tree(root_id, &children_map, &tasks, &blocked_ids) {
+            match format {
+                Format::Json => println!("{}", serde_json::to_string(&tree)?),
+                Format::Pretty => print_tree_pretty(&tree, "", true, true),
+                Format::Minimal => print_tree_minimal(&tree, 0),
+            }
         }
     } else {
-        let root_ids = repo.index.roots()?;
+        let root_ids = children_map.get(&None).cloned().unwrap_or_default();
         let trees: Vec<TreeNode> = root_ids
             .into_iter()
-            .map(|rid| build_tree(rid, &repo.store, &repo.index, &blocked_ids))
-            .collect::<Result<Vec<_>>>()?;
+            .filter_map(|rid| build_tree(rid, &children_map, &tasks, &blocked_ids))
+            .collect();
 
         match format {
             Format::Json => println!("{}", serde_json::to_string(&trees)?),
