@@ -148,13 +148,34 @@ impl FileStore {
         Ok(ids)
     }
 
-    /// Compute a fingerprint from the sorted list of task file names.
-    /// This is cheap (just readdir, no file reads) and changes whenever
-    /// tasks are added or removed.
+    /// Compute a fingerprint from task file metadata (id, size, mtime).
+    /// Cheap (stat calls, no file reads) and detects additions, deletions,
+    /// and in-place edits.
     pub fn fingerprint(&self) -> Result<String> {
-        let mut ids = self.list_ids()?;
-        ids.sort();
-        let fp = ids.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(",");
+        let mut entries = Vec::new();
+        for entry in fs::read_dir(self.tasks_dir())? {
+            let entry = entry?;
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if let Some(stem) = name.strip_suffix(".json")
+                && let Ok(id) = stem.parse::<u64>()
+            {
+                let meta = entry.metadata()?;
+                let mtime = meta
+                    .modified()?
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                let size = meta.len();
+                entries.push((id, size, mtime));
+            }
+        }
+        entries.sort();
+        let fp = entries
+            .iter()
+            .map(|(id, size, mtime)| format!("{id}:{size}:{mtime}"))
+            .collect::<Vec<_>>()
+            .join(",");
         Ok(fp)
     }
 

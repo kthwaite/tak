@@ -414,6 +414,34 @@ mod tests {
     }
 
     #[test]
+    fn stale_index_detected_after_in_place_edit() {
+        use tempfile::tempdir;
+        use crate::store::files::FileStore;
+        use crate::store::repo::Repo;
+
+        let dir = tempdir().unwrap();
+        let store = FileStore::init(dir.path()).unwrap();
+        store.create("A".into(), Kind::Task, None, None, vec![], vec![]).unwrap();
+
+        let repo = Repo::open(dir.path()).unwrap();
+        let avail = repo.index.available(None).unwrap();
+        assert_eq!(avail, vec![1]);
+        drop(repo);
+
+        // Simulate external edit: change status directly in JSON
+        let task_path = dir.path().join(".tak/tasks/1.json");
+        let data = std::fs::read_to_string(&task_path).unwrap();
+        let modified = data.replace("\"pending\"", "\"in_progress\"");
+        // Sleep to ensure mtime changes on 1-second resolution filesystems
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        std::fs::write(&task_path, modified).unwrap();
+
+        let repo = Repo::open(dir.path()).unwrap();
+        let avail = repo.index.available(None).unwrap();
+        assert!(avail.is_empty(), "task 1 is now in_progress, should not be available");
+    }
+
+    #[test]
     fn rebuild_tolerates_duplicate_deps_and_tags() {
         let idx = Index::open_memory().unwrap();
         let now = Utc::now();
