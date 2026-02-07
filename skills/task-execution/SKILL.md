@@ -9,29 +9,22 @@ Systematic workflow for agents to find available work, claim it, execute it, and
 
 ## Single-Agent Workflow
 
-### 1. Find available work
+### 1. Claim available work
 
 ```bash
-tak next
+tak claim --assignee <your-name>
 ```
 
-This returns the next available task (pending, unblocked, unassigned). If no task is available, it returns `null`.
+This atomically finds the next available task (pending, unblocked, unassigned), sets it to `in_progress`, and assigns it to you. If no task is available, it returns an error.
 
-For more context:
+For previewing work without claiming:
 ```bash
+tak next                # preview the next available task
 tak list --available    # all available tasks
 tak tree --pretty       # full picture of what's left
 ```
 
-### 2. Claim the task
-
-```bash
-tak start <id> --assignee <your-name>
-```
-
-This sets the task to `in_progress` and records who is working on it.
-
-### 3. Understand the task
+### 2. Understand the task
 
 Read the task details:
 ```bash
@@ -43,17 +36,17 @@ Check if the task has a description with acceptance criteria. If not, check the 
 tak show <parent-id>
 ```
 
-### 4. Execute the work
+### 3. Execute the work
 
 Do whatever the task requires — write code, fix bugs, create files, run tests.
 
-### 5. Mark completion
+### 4. Mark completion
 
 ```bash
 tak finish <id>
 ```
 
-### 6. Check for newly unblocked work
+### 5. Check for newly unblocked work
 
 ```bash
 tak list --available
@@ -61,7 +54,7 @@ tak list --available
 
 Finishing a task may unblock dependent tasks. Check what's now available and continue.
 
-### 7. Repeat
+### 6. Repeat
 
 Go back to step 1.
 
@@ -69,19 +62,15 @@ Go back to step 1.
 
 When multiple agents work from the same task list:
 
-### Claiming prevents conflicts
+### Use `claim` for atomic task acquisition
 
-Always use `--assignee` when starting a task:
+Always use `tak claim` instead of `tak next` + `tak start`:
 
 ```bash
-tak start <id> --assignee agent-1
+tak claim --assignee agent-1
 ```
 
-Other agents running `tak next` will not see tasks that are already `in_progress`.
-
-### Check before assuming
-
-Always query `tak next` or `tak list --available` before starting work. Don't assume a task is still available — another agent may have claimed it.
+`tak claim` holds an exclusive file lock while finding and starting the task, preventing two agents from claiming the same work. The `tak next` + `tak start` pattern has a TOCTOU race — another agent can claim the task between the two commands.
 
 ### After pulling changes
 

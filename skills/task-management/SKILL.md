@@ -63,7 +63,10 @@ tak tree --pretty   # with box-drawing characters
 # Edit fields
 tak edit 1 --title "New title" -d "Updated description" --kind epic --tag new-tag
 
-# Start working on a task
+# Claim the next available task (atomic find+start, preferred for multi-agent)
+tak claim --assignee agent-1
+
+# Start a specific task
 tak start 3 --assignee agent-1
 
 # Mark as done
@@ -71,6 +74,22 @@ tak finish 3
 
 # Cancel a task
 tak cancel 5
+
+# Reopen a done or cancelled task
+tak reopen 3
+
+# Clear assignee without changing status
+tak unassign 3
+```
+
+### Deleting tasks
+
+```bash
+# Delete a leaf task (no children or dependents)
+tak delete 5
+
+# Force-delete a task with children/dependents (orphans children, removes deps)
+tak delete 1 --force
 ```
 
 ### Managing dependencies
@@ -92,7 +111,10 @@ tak orphan 5
 ### Finding work
 
 ```bash
-# Get the next available task (unblocked, unassigned, pending)
+# Claim the next available task atomically
+tak claim --assignee <your-name>
+
+# Preview the next available task (without claiming)
 tak next
 
 # Rebuild the index (after git pull, merge, etc.)
@@ -108,7 +130,7 @@ tak reindex
 ## Task Statuses
 
 - **pending**: Not started
-- **in_progress**: Being worked on (set via `tak start`)
+- **in_progress**: Being worked on (set via `tak start` or `tak claim`)
 - **done**: Completed (set via `tak finish`)
 - **cancelled**: Won't do (set via `tak cancel`)
 
@@ -131,8 +153,8 @@ tak list --blocked | jq '.[].id'
 
 ## Workflow
 
-1. Check for available work: `tak next` or `tak list --available`
-2. Claim a task: `tak start <id> --assignee <your-name>`
+1. Check for available work: `tak list --available`
+2. Claim a task: `tak claim --assignee <your-name>`
 3. Do the work
 4. Mark complete: `tak finish <id>`
 5. Check what's unblocked: `tak list --available`
@@ -143,4 +165,4 @@ tak list --blocked | jq '.[].id'
 - Always run `tak reindex` after pulling changes or switching branches
 - The `.tak/tasks/` directory should be committed to git
 - The `.tak/index.db` file is gitignored (rebuilt on demand)
-- When multiple agents work concurrently, use `--assignee` to prevent double-claiming
+- Use `tak claim` instead of `tak next` + `tak start` to avoid TOCTOU races in multi-agent setups
