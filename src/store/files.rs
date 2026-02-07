@@ -65,7 +65,6 @@ impl FileStore {
         fs::write(self.counter_path(), serde_json::to_string(&counter)?)?;
 
         lock::release_lock(lock_file)?;
-        let _ = fs::remove_file(&lock_path);
 
         Ok(id)
     }
@@ -242,5 +241,18 @@ mod tests {
         let dir = tempdir().unwrap();
         let store = FileStore::init(dir.path()).unwrap();
         assert!(store.read(999).is_err());
+    }
+
+    #[test]
+    fn lock_file_persists_after_id_allocation() {
+        let dir = tempdir().unwrap();
+        let store = FileStore::init(dir.path()).unwrap();
+        let lock_path = dir.path().join(".tak").join("counter.lock");
+
+        store.create("A".into(), Kind::Task, None, None, vec![], vec![]).unwrap();
+        assert!(lock_path.exists(), "lock file should persist after first allocation");
+
+        store.create("B".into(), Kind::Task, None, None, vec![], vec![]).unwrap();
+        assert!(lock_path.exists(), "lock file should persist after second allocation");
     }
 }
