@@ -203,6 +203,16 @@ impl Index {
         Ok(ids)
     }
 
+    /// Return IDs of tasks that depend on the given task.
+    pub fn dependents_of(&self, id: u64) -> Result<Vec<u64>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT task_id FROM dependencies WHERE depends_on_id = ?1 ORDER BY task_id",
+        )?;
+        let ids = stmt.query_map(params![id], |row| row.get(0))?
+            .collect::<std::result::Result<Vec<u64>, _>>()?;
+        Ok(ids)
+    }
+
     pub fn children_of(&self, parent_id: u64) -> Result<Vec<u64>> {
         let mut stmt = self.conn.prepare(
             "SELECT id FROM tasks WHERE parent_id = ?1 ORDER BY id",
@@ -479,6 +489,21 @@ mod tests {
             created_at: now, updated_at: now,
         };
         idx.upsert(&t_duped).unwrap();
+    }
+
+    #[test]
+    fn dependents_of_returns_incoming_deps() {
+        let idx = Index::open_memory().unwrap();
+        let tasks = vec![
+            make_task(1, Status::Pending, vec![], None),
+            make_task(2, Status::Pending, vec![1], None),
+            make_task(3, Status::Pending, vec![1], None),
+            make_task(4, Status::Pending, vec![2], None),
+        ];
+        idx.rebuild(&tasks).unwrap();
+        assert_eq!(idx.dependents_of(1).unwrap(), vec![2, 3]);
+        assert_eq!(idx.dependents_of(2).unwrap(), vec![4]);
+        assert!(idx.dependents_of(4).unwrap().is_empty());
     }
 
     #[test]

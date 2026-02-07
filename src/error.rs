@@ -20,6 +20,9 @@ pub enum TakError {
     #[error("no available task to claim")]
     NoAvailableTask,
 
+    #[error("task {0} is referenced by other tasks; use --force to cascade or resolve references first")]
+    TaskInUse(u64),
+
     #[error("locked by another process: {0}")]
     Locked(String),
 
@@ -42,6 +45,7 @@ impl TakError {
             Self::CycleDetected(_) => "cycle_detected",
             Self::InvalidTransition(_, _) => "invalid_transition",
             Self::NoAvailableTask => "no_available_task",
+            Self::TaskInUse(_) => "task_in_use",
             Self::Locked(_) => "locked",
             Self::Io(_) => "io_error",
             Self::Json(_) => "json_error",

@@ -393,12 +393,89 @@ fn test_delete_removes_task() {
     idx.rebuild(&store.list_all().unwrap()).unwrap();
     drop(idx);
 
-    tak::commands::delete::run(dir.path(), 1, Format::Json).unwrap();
+    tak::commands::delete::run(dir.path(), 1, false, Format::Json).unwrap();
 
     // File should be gone
     assert!(store.read(1).is_err());
 
     // Index should not have task 1
+    let repo = Repo::open(dir.path()).unwrap();
+    let avail = repo.index.available(None).unwrap();
+    assert_eq!(avail, vec![2]);
+}
+
+#[test]
+fn test_delete_rejects_when_task_has_children() {
+    let dir = tempdir().unwrap();
+    let store = FileStore::init(dir.path()).unwrap();
+    store.create("Parent".into(), Kind::Epic, None, None, vec![], vec![]).unwrap();
+    store.create("Child".into(), Kind::Task, None, Some(1), vec![], vec![]).unwrap();
+
+    let idx = Index::open(&store.root().join("index.db")).unwrap();
+    idx.rebuild(&store.list_all().unwrap()).unwrap();
+    drop(idx);
+
+    let result = tak::commands::delete::run(dir.path(), 1, false, Format::Json);
+    assert!(matches!(result.unwrap_err(), TakError::TaskInUse(1)));
+    assert!(store.read(1).is_ok());
+}
+
+#[test]
+fn test_delete_rejects_when_task_is_dependency_target() {
+    let dir = tempdir().unwrap();
+    let store = FileStore::init(dir.path()).unwrap();
+    store.create("Dep target".into(), Kind::Task, None, None, vec![], vec![]).unwrap();
+    store.create("Dependent".into(), Kind::Task, None, None, vec![1], vec![]).unwrap();
+
+    let idx = Index::open(&store.root().join("index.db")).unwrap();
+    idx.rebuild(&store.list_all().unwrap()).unwrap();
+    drop(idx);
+
+    let result = tak::commands::delete::run(dir.path(), 1, false, Format::Json);
+    assert!(matches!(result.unwrap_err(), TakError::TaskInUse(1)));
+    assert!(store.read(1).is_ok());
+}
+
+#[test]
+fn test_delete_force_cascades() {
+    let dir = tempdir().unwrap();
+    let store = FileStore::init(dir.path()).unwrap();
+    store.create("Parent".into(), Kind::Epic, None, None, vec![], vec![]).unwrap();
+    store.create("Child".into(), Kind::Task, None, Some(1), vec![], vec![]).unwrap();
+    store.create("Dependent".into(), Kind::Task, None, None, vec![1], vec![]).unwrap();
+
+    let idx = Index::open(&store.root().join("index.db")).unwrap();
+    idx.rebuild(&store.list_all().unwrap()).unwrap();
+    drop(idx);
+
+    tak::commands::delete::run(dir.path(), 1, true, Format::Json).unwrap();
+
+    assert!(store.read(1).is_err());
+    let child = store.read(2).unwrap();
+    assert!(child.parent.is_none(), "child should be orphaned");
+    let dep = store.read(3).unwrap();
+    assert!(dep.depends_on.is_empty(), "dep on deleted task should be removed");
+
+    // Rebuild should succeed
+    let repo = Repo::open(dir.path()).unwrap();
+    let avail = repo.index.available(None).unwrap();
+    assert_eq!(avail, vec![2, 3]);
+}
+
+#[test]
+fn test_delete_leaf_without_force() {
+    let dir = tempdir().unwrap();
+    let store = FileStore::init(dir.path()).unwrap();
+    store.create("Leaf".into(), Kind::Task, None, None, vec![], vec![]).unwrap();
+    store.create("Other".into(), Kind::Task, None, None, vec![], vec![]).unwrap();
+
+    let idx = Index::open(&store.root().join("index.db")).unwrap();
+    idx.rebuild(&store.list_all().unwrap()).unwrap();
+    drop(idx);
+
+    tak::commands::delete::run(dir.path(), 1, false, Format::Json).unwrap();
+    assert!(store.read(1).is_err());
+
     let repo = Repo::open(dir.path()).unwrap();
     let avail = repo.index.available(None).unwrap();
     assert_eq!(avail, vec![2]);
