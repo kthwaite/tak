@@ -40,7 +40,7 @@ fn set_status(
     repo.store.write(&task)?;
     repo.index.upsert(&task)?;
 
-    output::print_task(&task, format);
+    output::print_task(&task, format)?;
     Ok(())
 }
 

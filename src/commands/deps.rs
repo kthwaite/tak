@@ -23,7 +23,7 @@ pub fn depend(repo_root: &Path, id: u64, on: Vec<u64>, format: Format) -> Result
     task.updated_at = Utc::now();
     repo.store.write(&task)?;
     repo.index.upsert(&task)?;
-    output::print_task(&task, format);
+    output::print_task(&task, format)?;
     Ok(())
 }
 
@@ -35,7 +35,7 @@ pub fn undepend(repo_root: &Path, id: u64, on: Vec<u64>, format: Format) -> Resu
     task.updated_at = Utc::now();
     repo.store.write(&task)?;
     repo.index.upsert(&task)?;
-    output::print_task(&task, format);
+    output::print_task(&task, format)?;
     Ok(())
 }
 
@@ -51,7 +51,7 @@ pub fn reparent(repo_root: &Path, id: u64, to: u64, format: Format) -> Result<()
     task.updated_at = Utc::now();
     repo.store.write(&task)?;
     repo.index.upsert(&task)?;
-    output::print_task(&task, format);
+    output::print_task(&task, format)?;
     Ok(())
 }
 
@@ -63,6 +63,6 @@ pub fn orphan(repo_root: &Path, id: u64, format: Format) -> Result<()> {
     task.updated_at = Utc::now();
     repo.store.write(&task)?;
     repo.index.upsert(&task)?;
-    output::print_task(&task, format);
+    output::print_task(&task, format)?;
     Ok(())
 }

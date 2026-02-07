@@ -20,8 +20,11 @@ pub enum TakError {
     #[error("invalid status transition: {0} -> {1}")]
     InvalidTransition(String, String),
 
-    #[error("task {0} is locked by another process")]
-    Locked(u64),
+    #[error("unknown kind: {0} (expected epic, task, or bug)")]
+    UnknownKind(String),
+
+    #[error("locked by another process: {0}")]
+    Locked(String),
 
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),

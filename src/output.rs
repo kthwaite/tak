@@ -1,3 +1,4 @@
+use crate::error::Result;
 use crate::model::Task;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,9 +21,9 @@ impl Format {
     }
 }
 
-pub fn print_task(task: &Task, format: Format) {
+pub fn print_task(task: &Task, format: Format) -> Result<()> {
     match format {
-        Format::Json => println!("{}", serde_json::to_string(&task).unwrap()),
+        Format::Json => println!("{}", serde_json::to_string(&task)?),
         Format::Pretty => {
             println!("[{}] {} ({})", task.id, task.title, task.status);
             if let Some(ref desc) = task.description {
@@ -48,6 +49,7 @@ pub fn print_task(task: &Task, format: Format) {
             println!("{:>4} {:12} {:6} {:10} {}", task.id, title, task.kind, task.status, assignee);
         }
     }
+    Ok(())
 }
 
 fn truncate_title(title: &str, max_len: usize) -> String {
@@ -59,12 +61,12 @@ fn truncate_title(title: &str, max_len: usize) -> String {
     }
 }
 
-pub fn print_tasks(tasks: &[Task], format: Format) {
+pub fn print_tasks(tasks: &[Task], format: Format) -> Result<()> {
     match format {
-        Format::Json => println!("{}", serde_json::to_string(tasks).unwrap()),
+        Format::Json => println!("{}", serde_json::to_string(tasks)?),
         Format::Pretty => {
             for task in tasks {
-                print_task(task, Format::Pretty);
+                print_task(task, Format::Pretty)?;
                 println!();
             }
         }
@@ -78,4 +80,5 @@ pub fn print_tasks(tasks: &[Task], format: Format) {
             }
         }
     }
+    Ok(())
 }

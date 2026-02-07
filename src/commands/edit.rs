@@ -21,18 +21,14 @@ pub fn run(
         task.title = t;
     }
     if let Some(d) = description {
-        task.description = Some(d);
+        if d.is_empty() {
+            task.description = None;
+        } else {
+            task.description = Some(d);
+        }
     }
     if let Some(k) = kind {
-        task.kind = match k.as_str() {
-            "epic" => Kind::Epic,
-            "task" => Kind::Task,
-            "bug" => Kind::Bug,
-            other => {
-                eprintln!("unknown kind: {other}, keeping current");
-                task.kind
-            }
-        };
+        task.kind = k.parse::<Kind>()?;
     }
     if let Some(t) = tags {
         task.tags = t;
@@ -42,6 +38,6 @@ pub fn run(
     repo.store.write(&task)?;
     repo.index.upsert(&task)?;
 
-    output::print_task(&task, format);
+    output::print_task(&task, format)?;
     Ok(())
 }

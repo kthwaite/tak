@@ -50,7 +50,7 @@ impl FileStore {
 
     fn next_id(&self) -> Result<u64> {
         let lock_path = self.root.join("counter.lock");
-        let _lock = lock::acquire_lock(&lock_path)?;
+        let lock_file = lock::acquire_lock(&lock_path)?;
 
         let data = fs::read_to_string(self.counter_path())?;
 
@@ -63,6 +63,9 @@ impl FileStore {
         let id = counter.next_id;
         counter.next_id += 1;
         fs::write(self.counter_path(), serde_json::to_string(&counter)?)?;
+
+        lock::release_lock(lock_file)?;
+        let _ = fs::remove_file(&lock_path);
 
         Ok(id)
     }

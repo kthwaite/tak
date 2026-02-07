@@ -9,7 +9,7 @@ pub fn run(repo_root: &Path, assignee: Option<String>, format: Format) -> Result
 
     if let Some(&id) = available.first() {
         let task = repo.store.read(id)?;
-        output::print_task(&task, format);
+        output::print_task(&task, format)?;
     } else if format != Format::Json {
         println!("No available tasks");
     } else {

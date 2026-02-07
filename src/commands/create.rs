@@ -15,17 +15,9 @@ pub fn run(
     format: Format,
 ) -> Result<()> {
     let repo = Repo::open(repo_root)?;
-    let kind = match kind_str {
-        "epic" => Kind::Epic,
-        "task" => Kind::Task,
-        "bug" => Kind::Bug,
-        other => {
-            eprintln!("unknown kind: {other}, using 'task'");
-            Kind::Task
-        }
-    };
+    let kind: Kind = kind_str.parse()?;
     let task = repo.store.create(title, kind, description, parent, depends_on, tags)?;
     repo.index.upsert(&task)?;
-    output::print_task(&task, format);
+    output::print_task(&task, format)?;
     Ok(())
 }

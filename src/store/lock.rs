@@ -15,7 +15,7 @@ pub fn acquire_lock(path: &Path) -> Result<File> {
         .open(path)?;
 
     file.try_lock_exclusive().map_err(|_| {
-        TakError::Locked(0) // generic lock error
+        TakError::Locked(path.display().to_string())
     })?;
 
     Ok(file)

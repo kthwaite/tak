@@ -96,7 +96,7 @@ pub fn run(repo_root: &Path, id: Option<u64>, format: Format) -> Result<()> {
     if let Some(root_id) = id {
         let tree = build_tree(root_id, &repo.store, &repo.index, &blocked_ids)?;
         match format {
-            Format::Json => println!("{}", serde_json::to_string(&tree).unwrap()),
+            Format::Json => println!("{}", serde_json::to_string(&tree)?),
             Format::Pretty => print_tree_pretty(&tree, "", true, true),
             Format::Minimal => print_tree_minimal(&tree, 0),
         }
@@ -108,7 +108,7 @@ pub fn run(repo_root: &Path, id: Option<u64>, format: Format) -> Result<()> {
             .collect::<Result<Vec<_>>>()?;
 
         match format {
-            Format::Json => println!("{}", serde_json::to_string(&trees).unwrap()),
+            Format::Json => println!("{}", serde_json::to_string(&trees)?),
             Format::Pretty => {
                 for tree in &trees {
                     print_tree_pretty(tree, "", true, true);

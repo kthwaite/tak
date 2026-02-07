@@ -71,6 +71,19 @@ impl std::fmt::Display for Kind {
     }
 }
 
+impl std::str::FromStr for Kind {
+    type Err = crate::error::TakError;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "epic" => Ok(Self::Epic),
+            "task" => Ok(Self::Task),
+            "bug" => Ok(Self::Bug),
+            other => Err(crate::error::TakError::UnknownKind(other.to_string())),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
