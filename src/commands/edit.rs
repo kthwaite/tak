@@ -34,6 +34,7 @@ pub fn run(
         task.tags = t;
     }
 
+    task.normalize();
     task.updated_at = Utc::now();
     repo.store.write(&task)?;
     repo.index.upsert(&task)?;

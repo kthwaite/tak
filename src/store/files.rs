@@ -87,7 +87,7 @@ impl FileStore {
 
         let id = self.next_id()?;
         let now = Utc::now();
-        let task = Task {
+        let mut task = Task {
             id,
             title,
             description,
@@ -100,6 +100,7 @@ impl FileStore {
             created_at: now,
             updated_at: now,
         };
+        task.normalize();
 
         let json = serde_json::to_string_pretty(&task)?;
         fs::write(self.task_path(id), json)?;
@@ -241,6 +242,34 @@ mod tests {
         let dir = tempdir().unwrap();
         let store = FileStore::init(dir.path()).unwrap();
         assert!(store.read(999).is_err());
+    }
+
+    #[test]
+    fn create_deduplicates_tags_and_deps() {
+        let dir = tempdir().unwrap();
+        let store = FileStore::init(dir.path()).unwrap();
+
+        // Create two tasks so dep references are valid
+        store.create("Dep A".into(), Kind::Task, None, None, vec![], vec![]).unwrap();
+        store.create("Dep B".into(), Kind::Task, None, None, vec![], vec![]).unwrap();
+
+        // Create a task with duplicate tags and deps
+        let task = store.create(
+            "Duped".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![1, 2, 1, 2, 1],
+            vec!["x".into(), "y".into(), "x".into()],
+        ).unwrap();
+
+        assert_eq!(task.depends_on, vec![1, 2]);
+        assert_eq!(task.tags, vec!["x", "y"]);
+
+        // Verify the persisted file is also deduped
+        let read = store.read(task.id).unwrap();
+        assert_eq!(read.depends_on, vec![1, 2]);
+        assert_eq!(read.tags, vec!["x", "y"]);
     }
 
     #[test]

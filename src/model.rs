@@ -84,6 +84,16 @@ impl std::str::FromStr for Kind {
     }
 }
 
+impl Task {
+    /// Deduplicate and sort `depends_on` and `tags` for deterministic storage.
+    pub fn normalize(&mut self) {
+        self.depends_on.sort();
+        self.depends_on.dedup();
+        self.tags.sort();
+        self.tags.dedup();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
