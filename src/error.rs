@@ -36,4 +36,22 @@ pub enum TakError {
     Db(#[from] rusqlite::Error),
 }
 
+impl TakError {
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::NotInitialized => "not_initialized",
+            Self::AlreadyInitialized => "already_initialized",
+            Self::TaskNotFound(_) => "task_not_found",
+            Self::TaskAlreadyExists(_) => "task_already_exists",
+            Self::CycleDetected(_) => "cycle_detected",
+            Self::InvalidTransition(_, _) => "invalid_transition",
+            Self::NoAvailableTask => "no_available_task",
+            Self::Locked(_) => "locked",
+            Self::Io(_) => "io_error",
+            Self::Json(_) => "json_error",
+            Self::Db(_) => "db_error",
+        }
+    }
+}
+
 pub type Result<T> = std::result::Result<T, TakError>;

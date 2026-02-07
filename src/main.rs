@@ -113,9 +113,7 @@ enum Commands {
     Reindex,
 }
 
-fn run(cli: Cli) -> tak::error::Result<()> {
-    let format = if cli.pretty { Format::Pretty } else { cli.format };
-
+fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
     if matches!(cli.command, Commands::Init) {
         let cwd = std::env::current_dir()?;
         return tak::commands::init::run(&cwd);
@@ -178,8 +176,20 @@ fn run(cli: Cli) -> tak::error::Result<()> {
 
 fn main() {
     let cli = Cli::parse();
-    if let Err(e) = run(cli) {
-        eprintln!("error: {e}");
+    let format = if cli.pretty { Format::Pretty } else { cli.format };
+    if let Err(e) = run(cli, format) {
+        match format {
+            Format::Json => {
+                eprintln!(
+                    "{}",
+                    serde_json::json!({
+                        "error": e.code(),
+                        "message": e.to_string()
+                    })
+                );
+            }
+            _ => eprintln!("error: {e}"),
+        }
         std::process::exit(1);
     }
 }
