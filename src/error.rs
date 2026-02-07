@@ -20,6 +20,9 @@ pub enum TakError {
     #[error("invalid status transition: {0} -> {1}")]
     InvalidTransition(String, String),
 
+    #[error("no available task to claim")]
+    NoAvailableTask,
+
     #[error("locked by another process: {0}")]
     Locked(String),
 

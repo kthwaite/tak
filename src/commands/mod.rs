@@ -1,3 +1,4 @@
+pub mod claim;
 pub mod create;
 pub mod deps;
 pub mod edit;

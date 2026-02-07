@@ -309,6 +309,30 @@ fn test_list_filters() {
 }
 
 #[test]
+fn test_claim_assigns_next_available() {
+    let dir = tempdir().unwrap();
+    let store = FileStore::init(dir.path()).unwrap();
+
+    store.create("Task A".into(), Kind::Task, None, None, vec![], vec![]).unwrap();
+    store.create("Task B".into(), Kind::Task, None, None, vec![1], vec![]).unwrap();
+
+    let idx = Index::open(&store.root().join("index.db")).unwrap();
+    idx.rebuild(&store.list_all().unwrap()).unwrap();
+    drop(idx);
+
+    // Claim as agent-1 — should get task 1 (only available)
+    tak::commands::claim::run(dir.path(), "agent-1".into(), None, Format::Json).unwrap();
+
+    let t1 = store.read(1).unwrap();
+    assert_eq!(t1.status, Status::InProgress);
+    assert_eq!(t1.assignee.as_deref(), Some("agent-1"));
+
+    // Task 2 is still blocked, nothing available
+    let result = tak::commands::claim::run(dir.path(), "agent-2".into(), None, Format::Json);
+    assert!(matches!(result.unwrap_err(), TakError::NoAvailableTask));
+}
+
+#[test]
 fn test_depend_rolls_back_on_partial_failure() {
     let dir = tempdir().unwrap();
     let store = FileStore::init(dir.path()).unwrap();

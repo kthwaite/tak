@@ -72,6 +72,13 @@ enum Commands {
     Cancel {
         id: u64,
     },
+    Claim {
+        #[arg(long, required = true)]
+        assignee: String,
+        /// Only claim tasks with this tag
+        #[arg(long)]
+        tag: Option<String>,
+    },
     Depend {
         id: u64,
         #[arg(long, required = true, value_delimiter = ',')]
@@ -148,6 +155,9 @@ fn run(cli: Cli) -> tak::error::Result<()> {
         }
         Commands::Finish { id } => tak::commands::lifecycle::finish(&root, id, format),
         Commands::Cancel { id } => tak::commands::lifecycle::cancel(&root, id, format),
+        Commands::Claim { assignee, tag } => {
+            tak::commands::claim::run(&root, assignee, tag, format)
+        }
         Commands::Depend { id, on } => tak::commands::deps::depend(&root, id, on, format),
         Commands::Undepend { id, on } => tak::commands::deps::undepend(&root, id, on, format),
         Commands::Reparent { id, to } => tak::commands::deps::reparent(&root, id, to, format),

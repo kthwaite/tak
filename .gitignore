@@ -2,3 +2,4 @@
 .tak/index.db*
 .tak/locks/
 .tak/counter.lock
+.tak/claim.lock
