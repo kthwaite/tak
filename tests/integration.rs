@@ -1779,14 +1779,13 @@ fn test_log_shows_lifecycle_history() {
     tak::commands::lifecycle::start(dir.path(), 1, Some("agent-1".into()), Format::Json).unwrap();
     tak::commands::lifecycle::finish(dir.path(), 1, Format::Json).unwrap();
 
-    // Verify history file was created with entries
+    // Verify history file was created with structured events
     let repo = tak::store::repo::Repo::open(dir.path()).unwrap();
-    let history = repo.sidecars.read_history(1).unwrap().unwrap();
-    let lines: Vec<&str> = history.lines().collect();
-    assert_eq!(lines.len(), 2);
-    assert!(lines[0].contains("started"));
-    assert!(lines[0].contains("agent-1"));
-    assert!(lines[1].contains("finished"));
+    let events = repo.sidecars.read_history(1).unwrap();
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0].event, "started");
+    assert_eq!(events[0].agent.as_deref(), Some("agent-1"));
+    assert_eq!(events[1].event, "finished");
 }
 
 #[test]
@@ -1909,13 +1908,13 @@ fn test_delete_cleans_up_sidecars() {
     tak::commands::lifecycle::finish(dir.path(), 1, Format::Json).unwrap();
 
     assert!(dir.path().join(".tak/context/1.md").exists());
-    assert!(dir.path().join(".tak/history/1.log").exists());
+    assert!(dir.path().join(".tak/history/1.jsonl").exists());
 
     // Delete task — should also clean up sidecars
     tak::commands::delete::run(dir.path(), 1, false, Format::Json).unwrap();
 
     assert!(!dir.path().join(".tak/context/1.md").exists());
-    assert!(!dir.path().join(".tak/history/1.log").exists());
+    assert!(!dir.path().join(".tak/history/1.jsonl").exists());
 }
 
 #[test]
@@ -1931,4 +1930,48 @@ fn test_context_nonexistent_task_fails() {
 
     let result = tak::commands::context::run(dir.path(), 999, None, false, Format::Json);
     assert!(matches!(result.unwrap_err(), TakError::TaskNotFound(999)));
+}
+
+#[test]
+fn test_verify_stores_result() {
+    let dir = tempdir().unwrap();
+    let store = FileStore::init(dir.path()).unwrap();
+    fs::create_dir_all(dir.path().join(".tak/context")).unwrap();
+    fs::create_dir_all(dir.path().join(".tak/history")).unwrap();
+    fs::create_dir_all(dir.path().join(".tak/verification_results")).unwrap();
+
+    store
+        .create(
+            "Verifiable".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![],
+            vec![],
+            Contract {
+                objective: None,
+                acceptance_criteria: vec![],
+                verification: vec!["true".into(), "echo ok".into()],
+                constraints: vec![],
+            },
+            Planning::default(),
+        )
+        .unwrap();
+
+    let idx = Index::open(&store.root().join("index.db")).unwrap();
+    idx.rebuild(&store.list_all().unwrap()).unwrap();
+    drop(idx);
+
+    // Run verify — should store results
+    tak::commands::verify::run(dir.path(), 1, Format::Json).unwrap();
+
+    // Read back the verification result
+    let repo = tak::store::repo::Repo::open(dir.path()).unwrap();
+    let vr = repo.sidecars.read_verification(1).unwrap().unwrap();
+    assert!(vr.passed);
+    assert_eq!(vr.results.len(), 2);
+    assert!(vr.results[0].passed);
+    assert_eq!(vr.results[0].command, "true");
+    assert!(vr.results[1].passed);
+    assert_eq!(vr.results[1].command, "echo ok");
 }

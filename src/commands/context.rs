@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use crate::error::{Result, TakError};
+use crate::error::Result;
 use crate::output::Format;
 use crate::store::repo::Repo;
 
@@ -56,7 +56,7 @@ pub fn run(
                 println!("{}", serde_json::json!({"id": id, "context": null}));
             }
             _ => {
-                return Err(TakError::NoContext(id));
+                eprintln!("No context notes for task {id}");
             }
         },
     }

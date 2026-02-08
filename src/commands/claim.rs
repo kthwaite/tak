@@ -7,6 +7,7 @@ use crate::model::Status;
 use crate::output::{self, Format};
 use crate::store::lock;
 use crate::store::repo::Repo;
+use crate::store::sidecars::HistoryEvent;
 use crate::{git, model};
 
 pub fn run(repo_root: &Path, assignee: String, tag: Option<String>, format: Format) -> Result<()> {
@@ -65,14 +66,13 @@ pub fn run(repo_root: &Path, assignee: String, tag: Option<String>, format: Form
     repo.index.upsert(&task)?;
 
     // Best-effort history logging
-    let _ = repo.sidecars.append_history(
-        id,
-        &format!(
-            "claimed (assignee: {}, attempt #{})",
-            task.assignee.as_deref().unwrap_or("?"),
-            task.execution.attempt_count,
-        ),
-    );
+    let evt = HistoryEvent {
+        timestamp: Utc::now(),
+        event: "claimed".into(),
+        agent: task.assignee.clone(),
+        detail: serde_json::Map::new(),
+    };
+    let _ = repo.sidecars.append_history(id, &evt);
 
     lock::release_lock(lock_file)?;
 

@@ -1,35 +1,46 @@
 use std::path::Path;
 
-use crate::error::{Result, TakError};
+use crate::error::Result;
 use crate::output::Format;
 use crate::store::repo::Repo;
 
 /// Display the history log for a task.
 ///
-/// - `tak log ID` — print history to stdout
+/// - `tak log ID` -- print history to stdout
 pub fn run(repo_root: &Path, id: u64, format: Format) -> Result<()> {
     let repo = Repo::open(repo_root)?;
 
     // Verify task exists
     let _ = repo.store.read(id)?;
 
-    match repo.sidecars.read_history(id)? {
-        Some(text) => match format {
+    let events = repo.sidecars.read_history(id)?;
+
+    if events.is_empty() {
+        match format {
             Format::Json => {
-                let entries: Vec<&str> = text.lines().collect();
-                println!("{}", serde_json::json!({"id": id, "history": entries}));
-            }
-            _ => print!("{text}"),
-        },
-        None => match format {
-            Format::Json => {
-                let empty: Vec<String> = vec![];
-                println!("{}", serde_json::json!({"id": id, "history": empty}));
+                println!("[]");
             }
             _ => {
-                return Err(TakError::NoHistory(id));
+                eprintln!("No history for task {id}");
             }
-        },
+        }
+        return Ok(());
+    }
+
+    match format {
+        Format::Json => {
+            println!("{}", serde_json::to_string(&events).unwrap());
+        }
+        _ => {
+            for evt in &events {
+                let ts = evt.timestamp.format("%Y-%m-%d %H:%M:%S");
+                let agent_part = match &evt.agent {
+                    Some(a) => format!(" ({a})"),
+                    None => String::new(),
+                };
+                println!("  {ts} {}{agent_part}", evt.event);
+            }
+        }
     }
     Ok(())
 }

@@ -38,7 +38,7 @@ Tasks are JSON files in `.tak/tasks/` (the git-committed source of truth). A git
 - **`src/output.rs`** — `Format` enum (Json/Pretty/Minimal); `print_task(s)` functions
 - **`src/store/files.rs`** — `FileStore`: CRUD on `.tak/tasks/*.json`, atomic ID allocation via counter.json + fs2 lock
 - **`src/store/index.rs`** — `Index`: SQLite with WAL mode, FK-enabled. Cycle detection via recursive CTEs. Two-pass rebuild to handle forward references.
-- **`src/store/sidecars.rs`** — `SidecarStore`: manages per-task context notes (`.tak/context/{id}.md`) and history logs (`.tak/history/{id}.log`)
+- **`src/store/sidecars.rs`** — `SidecarStore`: manages per-task context notes (`.tak/context/{id}.md`), structured history logs (`.tak/history/{id}.jsonl`), verification results (`.tak/verification_results/{id}.json`), and artifact directories (`.tak/artifacts/{id}/`); defines `HistoryEvent` (timestamp/event/agent/detail), `VerificationResult` (timestamp/results/passed), `CommandResult` (command/exit_code/stdout/stderr/passed)
 - **`src/store/repo.rs`** — `Repo`: wraps FileStore + Index + SidecarStore. Walks up from CWD to find `.tak/`. Auto-rebuilds index on open if missing or stale (file fingerprint mismatch).
 - **`src/commands/`** — One file per command group. Most take `&Path` (repo root) and return `Result<()>`. `setup` and `doctor` don't require a repo.
 - **`src/main.rs`** — Clap derive CLI with 25 subcommands and global `--format`/`--pretty` flags. Uses `ValueEnum` for `Format`, `Kind`, `Status`; `conflicts_with` for `--available`/`--blocked`.
@@ -49,7 +49,7 @@ Tasks are JSON files in `.tak/tasks/` (the git-committed source of truth). A git
 
 | Command | Purpose |
 |---------|---------|
-| `init` | Initialize `.tak/` directory (including `context/` and `history/` sidecar dirs) |
+| `init` | Initialize `.tak/` directory (including `context/`, `history/`, `artifacts/`, `verification_results/` sidecar dirs + `.gitignore`) |
 | `create TITLE` | Create task (`--kind`, `--parent`, `--depends-on`, `-d`, `--tag`, `--objective`, `--verify`, `--constraint`, `--criterion`, `--priority`, `--estimate`, `--skill`, `--risk`) |
 | `delete ID` | Delete a task (`--force` to cascade: orphans children, removes deps); also cleans up sidecar files |
 | `show ID` | Display a single task |
@@ -69,8 +69,8 @@ Tasks are JSON files in `.tak/tasks/` (the git-committed source of truth). A git
 | `tree [ID]` | Display parent-child hierarchy |
 | `next` | Show next available task (`--assignee`) |
 | `context ID` | Read/write context notes (`--set TEXT`, `--clear`) |
-| `log ID` | Display task history log |
-| `verify ID` | Run contract verification commands; exits 1 if any fail |
+| `log ID` | Display structured JSONL task history log |
+| `verify ID` | Run contract verification commands; stores result; exits 1 if any fail |
 | `reindex` | Rebuild SQLite index from files |
 | `setup` | Install Claude Code integration (`--global`, `--check`, `--remove`, `--plugin`) |
 | `doctor` | Validate installation health (`--fix`) |
@@ -108,25 +108,29 @@ Errors are structured JSON on stderr when `--format json`: `{"error":"<code>","m
 - `start` and `claim` both increment `execution.attempt_count` to track retry attempts
 - `handoff` transitions in_progress -> pending, clears assignee, records `execution.handoff_summary`
 - `cancel --reason` stores the reason in `execution.last_error`
-- Sidecar files: `SidecarStore` manages per-task `context/{id}.md` (free-form notes) and `history/{id}.log` (append-only event log); both git-committed
-- Lifecycle commands (start, finish, cancel, handoff, reopen, unassign, claim) auto-append timestamped entries to history logs; failures are best-effort (never fail the main command)
+- Sidecar files: `SidecarStore` manages per-task `context/{id}.md` (free-form notes, git-committed), `history/{id}.jsonl` (structured JSONL event log, git-committed), `verification_results/{id}.json` (gitignored), and `artifacts/{id}/` (gitignored)
+- Lifecycle commands (start, finish, cancel, handoff, reopen, unassign, claim) auto-append structured `HistoryEvent` entries to JSONL history logs; failures are best-effort (never fail the main command)
+- `verify` command stores `VerificationResult` to `.tak/verification_results/{id}.json` after running contract verification commands
 - `context` command reads/writes free-form context notes; `--set` overwrites, `--clear` deletes
 - `log` command displays history log; JSON mode returns array of lines, pretty mode prints raw
 - `verify` command runs `contract.verification` commands via `sh -c` from repo root; reports pass/fail per command; exits 1 if any fail
-- `delete` cleans up sidecar files (context + history) after removing the task file and index entry
+- `delete` cleans up all sidecar files (context + history + verification results + artifacts) after removing the task file and index entry
 
 ### On-Disk Layout
 
 ```
 .tak/
-  config.json          # {"version": 2}
-  counter.json         # {"next_id": N}  (fs2-locked during allocation)
-  counter.lock         # Persistent lock file for ID allocation (gitignored)
-  claim.lock           # Persistent lock file for atomic claim (gitignored)
-  tasks/*.json         # One file per task (committed to git)
-  context/*.md         # Per-task context notes (committed to git)
-  history/*.log        # Per-task append-only history logs (committed to git)
-  index.db             # SQLite index (gitignored, rebuilt on demand)
+  .gitignore                     # Ignores index.db, *.lock, artifacts/, verification_results/
+  config.json                    # {"version": 2}
+  counter.json                   # {"next_id": N}  (fs2-locked during allocation)
+  counter.lock                   # Persistent lock file for ID allocation (gitignored)
+  claim.lock                     # Persistent lock file for atomic claim (gitignored)
+  tasks/*.json                   # One file per task (committed to git)
+  context/*.md                   # Per-task context notes (committed to git)
+  history/*.jsonl                # Per-task structured JSONL history logs (committed to git)
+  verification_results/*.json    # Per-task verification results (gitignored)
+  artifacts/{id}/                # Per-task artifact directories (gitignored)
+  index.db                       # SQLite index (gitignored, rebuilt on demand)
 ```
 
 ## Claude Code Plugin
