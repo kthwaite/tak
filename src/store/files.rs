@@ -79,6 +79,7 @@ impl FileStore {
         depends_on: Vec<u64>,
         tags: Vec<String>,
         contract: Contract,
+        planning: Planning,
     ) -> Result<Task> {
         if let Some(pid) = parent {
             self.read(pid)?;
@@ -100,7 +101,7 @@ impl FileStore {
             assignee: None,
             tags,
             contract,
-            planning: Planning::default(),
+            planning,
             created_at: now,
             updated_at: now,
             extensions: serde_json::Map::new(),
@@ -234,6 +235,7 @@ mod tests {
                 vec![],
                 vec![],
                 Contract::default(),
+                Planning::default(),
             )
             .unwrap();
         assert_eq!(task.id, 1);
@@ -255,6 +257,7 @@ mod tests {
                 vec![],
                 vec![],
                 Contract::default(),
+                Planning::default(),
             )
             .unwrap();
         let t2 = store
@@ -266,6 +269,7 @@ mod tests {
                 vec![],
                 vec![],
                 Contract::default(),
+                Planning::default(),
             )
             .unwrap();
         let t3 = store
@@ -277,6 +281,7 @@ mod tests {
                 vec![],
                 vec![],
                 Contract::default(),
+                Planning::default(),
             )
             .unwrap();
         assert_eq!(t1.id, 1);
@@ -297,6 +302,7 @@ mod tests {
                 vec![],
                 vec![],
                 Contract::default(),
+                Planning::default(),
             )
             .unwrap();
         store
@@ -308,6 +314,7 @@ mod tests {
                 vec![],
                 vec![],
                 Contract::default(),
+                Planning::default(),
             )
             .unwrap();
         let all = store.list_all().unwrap();
@@ -327,6 +334,7 @@ mod tests {
                 vec![],
                 vec![],
                 Contract::default(),
+                Planning::default(),
             )
             .unwrap();
         store.delete(1).unwrap();
@@ -355,6 +363,7 @@ mod tests {
                 vec![],
                 vec![],
                 Contract::default(),
+                Planning::default(),
             )
             .unwrap();
         store
@@ -366,6 +375,7 @@ mod tests {
                 vec![],
                 vec![],
                 Contract::default(),
+                Planning::default(),
             )
             .unwrap();
 
@@ -379,6 +389,7 @@ mod tests {
                 vec![1, 2, 1, 2, 1],
                 vec!["x".into(), "y".into(), "x".into()],
                 Contract::default(),
+                Planning::default(),
             )
             .unwrap();
 
@@ -412,6 +423,7 @@ mod tests {
                 vec![],
                 vec![],
                 Contract::default(),
+                Planning::default(),
             )
             .unwrap();
         assert!(
@@ -428,6 +440,7 @@ mod tests {
                 vec![],
                 vec![],
                 Contract::default(),
+                Planning::default(),
             )
             .unwrap();
         assert!(

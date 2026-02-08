@@ -1,5 +1,5 @@
 use crate::error::Result;
-use crate::model::Kind;
+use crate::model::{Estimate, Kind, Priority, Risk};
 use crate::output::{self, Format};
 use crate::store::repo::Repo;
 use chrono::Utc;
@@ -17,6 +17,10 @@ pub fn run(
     verify: Option<Vec<String>>,
     constraint: Option<Vec<String>>,
     criterion: Option<Vec<String>>,
+    priority: Option<Priority>,
+    estimate: Option<Estimate>,
+    skill: Option<Vec<String>>,
+    risk: Option<Risk>,
     format: Format,
 ) -> Result<()> {
     let repo = Repo::open(repo_root)?;
@@ -55,6 +59,19 @@ pub fn run(
     }
     if let Some(c) = criterion {
         task.contract.acceptance_criteria = c;
+    }
+
+    if let Some(p) = priority {
+        task.planning.priority = Some(p);
+    }
+    if let Some(e) = estimate {
+        task.planning.estimate = Some(e);
+    }
+    if let Some(s) = skill {
+        task.planning.required_skills = s;
+    }
+    if let Some(r) = risk {
+        task.planning.risk = Some(r);
     }
 
     task.normalize();

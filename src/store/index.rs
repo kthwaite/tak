@@ -451,6 +451,7 @@ mod tests {
                 vec![],
                 vec![],
                 Contract::default(),
+                Planning::default(),
             )
             .unwrap();
         store
@@ -462,6 +463,7 @@ mod tests {
                 vec![],
                 vec![],
                 Contract::default(),
+                Planning::default(),
             )
             .unwrap();
 
@@ -497,6 +499,7 @@ mod tests {
                 vec![],
                 vec![],
                 Contract::default(),
+                Planning::default(),
             )
             .unwrap();
 

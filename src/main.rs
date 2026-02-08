@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use tak::model::{DepType, Kind, Status};
+use tak::model::{DepType, Estimate, Kind, Priority, Risk, Status};
 use tak::output::Format;
 
 #[derive(Parser)]
@@ -54,6 +54,18 @@ enum Commands {
         /// Acceptance criterion (repeatable)
         #[arg(long = "criterion")]
         criterion: Vec<String>,
+        /// Task priority
+        #[arg(long, value_enum)]
+        priority: Option<Priority>,
+        /// Size estimate
+        #[arg(long, value_enum)]
+        estimate: Option<Estimate>,
+        /// Required skill (repeatable)
+        #[arg(long = "skill")]
+        skill: Vec<String>,
+        /// Risk level
+        #[arg(long, value_enum)]
+        risk: Option<Risk>,
     },
     /// Delete a task by ID
     Delete {
@@ -120,6 +132,18 @@ enum Commands {
         /// Replace acceptance criteria (repeatable)
         #[arg(long = "criterion")]
         criterion: Option<Vec<String>>,
+        /// Set priority
+        #[arg(long, value_enum)]
+        priority: Option<Priority>,
+        /// Set size estimate
+        #[arg(long, value_enum)]
+        estimate: Option<Estimate>,
+        /// Replace required skills (repeatable)
+        #[arg(long = "skill")]
+        skill: Option<Vec<String>>,
+        /// Set risk level
+        #[arg(long, value_enum)]
+        risk: Option<Risk>,
     },
     /// Set a task to in_progress
     Start {
@@ -265,12 +289,22 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
             verify,
             constraint,
             criterion,
+            priority,
+            estimate,
+            skill,
+            risk,
         } => {
             let contract = tak::model::Contract {
                 objective,
                 acceptance_criteria: criterion,
                 verification: verify,
                 constraints: constraint,
+            };
+            let planning = tak::model::Planning {
+                priority,
+                estimate,
+                required_skills: skill,
+                risk,
             };
             tak::commands::create::run(
                 &root,
@@ -281,6 +315,7 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
                 depends_on,
                 tag,
                 contract,
+                planning,
                 format,
             )
         }
@@ -315,6 +350,10 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
             verify,
             constraint,
             criterion,
+            priority,
+            estimate,
+            skill,
+            risk,
         } => tak::commands::edit::run(
             &root,
             id,
@@ -326,6 +365,10 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
             verify,
             constraint,
             criterion,
+            priority,
+            estimate,
+            skill,
+            risk,
             format,
         ),
         Commands::Start { id, assignee } => {

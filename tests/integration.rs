@@ -4,7 +4,7 @@ use tempfile::tempdir;
 
 use chrono::Utc;
 use tak::error::TakError;
-use tak::model::{Contract, DepType, Kind, Status};
+use tak::model::{Contract, DepType, Kind, Planning, Status};
 use tak::output::Format;
 use tak::store::files::FileStore;
 use tak::store::index::Index;
@@ -27,6 +27,7 @@ fn test_full_workflow() {
             vec![],
             vec![],
             Contract::default(),
+            Planning::default(),
         )
         .unwrap();
     assert_eq!(epic.id, 1);
@@ -41,6 +42,7 @@ fn test_full_workflow() {
             vec![],
             vec![],
             Contract::default(),
+            Planning::default(),
         )
         .unwrap();
     let _t3 = store
@@ -52,6 +54,7 @@ fn test_full_workflow() {
             vec![2],
             vec![],
             Contract::default(),
+            Planning::default(),
         )
         .unwrap();
     let _t4 = store
@@ -63,6 +66,7 @@ fn test_full_workflow() {
             vec![3],
             vec![],
             Contract::default(),
+            Planning::default(),
         )
         .unwrap();
 
@@ -133,6 +137,7 @@ fn test_cycle_rejection() {
             vec![],
             vec![],
             Contract::default(),
+            Planning::default(),
         )
         .unwrap();
     store
@@ -144,6 +149,7 @@ fn test_cycle_rejection() {
             vec![1],
             vec![],
             Contract::default(),
+            Planning::default(),
         )
         .unwrap();
     store
@@ -155,6 +161,7 @@ fn test_cycle_rejection() {
             vec![2],
             vec![],
             Contract::default(),
+            Planning::default(),
         )
         .unwrap();
 
@@ -186,6 +193,7 @@ fn test_reindex_after_delete() {
             vec![],
             vec![],
             Contract::default(),
+            Planning::default(),
         )
         .unwrap();
     store
@@ -197,6 +205,7 @@ fn test_reindex_after_delete() {
             vec![1],
             vec![],
             Contract::default(),
+            Planning::default(),
         )
         .unwrap();
 
@@ -232,6 +241,7 @@ fn test_status_transitions() {
             vec![],
             vec![],
             Contract::default(),
+            Planning::default(),
         )
         .unwrap();
     assert_eq!(task.status, Status::Pending);
@@ -298,6 +308,7 @@ fn test_start_rejects_blocked_task() {
             vec![],
             vec![],
             Contract::default(),
+            Planning::default(),
         )
         .unwrap();
     store
@@ -309,6 +320,7 @@ fn test_start_rejects_blocked_task() {
             vec![1],
             vec![],
             Contract::default(),
+            Planning::default(),
         )
         .unwrap();
 
@@ -347,6 +359,7 @@ fn test_list_filters() {
             vec![],
             vec!["backend".into()],
             Contract::default(),
+            Planning::default(),
         )
         .unwrap();
     store
@@ -358,6 +371,7 @@ fn test_list_filters() {
             vec![],
             vec!["frontend".into()],
             Contract::default(),
+            Planning::default(),
         )
         .unwrap();
     store
@@ -369,6 +383,7 @@ fn test_list_filters() {
             vec![],
             vec!["backend".into()],
             Contract::default(),
+            Planning::default(),
         )
         .unwrap();
 
@@ -434,6 +449,7 @@ fn test_claim_assigns_next_available() {
             vec![],
             vec![],
             Contract::default(),
+            Planning::default(),
         )
         .unwrap();
     store
@@ -445,6 +461,7 @@ fn test_claim_assigns_next_available() {
             vec![1],
             vec![],
             Contract::default(),
+            Planning::default(),
         )
         .unwrap();
 
@@ -477,6 +494,7 @@ fn test_reopen_transitions() {
             vec![],
             vec![],
             Contract::default(),
+            Planning::default(),
         )
         .unwrap();
 
@@ -511,6 +529,7 @@ fn test_depend_rolls_back_on_partial_failure() {
             vec![],
             vec![],
             Contract::default(),
+            Planning::default(),
         )
         .unwrap();
     store
@@ -522,6 +541,7 @@ fn test_depend_rolls_back_on_partial_failure() {
             vec![],
             vec![],
             Contract::default(),
+            Planning::default(),
         )
         .unwrap();
 
@@ -564,6 +584,7 @@ fn test_depend_with_type_and_reason() {
             vec![],
             vec![],
             Contract::default(),
+            Planning::default(),
         )
         .unwrap();
     store
@@ -575,6 +596,7 @@ fn test_depend_with_type_and_reason() {
             vec![],
             vec![],
             Contract::default(),
+            Planning::default(),
         )
         .unwrap();
 
@@ -633,6 +655,7 @@ fn test_delete_removes_task() {
             vec![],
             vec![],
             Contract::default(),
+            Planning::default(),
         )
         .unwrap();
     store
@@ -644,6 +667,7 @@ fn test_delete_removes_task() {
             vec![],
             vec![],
             Contract::default(),
+            Planning::default(),
         )
         .unwrap();
 
@@ -675,6 +699,7 @@ fn test_delete_rejects_when_task_has_children() {
             vec![],
             vec![],
             Contract::default(),
+            Planning::default(),
         )
         .unwrap();
     store
@@ -686,6 +711,7 @@ fn test_delete_rejects_when_task_has_children() {
             vec![],
             vec![],
             Contract::default(),
+            Planning::default(),
         )
         .unwrap();
 
@@ -711,6 +737,7 @@ fn test_delete_rejects_when_task_is_dependency_target() {
             vec![],
             vec![],
             Contract::default(),
+            Planning::default(),
         )
         .unwrap();
     store
@@ -722,6 +749,7 @@ fn test_delete_rejects_when_task_is_dependency_target() {
             vec![1],
             vec![],
             Contract::default(),
+            Planning::default(),
         )
         .unwrap();
 
@@ -747,6 +775,7 @@ fn test_delete_force_cascades() {
             vec![],
             vec![],
             Contract::default(),
+            Planning::default(),
         )
         .unwrap();
     store
@@ -758,6 +787,7 @@ fn test_delete_force_cascades() {
             vec![],
             vec![],
             Contract::default(),
+            Planning::default(),
         )
         .unwrap();
     store
@@ -769,6 +799,7 @@ fn test_delete_force_cascades() {
             vec![1],
             vec![],
             Contract::default(),
+            Planning::default(),
         )
         .unwrap();
 
@@ -806,6 +837,7 @@ fn test_delete_leaf_without_force() {
             vec![],
             vec![],
             Contract::default(),
+            Planning::default(),
         )
         .unwrap();
     store
@@ -817,6 +849,7 @@ fn test_delete_leaf_without_force() {
             vec![],
             vec![],
             Contract::default(),
+            Planning::default(),
         )
         .unwrap();
 
@@ -984,6 +1017,7 @@ fn test_doctor_healthy_repo_structure() {
             vec![],
             vec![],
             Contract::default(),
+            Planning::default(),
         )
         .unwrap();
 
@@ -1018,6 +1052,7 @@ fn test_doctor_detects_dangling_parent() {
             vec![],
             vec![],
             Contract::default(),
+            Planning::default(),
         )
         .unwrap();
     store
@@ -1029,6 +1064,7 @@ fn test_doctor_detects_dangling_parent() {
             vec![],
             vec![],
             Contract::default(),
+            Planning::default(),
         )
         .unwrap();
 
@@ -1058,6 +1094,7 @@ fn test_doctor_detects_dangling_dep() {
             vec![],
             vec![],
             Contract::default(),
+            Planning::default(),
         )
         .unwrap();
     store
@@ -1069,6 +1106,7 @@ fn test_doctor_detects_dangling_dep() {
             vec![1],
             vec![],
             Contract::default(),
+            Planning::default(),
         )
         .unwrap();
 
@@ -1103,6 +1141,7 @@ fn test_edit_adds_contract_fields() {
             vec![],
             vec![],
             Contract::default(),
+            Planning::default(),
         )
         .unwrap();
 
@@ -1121,6 +1160,10 @@ fn test_edit_adds_contract_fields() {
         Some(vec!["cargo test".into()]),
         Some(vec!["No panics".into()]),
         Some(vec!["Compiles clean".into()]),
+        None,
+        None,
+        None,
+        None,
         Format::Json,
     )
     .unwrap();
@@ -1150,6 +1193,7 @@ fn test_show_contract_in_pretty_output() {
                 verification: vec!["cargo test".into(), "cargo clippy".into()],
                 constraints: vec!["No unsafe code".into()],
             },
+            Planning::default(),
         )
         .unwrap();
 
@@ -1185,6 +1229,7 @@ fn test_create_with_contract() {
                 verification: vec!["cargo test".into()],
                 constraints: vec!["No unsafe".into()],
             },
+            Planning::default(),
         )
         .unwrap();
 
@@ -1196,4 +1241,83 @@ fn test_create_with_contract() {
     // Round-trip through file
     let read = store.read(task.id).unwrap();
     assert_eq!(read.contract, task.contract);
+}
+
+#[test]
+fn test_create_with_planning() {
+    let dir = tempdir().unwrap();
+    let store = FileStore::init(dir.path()).unwrap();
+
+    let task = store
+        .create(
+            "Prioritized task".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![],
+            vec![],
+            Contract::default(),
+            Planning {
+                priority: Some(tak::model::Priority::High),
+                estimate: Some(tak::model::Estimate::M),
+                required_skills: vec!["rust".into()],
+                risk: Some(tak::model::Risk::Low),
+            },
+        )
+        .unwrap();
+
+    assert_eq!(task.planning.priority, Some(tak::model::Priority::High));
+    assert_eq!(task.planning.estimate, Some(tak::model::Estimate::M));
+    assert_eq!(task.planning.risk, Some(tak::model::Risk::Low));
+    assert_eq!(task.planning.required_skills, vec!["rust"]);
+
+    let read = store.read(task.id).unwrap();
+    assert_eq!(read.planning, task.planning);
+}
+
+#[test]
+fn test_edit_sets_planning_fields() {
+    let dir = tempdir().unwrap();
+    let store = FileStore::init(dir.path()).unwrap();
+    store
+        .create(
+            "Bare".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![],
+            vec![],
+            Contract::default(),
+            Planning::default(),
+        )
+        .unwrap();
+
+    let idx = Index::open(&store.root().join("index.db")).unwrap();
+    idx.rebuild(&store.list_all().unwrap()).unwrap();
+    drop(idx);
+
+    tak::commands::edit::run(
+        dir.path(),
+        1,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(tak::model::Priority::Critical),
+        Some(tak::model::Estimate::Xl),
+        Some(vec!["python".into()]),
+        Some(tak::model::Risk::High),
+        Format::Json,
+    )
+    .unwrap();
+
+    let task = store.read(1).unwrap();
+    assert_eq!(task.planning.priority, Some(tak::model::Priority::Critical));
+    assert_eq!(task.planning.estimate, Some(tak::model::Estimate::Xl));
+    assert_eq!(task.planning.risk, Some(tak::model::Risk::High));
+    assert_eq!(task.planning.required_skills, vec!["python"]);
 }
