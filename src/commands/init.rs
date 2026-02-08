@@ -17,10 +17,15 @@ pub fn run(repo_root: &Path) -> Result<()> {
     fs::create_dir_all(tak.join("verification_results"))?;
     fs::create_dir_all(tak.join("learnings"))?;
 
+    // Create mesh runtime directories
+    fs::create_dir_all(tak.join("runtime").join("mesh").join("registry"))?;
+    fs::create_dir_all(tak.join("runtime").join("mesh").join("inbox"))?;
+    fs::create_dir_all(tak.join("runtime").join("mesh").join("locks"))?;
+
     // Write .gitignore for derived/ephemeral data
     fs::write(
         tak.join(".gitignore"),
-        "index.db\n*.lock\nartifacts/\nverification_results/\n",
+        "index.db\n*.lock\nartifacts/\nverification_results/\nruntime/\n",
     )?;
 
     eprintln!("Initialized .tak/ in {}", repo_root.display());
