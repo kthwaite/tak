@@ -4,7 +4,7 @@ use tempfile::tempdir;
 
 use chrono::Utc;
 use tak::error::TakError;
-use tak::model::{DepType, Kind, Status};
+use tak::model::{Contract, DepType, Kind, Status};
 use tak::output::Format;
 use tak::store::files::FileStore;
 use tak::store::index::Index;
@@ -19,7 +19,15 @@ fn test_full_workflow() {
 
     // Create epic
     let epic = store
-        .create("Auth system".into(), Kind::Epic, None, None, vec![], vec![])
+        .create(
+            "Auth system".into(),
+            Kind::Epic,
+            None,
+            None,
+            vec![],
+            vec![],
+            Contract::default(),
+        )
         .unwrap();
     assert_eq!(epic.id, 1);
 
@@ -32,6 +40,7 @@ fn test_full_workflow() {
             Some(1),
             vec![],
             vec![],
+            Contract::default(),
         )
         .unwrap();
     let _t3 = store
@@ -42,6 +51,7 @@ fn test_full_workflow() {
             Some(1),
             vec![2],
             vec![],
+            Contract::default(),
         )
         .unwrap();
     let _t4 = store
@@ -52,6 +62,7 @@ fn test_full_workflow() {
             Some(1),
             vec![3],
             vec![],
+            Contract::default(),
         )
         .unwrap();
 
@@ -114,13 +125,37 @@ fn test_cycle_rejection() {
     let store = FileStore::init(dir.path()).unwrap();
 
     store
-        .create("A".into(), Kind::Task, None, None, vec![], vec![])
+        .create(
+            "A".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![],
+            vec![],
+            Contract::default(),
+        )
         .unwrap();
     store
-        .create("B".into(), Kind::Task, None, None, vec![1], vec![])
+        .create(
+            "B".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![1],
+            vec![],
+            Contract::default(),
+        )
         .unwrap();
     store
-        .create("C".into(), Kind::Task, None, None, vec![2], vec![])
+        .create(
+            "C".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![2],
+            vec![],
+            Contract::default(),
+        )
         .unwrap();
 
     let idx = Index::open(&store.root().join("index.db")).unwrap();
@@ -143,10 +178,26 @@ fn test_reindex_after_delete() {
     let store = FileStore::init(dir.path()).unwrap();
 
     store
-        .create("Task A".into(), Kind::Task, None, None, vec![], vec![])
+        .create(
+            "Task A".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![],
+            vec![],
+            Contract::default(),
+        )
         .unwrap();
     store
-        .create("Task B".into(), Kind::Task, None, None, vec![1], vec![])
+        .create(
+            "Task B".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![1],
+            vec![],
+            Contract::default(),
+        )
         .unwrap();
 
     // Build initial index
@@ -173,7 +224,15 @@ fn test_status_transitions() {
     let store = FileStore::init(dir.path()).unwrap();
 
     let task = store
-        .create("Test".into(), Kind::Task, None, None, vec![], vec![])
+        .create(
+            "Test".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![],
+            vec![],
+            Contract::default(),
+        )
         .unwrap();
     assert_eq!(task.status, Status::Pending);
 
@@ -231,10 +290,26 @@ fn test_start_rejects_blocked_task() {
     let store = FileStore::init(dir.path()).unwrap();
 
     store
-        .create("Blocker".into(), Kind::Task, None, None, vec![], vec![])
+        .create(
+            "Blocker".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![],
+            vec![],
+            Contract::default(),
+        )
         .unwrap();
     store
-        .create("Blocked".into(), Kind::Task, None, None, vec![1], vec![])
+        .create(
+            "Blocked".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![1],
+            vec![],
+            Contract::default(),
+        )
         .unwrap();
 
     let idx = Index::open(&store.root().join("index.db")).unwrap();
@@ -271,6 +346,7 @@ fn test_list_filters() {
             None,
             vec![],
             vec!["backend".into()],
+            Contract::default(),
         )
         .unwrap();
     store
@@ -281,6 +357,7 @@ fn test_list_filters() {
             None,
             vec![],
             vec!["frontend".into()],
+            Contract::default(),
         )
         .unwrap();
     store
@@ -291,6 +368,7 @@ fn test_list_filters() {
             None,
             vec![],
             vec!["backend".into()],
+            Contract::default(),
         )
         .unwrap();
 
@@ -348,10 +426,26 @@ fn test_claim_assigns_next_available() {
     let store = FileStore::init(dir.path()).unwrap();
 
     store
-        .create("Task A".into(), Kind::Task, None, None, vec![], vec![])
+        .create(
+            "Task A".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![],
+            vec![],
+            Contract::default(),
+        )
         .unwrap();
     store
-        .create("Task B".into(), Kind::Task, None, None, vec![1], vec![])
+        .create(
+            "Task B".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![1],
+            vec![],
+            Contract::default(),
+        )
         .unwrap();
 
     let idx = Index::open(&store.root().join("index.db")).unwrap();
@@ -375,7 +469,15 @@ fn test_reopen_transitions() {
     let dir = tempdir().unwrap();
     let store = FileStore::init(dir.path()).unwrap();
     store
-        .create("Test".into(), Kind::Task, None, None, vec![], vec![])
+        .create(
+            "Test".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![],
+            vec![],
+            Contract::default(),
+        )
         .unwrap();
 
     let idx = Index::open(&store.root().join("index.db")).unwrap();
@@ -401,10 +503,26 @@ fn test_depend_rolls_back_on_partial_failure() {
     let store = FileStore::init(dir.path()).unwrap();
 
     store
-        .create("A".into(), Kind::Task, None, None, vec![], vec![])
+        .create(
+            "A".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![],
+            vec![],
+            Contract::default(),
+        )
         .unwrap();
     store
-        .create("B".into(), Kind::Task, None, None, vec![], vec![])
+        .create(
+            "B".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![],
+            vec![],
+            Contract::default(),
+        )
         .unwrap();
 
     // Build index
@@ -438,10 +556,26 @@ fn test_depend_with_type_and_reason() {
     let store = FileStore::init(dir.path()).unwrap();
 
     store
-        .create("A".into(), Kind::Task, None, None, vec![], vec![])
+        .create(
+            "A".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![],
+            vec![],
+            Contract::default(),
+        )
         .unwrap();
     store
-        .create("B".into(), Kind::Task, None, None, vec![], vec![])
+        .create(
+            "B".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![],
+            vec![],
+            Contract::default(),
+        )
         .unwrap();
 
     let idx = Index::open(&store.root().join("index.db")).unwrap();
@@ -491,10 +625,26 @@ fn test_delete_removes_task() {
     let dir = tempdir().unwrap();
     let store = FileStore::init(dir.path()).unwrap();
     store
-        .create("To delete".into(), Kind::Task, None, None, vec![], vec![])
+        .create(
+            "To delete".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![],
+            vec![],
+            Contract::default(),
+        )
         .unwrap();
     store
-        .create("Keeper".into(), Kind::Task, None, None, vec![], vec![])
+        .create(
+            "Keeper".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![],
+            vec![],
+            Contract::default(),
+        )
         .unwrap();
 
     let idx = Index::open(&store.root().join("index.db")).unwrap();
@@ -517,10 +667,26 @@ fn test_delete_rejects_when_task_has_children() {
     let dir = tempdir().unwrap();
     let store = FileStore::init(dir.path()).unwrap();
     store
-        .create("Parent".into(), Kind::Epic, None, None, vec![], vec![])
+        .create(
+            "Parent".into(),
+            Kind::Epic,
+            None,
+            None,
+            vec![],
+            vec![],
+            Contract::default(),
+        )
         .unwrap();
     store
-        .create("Child".into(), Kind::Task, None, Some(1), vec![], vec![])
+        .create(
+            "Child".into(),
+            Kind::Task,
+            None,
+            Some(1),
+            vec![],
+            vec![],
+            Contract::default(),
+        )
         .unwrap();
 
     let idx = Index::open(&store.root().join("index.db")).unwrap();
@@ -537,10 +703,26 @@ fn test_delete_rejects_when_task_is_dependency_target() {
     let dir = tempdir().unwrap();
     let store = FileStore::init(dir.path()).unwrap();
     store
-        .create("Dep target".into(), Kind::Task, None, None, vec![], vec![])
+        .create(
+            "Dep target".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![],
+            vec![],
+            Contract::default(),
+        )
         .unwrap();
     store
-        .create("Dependent".into(), Kind::Task, None, None, vec![1], vec![])
+        .create(
+            "Dependent".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![1],
+            vec![],
+            Contract::default(),
+        )
         .unwrap();
 
     let idx = Index::open(&store.root().join("index.db")).unwrap();
@@ -557,13 +739,37 @@ fn test_delete_force_cascades() {
     let dir = tempdir().unwrap();
     let store = FileStore::init(dir.path()).unwrap();
     store
-        .create("Parent".into(), Kind::Epic, None, None, vec![], vec![])
+        .create(
+            "Parent".into(),
+            Kind::Epic,
+            None,
+            None,
+            vec![],
+            vec![],
+            Contract::default(),
+        )
         .unwrap();
     store
-        .create("Child".into(), Kind::Task, None, Some(1), vec![], vec![])
+        .create(
+            "Child".into(),
+            Kind::Task,
+            None,
+            Some(1),
+            vec![],
+            vec![],
+            Contract::default(),
+        )
         .unwrap();
     store
-        .create("Dependent".into(), Kind::Task, None, None, vec![1], vec![])
+        .create(
+            "Dependent".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![1],
+            vec![],
+            Contract::default(),
+        )
         .unwrap();
 
     let idx = Index::open(&store.root().join("index.db")).unwrap();
@@ -592,10 +798,26 @@ fn test_delete_leaf_without_force() {
     let dir = tempdir().unwrap();
     let store = FileStore::init(dir.path()).unwrap();
     store
-        .create("Leaf".into(), Kind::Task, None, None, vec![], vec![])
+        .create(
+            "Leaf".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![],
+            vec![],
+            Contract::default(),
+        )
         .unwrap();
     store
-        .create("Other".into(), Kind::Task, None, None, vec![], vec![])
+        .create(
+            "Other".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![],
+            vec![],
+            Contract::default(),
+        )
         .unwrap();
 
     let idx = Index::open(&store.root().join("index.db")).unwrap();
@@ -754,7 +976,15 @@ fn test_doctor_healthy_repo_structure() {
     let dir = tempdir().unwrap();
     let store = FileStore::init(dir.path()).unwrap();
     store
-        .create("Task A".into(), Kind::Task, None, None, vec![], vec![])
+        .create(
+            "Task A".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![],
+            vec![],
+            Contract::default(),
+        )
         .unwrap();
 
     let repo = Repo::open(dir.path()).unwrap();
@@ -780,10 +1010,26 @@ fn test_doctor_detects_dangling_parent() {
     let dir = tempdir().unwrap();
     let store = FileStore::init(dir.path()).unwrap();
     store
-        .create("Parent".into(), Kind::Epic, None, None, vec![], vec![])
+        .create(
+            "Parent".into(),
+            Kind::Epic,
+            None,
+            None,
+            vec![],
+            vec![],
+            Contract::default(),
+        )
         .unwrap();
     store
-        .create("Child".into(), Kind::Task, None, Some(1), vec![], vec![])
+        .create(
+            "Child".into(),
+            Kind::Task,
+            None,
+            Some(1),
+            vec![],
+            vec![],
+            Contract::default(),
+        )
         .unwrap();
 
     // Delete parent file directly
@@ -804,10 +1050,26 @@ fn test_doctor_detects_dangling_dep() {
     let dir = tempdir().unwrap();
     let store = FileStore::init(dir.path()).unwrap();
     store
-        .create("Dep".into(), Kind::Task, None, None, vec![], vec![])
+        .create(
+            "Dep".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![],
+            vec![],
+            Contract::default(),
+        )
         .unwrap();
     store
-        .create("Dependent".into(), Kind::Task, None, None, vec![1], vec![])
+        .create(
+            "Dependent".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![1],
+            vec![],
+            Contract::default(),
+        )
         .unwrap();
 
     fs::remove_file(dir.path().join(".tak/tasks/1.json")).unwrap();
@@ -826,4 +1088,36 @@ fn test_doctor_missing_index() {
     let dir = tempdir().unwrap();
     FileStore::init(dir.path()).unwrap();
     assert!(!dir.path().join(".tak/index.db").exists());
+}
+
+#[test]
+fn test_create_with_contract() {
+    let dir = tempdir().unwrap();
+    let store = FileStore::init(dir.path()).unwrap();
+
+    let task = store
+        .create(
+            "Contracted task".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![],
+            vec![],
+            Contract {
+                objective: Some("Ship it".into()),
+                acceptance_criteria: vec!["Tests pass".into()],
+                verification: vec!["cargo test".into()],
+                constraints: vec!["No unsafe".into()],
+            },
+        )
+        .unwrap();
+
+    assert_eq!(task.contract.objective.as_deref(), Some("Ship it"));
+    assert_eq!(task.contract.verification, vec!["cargo test"]);
+    assert_eq!(task.contract.constraints, vec!["No unsafe"]);
+    assert_eq!(task.contract.acceptance_criteria, vec!["Tests pass"]);
+
+    // Round-trip through file
+    let read = store.read(task.id).unwrap();
+    assert_eq!(read.contract, task.contract);
 }

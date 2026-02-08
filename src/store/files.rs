@@ -69,6 +69,7 @@ impl FileStore {
         Ok(id)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn create(
         &self,
         title: String,
@@ -77,6 +78,7 @@ impl FileStore {
         parent: Option<u64>,
         depends_on: Vec<u64>,
         tags: Vec<String>,
+        contract: Contract,
     ) -> Result<Task> {
         if let Some(pid) = parent {
             self.read(pid)?;
@@ -97,7 +99,7 @@ impl FileStore {
             depends_on: depends_on.into_iter().map(Dependency::simple).collect(),
             assignee: None,
             tags,
-            contract: Contract::default(),
+            contract,
             created_at: now,
             updated_at: now,
             extensions: serde_json::Map::new(),
@@ -223,7 +225,15 @@ mod tests {
         let dir = tempdir().unwrap();
         let store = FileStore::init(dir.path()).unwrap();
         let task = store
-            .create("First task".into(), Kind::Task, None, None, vec![], vec![])
+            .create(
+                "First task".into(),
+                Kind::Task,
+                None,
+                None,
+                vec![],
+                vec![],
+                Contract::default(),
+            )
             .unwrap();
         assert_eq!(task.id, 1);
         assert_eq!(task.title, "First task");
@@ -236,13 +246,37 @@ mod tests {
         let dir = tempdir().unwrap();
         let store = FileStore::init(dir.path()).unwrap();
         let t1 = store
-            .create("A".into(), Kind::Task, None, None, vec![], vec![])
+            .create(
+                "A".into(),
+                Kind::Task,
+                None,
+                None,
+                vec![],
+                vec![],
+                Contract::default(),
+            )
             .unwrap();
         let t2 = store
-            .create("B".into(), Kind::Task, None, None, vec![], vec![])
+            .create(
+                "B".into(),
+                Kind::Task,
+                None,
+                None,
+                vec![],
+                vec![],
+                Contract::default(),
+            )
             .unwrap();
         let t3 = store
-            .create("C".into(), Kind::Task, None, None, vec![], vec![])
+            .create(
+                "C".into(),
+                Kind::Task,
+                None,
+                None,
+                vec![],
+                vec![],
+                Contract::default(),
+            )
             .unwrap();
         assert_eq!(t1.id, 1);
         assert_eq!(t2.id, 2);
@@ -254,10 +288,26 @@ mod tests {
         let dir = tempdir().unwrap();
         let store = FileStore::init(dir.path()).unwrap();
         store
-            .create("A".into(), Kind::Task, None, None, vec![], vec![])
+            .create(
+                "A".into(),
+                Kind::Task,
+                None,
+                None,
+                vec![],
+                vec![],
+                Contract::default(),
+            )
             .unwrap();
         store
-            .create("B".into(), Kind::Epic, None, None, vec![], vec![])
+            .create(
+                "B".into(),
+                Kind::Epic,
+                None,
+                None,
+                vec![],
+                vec![],
+                Contract::default(),
+            )
             .unwrap();
         let all = store.list_all().unwrap();
         assert_eq!(all.len(), 2);
@@ -268,7 +318,15 @@ mod tests {
         let dir = tempdir().unwrap();
         let store = FileStore::init(dir.path()).unwrap();
         store
-            .create("Doomed".into(), Kind::Task, None, None, vec![], vec![])
+            .create(
+                "Doomed".into(),
+                Kind::Task,
+                None,
+                None,
+                vec![],
+                vec![],
+                Contract::default(),
+            )
             .unwrap();
         store.delete(1).unwrap();
         assert!(store.read(1).is_err());
@@ -288,10 +346,26 @@ mod tests {
 
         // Create two tasks so dep references are valid
         store
-            .create("Dep A".into(), Kind::Task, None, None, vec![], vec![])
+            .create(
+                "Dep A".into(),
+                Kind::Task,
+                None,
+                None,
+                vec![],
+                vec![],
+                Contract::default(),
+            )
             .unwrap();
         store
-            .create("Dep B".into(), Kind::Task, None, None, vec![], vec![])
+            .create(
+                "Dep B".into(),
+                Kind::Task,
+                None,
+                None,
+                vec![],
+                vec![],
+                Contract::default(),
+            )
             .unwrap();
 
         // Create a task with duplicate tags and deps
@@ -303,6 +377,7 @@ mod tests {
                 None,
                 vec![1, 2, 1, 2, 1],
                 vec!["x".into(), "y".into(), "x".into()],
+                Contract::default(),
             )
             .unwrap();
 
@@ -328,7 +403,15 @@ mod tests {
         let lock_path = dir.path().join(".tak").join("counter.lock");
 
         store
-            .create("A".into(), Kind::Task, None, None, vec![], vec![])
+            .create(
+                "A".into(),
+                Kind::Task,
+                None,
+                None,
+                vec![],
+                vec![],
+                Contract::default(),
+            )
             .unwrap();
         assert!(
             lock_path.exists(),
@@ -336,7 +419,15 @@ mod tests {
         );
 
         store
-            .create("B".into(), Kind::Task, None, None, vec![], vec![])
+            .create(
+                "B".into(),
+                Kind::Task,
+                None,
+                None,
+                vec![],
+                vec![],
+                Contract::default(),
+            )
             .unwrap();
         assert!(
             lock_path.exists(),

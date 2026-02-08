@@ -42,6 +42,18 @@ enum Commands {
         /// Tags to attach (comma-separated)
         #[arg(long, value_delimiter = ',')]
         tag: Vec<String>,
+        /// One-sentence objective
+        #[arg(long)]
+        objective: Option<String>,
+        /// Verification command (repeatable)
+        #[arg(long = "verify")]
+        verify: Vec<String>,
+        /// Constraint the implementer must respect (repeatable)
+        #[arg(long)]
+        constraint: Vec<String>,
+        /// Acceptance criterion (repeatable)
+        #[arg(long = "criterion")]
+        criterion: Vec<String>,
     },
     /// Delete a task by ID
     Delete {
@@ -237,16 +249,29 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
             depends_on,
             description,
             tag,
-        } => tak::commands::create::run(
-            &root,
-            title,
-            kind,
-            description,
-            parent,
-            depends_on,
-            tag,
-            format,
-        ),
+            objective,
+            verify,
+            constraint,
+            criterion,
+        } => {
+            let contract = tak::model::Contract {
+                objective,
+                acceptance_criteria: criterion,
+                verification: verify,
+                constraints: constraint,
+            };
+            tak::commands::create::run(
+                &root,
+                title,
+                kind,
+                description,
+                parent,
+                depends_on,
+                tag,
+                contract,
+                format,
+            )
+        }
         Commands::Delete { id, force } => tak::commands::delete::run(&root, id, force, format),
         Commands::Show { id } => tak::commands::show::run(&root, id, format),
         Commands::List {

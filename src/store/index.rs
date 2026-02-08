@@ -442,10 +442,26 @@ mod tests {
         let dir = tempdir().unwrap();
         let store = FileStore::init(dir.path()).unwrap();
         store
-            .create("A".into(), Kind::Task, None, None, vec![], vec![])
+            .create(
+                "A".into(),
+                Kind::Task,
+                None,
+                None,
+                vec![],
+                vec![],
+                Contract::default(),
+            )
             .unwrap();
         store
-            .create("B".into(), Kind::Task, None, None, vec![], vec![])
+            .create(
+                "B".into(),
+                Kind::Task,
+                None,
+                None,
+                vec![],
+                vec![],
+                Contract::default(),
+            )
             .unwrap();
 
         // First open builds index
@@ -472,7 +488,15 @@ mod tests {
         let dir = tempdir().unwrap();
         let store = FileStore::init(dir.path()).unwrap();
         store
-            .create("A".into(), Kind::Task, None, None, vec![], vec![])
+            .create(
+                "A".into(),
+                Kind::Task,
+                None,
+                None,
+                vec![],
+                vec![],
+                Contract::default(),
+            )
             .unwrap();
 
         let repo = Repo::open(dir.path()).unwrap();
