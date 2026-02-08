@@ -40,6 +40,20 @@ pub fn print_task(task: &Task, format: Format) -> Result<()> {
             if !task.tags.is_empty() {
                 println!("  tags: {}", task.tags.join(", "));
             }
+            if !task.planning.is_empty() {
+                if let Some(ref p) = task.planning.priority {
+                    println!("  priority: {}", p);
+                }
+                if let Some(ref e) = task.planning.estimate {
+                    println!("  estimate: {}", e);
+                }
+                if let Some(ref r) = task.planning.risk {
+                    println!("  risk: {}", r);
+                }
+                if !task.planning.required_skills.is_empty() {
+                    println!("  skills: {}", task.planning.required_skills.join(", "));
+                }
+            }
             if !task.contract.is_empty() {
                 if let Some(ref obj) = task.contract.objective {
                     println!("  objective: {}", obj);

@@ -1321,3 +1321,90 @@ fn test_edit_sets_planning_fields() {
     assert_eq!(task.planning.risk, Some(tak::model::Risk::High));
     assert_eq!(task.planning.required_skills, vec!["python"]);
 }
+
+#[test]
+fn test_list_filter_by_priority() {
+    let dir = tempdir().unwrap();
+    let store = FileStore::init(dir.path()).unwrap();
+
+    store
+        .create(
+            "Low task".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![],
+            vec![],
+            Contract::default(),
+            Planning {
+                priority: Some(tak::model::Priority::Low),
+                ..Planning::default()
+            },
+        )
+        .unwrap();
+    store
+        .create(
+            "High task".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![],
+            vec![],
+            Contract::default(),
+            Planning {
+                priority: Some(tak::model::Priority::High),
+                ..Planning::default()
+            },
+        )
+        .unwrap();
+    store
+        .create(
+            "No priority".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![],
+            vec![],
+            Contract::default(),
+            Planning::default(),
+        )
+        .unwrap();
+
+    let all = store.list_all().unwrap();
+    let high: Vec<_> = all
+        .iter()
+        .filter(|t| t.planning.priority == Some(tak::model::Priority::High))
+        .collect();
+    assert_eq!(high.len(), 1);
+    assert_eq!(high[0].title, "High task");
+}
+
+#[test]
+fn test_show_planning_in_pretty_output() {
+    let dir = tempdir().unwrap();
+    let store = FileStore::init(dir.path()).unwrap();
+    store
+        .create(
+            "Planned task".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![],
+            vec![],
+            Contract::default(),
+            Planning {
+                priority: Some(tak::model::Priority::High),
+                estimate: Some(tak::model::Estimate::L),
+                required_skills: vec!["rust".into()],
+                risk: Some(tak::model::Risk::Medium),
+            },
+        )
+        .unwrap();
+
+    let task = store.read(1).unwrap();
+    let json = serde_json::to_string_pretty(&task).unwrap();
+    assert!(json.contains("\"high\""));
+    assert!(json.contains("\"l\""));
+    assert!(json.contains("\"medium\""));
+    assert!(json.contains("rust"));
+}

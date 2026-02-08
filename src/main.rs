@@ -103,6 +103,9 @@ enum Commands {
         /// Show only children of this task ID
         #[arg(long)]
         children_of: Option<u64>,
+        /// Filter by priority
+        #[arg(long, value_enum)]
+        priority: Option<Priority>,
     },
     /// Edit task fields
     Edit {
@@ -329,6 +332,7 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
             available,
             blocked,
             children_of,
+            priority,
         } => tak::commands::list::run(
             &root,
             status,
@@ -338,6 +342,7 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
             available,
             blocked,
             children_of,
+            priority,
             format,
         ),
         Commands::Edit {

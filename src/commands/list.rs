@@ -1,5 +1,5 @@
 use crate::error::Result;
-use crate::model::{Kind, Status};
+use crate::model::{Kind, Priority, Status};
 use crate::output::{self, Format};
 use crate::store::repo::Repo;
 use std::path::Path;
@@ -14,6 +14,7 @@ pub fn run(
     available: bool,
     blocked: bool,
     children_of: Option<u64>,
+    priority: Option<Priority>,
     format: Format,
 ) -> Result<()> {
     let repo = Repo::open(repo_root)?;
@@ -39,6 +40,9 @@ pub fn run(
     }
     if let Some(ref a) = assignee {
         tasks.retain(|t| t.assignee.as_deref() == Some(a.as_str()));
+    }
+    if let Some(p) = priority {
+        tasks.retain(|t| t.planning.priority == Some(p));
     }
 
     output::print_tasks(&tasks, format)?;
