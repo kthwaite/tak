@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use chrono::Utc;
 
 use crate::error::{Result, TakError};
-use crate::model::{Kind, Status, Task};
+use crate::model::{Dependency, Kind, Status, Task};
 use crate::store::lock;
 
 /// Root of the .tak directory for a repository.
@@ -94,11 +94,12 @@ impl FileStore {
             status: Status::Pending,
             kind,
             parent,
-            depends_on,
+            depends_on: depends_on.into_iter().map(Dependency::simple).collect(),
             assignee: None,
             tags,
             created_at: now,
             updated_at: now,
+            extensions: serde_json::Map::new(),
         };
         task.normalize();
 
@@ -304,12 +305,18 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(task.depends_on, vec![1, 2]);
+        assert_eq!(
+            task.depends_on,
+            vec![Dependency::simple(1), Dependency::simple(2)]
+        );
         assert_eq!(task.tags, vec!["x", "y"]);
 
         // Verify the persisted file is also deduped
         let read = store.read(task.id).unwrap();
-        assert_eq!(read.depends_on, vec![1, 2]);
+        assert_eq!(
+            read.depends_on,
+            vec![Dependency::simple(1), Dependency::simple(2)]
+        );
         assert_eq!(read.tags, vec!["x", "y"]);
     }
 
