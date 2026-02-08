@@ -221,6 +221,38 @@ impl GitInfo {
     }
 }
 
+fn is_zero(v: &u32) -> bool {
+    *v == 0
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct Execution {
+    /// How many times this task has been started (attempt_count).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub attempt_count: u32,
+
+    /// Error or reason from the last cancellation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+
+    /// Summary left by a previous assignee when handing off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handoff_summary: Option<String>,
+
+    /// Why this task is blocked (human-supplied context, not derived).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocked_reason: Option<String>,
+}
+
+impl Execution {
+    pub fn is_empty(&self) -> bool {
+        self.attempt_count == 0
+            && self.last_error.is_none()
+            && self.handoff_summary.is_none()
+            && self.blocked_reason.is_none()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Task {
     pub id: u64,
@@ -243,6 +275,8 @@ pub struct Task {
     pub planning: Planning,
     #[serde(default, skip_serializing_if = "GitInfo::is_empty")]
     pub git: GitInfo,
+    #[serde(default, skip_serializing_if = "Execution::is_empty")]
+    pub execution: Execution,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     /// Preserve unknown fields for forward compatibility.
@@ -309,6 +343,7 @@ mod tests {
             contract: Contract::default(),
             planning: Planning::default(),
             git: GitInfo::default(),
+            execution: Execution::default(),
             created_at: now,
             updated_at: now,
             extensions: serde_json::Map::new(),
@@ -341,6 +376,7 @@ mod tests {
             contract: Contract::default(),
             planning: Planning::default(),
             git: GitInfo::default(),
+            execution: Execution::default(),
             created_at: now,
             updated_at: now,
             extensions: serde_json::Map::new(),
@@ -376,6 +412,7 @@ mod tests {
             contract: Contract::default(),
             planning: Planning::default(),
             git: GitInfo::default(),
+            execution: Execution::default(),
             created_at: now,
             updated_at: now,
             extensions: serde_json::Map::new(),
@@ -465,6 +502,7 @@ mod tests {
             },
             planning: Planning::default(),
             git: GitInfo::default(),
+            execution: Execution::default(),
             created_at: now,
             updated_at: now,
             extensions: serde_json::Map::new(),
@@ -495,6 +533,7 @@ mod tests {
             contract: Contract::default(),
             planning: Planning::default(),
             git: GitInfo::default(),
+            execution: Execution::default(),
             created_at: now,
             updated_at: now,
             extensions: serde_json::Map::new(),
@@ -531,6 +570,7 @@ mod tests {
                 risk: Some(Risk::Low),
             },
             git: GitInfo::default(),
+            execution: Execution::default(),
             created_at: now,
             updated_at: now,
             extensions: serde_json::Map::new(),
@@ -560,6 +600,7 @@ mod tests {
             contract: Contract::default(),
             planning: Planning::default(),
             git: GitInfo::default(),
+            execution: Execution::default(),
             created_at: now,
             updated_at: now,
             extensions: serde_json::Map::new(),
