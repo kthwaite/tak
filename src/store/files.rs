@@ -31,7 +31,7 @@ impl FileStore {
 
         fs::create_dir_all(root.join("tasks"))?;
         fs::write(root.join("counter.json"), r#"{"next_id": 1}"#)?;
-        fs::write(root.join("config.json"), r#"{"version": 1}"#)?;
+        fs::write(root.join("config.json"), r#"{"version": 2}"#)?;
 
         Ok(Self { root })
     }
