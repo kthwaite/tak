@@ -106,12 +106,7 @@ pub fn finish(repo_root: &Path, id: u64, format: Format) -> Result<()> {
     Ok(())
 }
 
-pub fn cancel(
-    repo_root: &Path,
-    id: u64,
-    reason: Option<String>,
-    format: Format,
-) -> Result<()> {
+pub fn cancel(repo_root: &Path, id: u64, reason: Option<String>, format: Format) -> Result<()> {
     let repo = Repo::open(repo_root)?;
     let mut task = repo.store.read(id)?;
 
@@ -130,12 +125,7 @@ pub fn cancel(
     Ok(())
 }
 
-pub fn handoff(
-    repo_root: &Path,
-    id: u64,
-    summary: String,
-    format: Format,
-) -> Result<()> {
+pub fn handoff(repo_root: &Path, id: u64, summary: String, format: Format) -> Result<()> {
     let repo = Repo::open(repo_root)?;
     let mut task = repo.store.read(id)?;
 

@@ -32,7 +32,7 @@ Tasks are JSON files in `.tak/tasks/` (the git-committed source of truth). A git
 
 ### Source Layout
 
-- **`src/model.rs`** — `Task`, `Status` (pending/in_progress/done/cancelled), `Kind` (epic/task/bug), `Dependency` (id/dep_type/reason), `DepType` (hard/soft), `Contract` (objective/acceptance_criteria/verification/constraints), `Planning` (priority/estimate/required_skills/risk), `Priority` (critical/high/medium/low), `Estimate` (xs/s/m/l/xl), `Risk` (low/medium/high), `GitInfo` (branch/start_commit/end_commit/commits/pr)
+- **`src/model.rs`** — `Task`, `Status` (pending/in_progress/done/cancelled), `Kind` (epic/task/bug), `Dependency` (id/dep_type/reason), `DepType` (hard/soft), `Contract` (objective/acceptance_criteria/verification/constraints), `Planning` (priority/estimate/required_skills/risk), `Execution` (attempt_count/last_error/handoff_summary/blocked_reason), `Priority` (critical/high/medium/low), `Estimate` (xs/s/m/l/xl), `Risk` (low/medium/high), `GitInfo` (branch/start_commit/end_commit/commits/pr)
 - **`src/git.rs`** — `current_head_info()` returns branch + SHA; `commits_since()` returns one-line summaries between two SHAs via git2 revwalk
 - **`src/error.rs`** — `TakError` enum via thiserror; `Result<T>` alias used everywhere
 - **`src/output.rs`** — `Format` enum (Json/Pretty/Minimal); `print_task(s)` functions
@@ -40,11 +40,11 @@ Tasks are JSON files in `.tak/tasks/` (the git-committed source of truth). A git
 - **`src/store/index.rs`** — `Index`: SQLite with WAL mode, FK-enabled. Cycle detection via recursive CTEs. Two-pass rebuild to handle forward references.
 - **`src/store/repo.rs`** — `Repo`: wraps FileStore + Index. Walks up from CWD to find `.tak/`. Auto-rebuilds index on open if missing or stale (file fingerprint mismatch).
 - **`src/commands/`** — One file per command group. Most take `&Path` (repo root) and return `Result<()>`. `setup` and `doctor` don't require a repo.
-- **`src/main.rs`** — Clap derive CLI with 21 subcommands and global `--format`/`--pretty` flags. Uses `ValueEnum` for `Format`, `Kind`, `Status`; `conflicts_with` for `--available`/`--blocked`.
+- **`src/main.rs`** — Clap derive CLI with 22 subcommands and global `--format`/`--pretty` flags. Uses `ValueEnum` for `Format`, `Kind`, `Status`; `conflicts_with` for `--available`/`--blocked`.
 
 ### CLI Commands
 
-21 subcommands. `--format json` (default), `--format pretty`, `--format minimal`.
+22 subcommands. `--format json` (default), `--format pretty`, `--format minimal`.
 
 | Command | Purpose |
 |---------|---------|
@@ -56,7 +56,8 @@ Tasks are JSON files in `.tak/tasks/` (the git-committed source of truth). A git
 | `edit ID` | Update fields (`--title`, `-d`, `--kind`, `--tag`, `--objective`, `--verify`, `--constraint`, `--criterion`, `--priority`, `--estimate`, `--skill`, `--risk`, `--pr`) |
 | `start ID` | Pending → in_progress (`--assignee`); auto-captures git branch + HEAD SHA on first start |
 | `finish ID` | In_progress → done; auto-captures end commit SHA + commit range since start |
-| `cancel ID` | Pending/in_progress → cancelled |
+| `cancel ID` | Pending/in_progress → cancelled (`--reason`) |
+| `handoff ID` | In_progress → pending, record summary (`--summary`, required) |
 | `claim` | Atomic next+start with file lock (`--assignee`, `--tag`) |
 | `reopen ID` | Done/cancelled → pending (clears assignee) |
 | `unassign ID` | Clear assignee without changing status |
@@ -95,10 +96,14 @@ Errors are structured JSON on stderr when `--format json`: `{"error":"<code>","m
 - `Task.contract: Contract` — optional executable spec with `objective`, `acceptance_criteria`, `verification` commands, `constraints`; omitted from JSON when empty
 - `Task.planning: Planning` — optional triage metadata with `priority` (critical/high/medium/low), `estimate` (xs-xl), `risk` (low/medium/high), `required_skills`; omitted from JSON when empty
 - Priority-ordered claiming: `available()`, `next`, and `claim` sort by `COALESCE(priority_rank, 4), id` — critical first, unprioritized last
-- SQLite `tasks` table carries `priority INTEGER` (rank 0-3) and `estimate TEXT` columns; `skills` junction table for required_skills
+- SQLite `tasks` table carries `priority INTEGER` (rank 0-3), `estimate TEXT`, and `attempt_count INTEGER` columns; `skills` junction table for required_skills
 - `Task.git: GitInfo` — auto-populated provenance: `branch` + `start_commit` on `start`, `end_commit` + `commits` on `finish`, `pr` via `edit --pr`; omitted from JSON when empty
 - `start` captures git info only on first start (idempotent on restart after reopen); `finish` collects commit summaries via `git::commits_since()` revwalk
 - `src/git.rs` uses git2 to discover the repo, read HEAD, and walk revisions; all functions degrade gracefully outside a git repo
+- `Task.execution: Execution` — runtime metadata with `attempt_count` (incremented on start/claim), `last_error` (set by cancel --reason), `handoff_summary` (set by handoff), `blocked_reason` (human context); omitted from JSON when empty
+- `start` and `claim` both increment `execution.attempt_count` to track retry attempts
+- `handoff` transitions in_progress → pending, clears assignee, records `execution.handoff_summary`
+- `cancel --reason` stores the reason in `execution.last_error`
 
 ### On-Disk Layout
 

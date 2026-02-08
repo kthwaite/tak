@@ -100,6 +100,12 @@ tak finish 3
 # Cancel a task
 tak cancel 5
 
+# Cancel with a reason (stored as execution.last_error)
+tak cancel 5 --reason "approach was wrong, needs redesign"
+
+# Hand off an in-progress task to another agent
+tak handoff 3 --summary "Auth flow works, still need error handling for expired tokens"
+
 # Reopen a done or cancelled task
 tak reopen 3
 
@@ -194,6 +200,17 @@ Planning fields are optional. Empty planning is omitted from JSON output. Availa
 - **cancelled**: Won't do (set via `tak cancel`)
 
 A task is **blocked** (derived, not stored) when any of its dependencies are not done or cancelled. A task is **available** when it is pending, unblocked, and unassigned.
+
+## Execution Metadata
+
+Tasks track runtime execution state via the `execution` field:
+
+- **attempt_count** — Incremented each time `tak start` or `tak claim` is called; tracks retry attempts
+- **last_error** — Set by `tak cancel --reason`; records why the task was cancelled
+- **handoff_summary** — Set by `tak handoff --summary`; records progress for the next agent
+- **blocked_reason** — Human-supplied context for why a task is blocked (distinct from derived blocked status)
+
+Execution fields are optional. Empty execution is omitted from JSON output. In pretty output, execution metadata is shown when non-empty (attempts, last error, handoff summary, blocked reason).
 
 ## JSON Output Parsing
 
