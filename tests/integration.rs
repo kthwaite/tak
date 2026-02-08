@@ -2503,6 +2503,133 @@ fn test_learn_add_invalid_task_fails() {
     assert!(matches!(result.unwrap_err(), TakError::TaskNotFound(999)));
 }
 
+// === Mesh coordination tests ===
+
+#[test]
+fn test_mesh_join_list_leave() {
+    let dir = tempdir().unwrap();
+    FileStore::init(dir.path()).unwrap();
+
+    use tak::store::mesh::MeshStore;
+    let store = MeshStore::open(&dir.path().join(".tak"));
+
+    // Join
+    let reg = store.join("agent-1", Some("sess-1")).unwrap();
+    assert_eq!(reg.name, "agent-1");
+
+    // List
+    let agents = store.list_agents().unwrap();
+    assert_eq!(agents.len(), 1);
+    assert_eq!(agents[0].name, "agent-1");
+
+    // Leave
+    store.leave("agent-1").unwrap();
+    let agents = store.list_agents().unwrap();
+    assert!(agents.is_empty());
+}
+
+#[test]
+fn test_mesh_send_inbox_ack() {
+    let dir = tempdir().unwrap();
+    FileStore::init(dir.path()).unwrap();
+
+    use tak::store::mesh::MeshStore;
+    let store = MeshStore::open(&dir.path().join(".tak"));
+
+    store.join("sender", None).unwrap();
+    store.join("receiver", None).unwrap();
+
+    store
+        .send("sender", "receiver", "task 5 is ready", None)
+        .unwrap();
+    store
+        .send("sender", "receiver", "also check task 6", None)
+        .unwrap();
+
+    let msgs = store.inbox("receiver", false).unwrap();
+    assert_eq!(msgs.len(), 2);
+
+    // Ack
+    let msgs = store.inbox("receiver", true).unwrap();
+    assert_eq!(msgs.len(), 2);
+    let msgs = store.inbox("receiver", false).unwrap();
+    assert!(msgs.is_empty());
+}
+
+#[test]
+fn test_mesh_reserve_conflict_release() {
+    let dir = tempdir().unwrap();
+    FileStore::init(dir.path()).unwrap();
+
+    use tak::store::mesh::MeshStore;
+    let store = MeshStore::open(&dir.path().join(".tak"));
+
+    store.join("A", None).unwrap();
+    store.join("B", None).unwrap();
+
+    store
+        .reserve("A", vec!["src/store/".into()], Some("task-1"))
+        .unwrap();
+
+    // Conflict: B tries sub-path
+    let err = store
+        .reserve("B", vec!["src/store/mesh.rs".into()], None)
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        tak::error::TakError::MeshReservationConflict(_, _)
+    ));
+
+    // Non-overlapping path succeeds
+    store
+        .reserve("B", vec!["src/model.rs".into()], None)
+        .unwrap();
+
+    // Release all for A
+    store.release("A", vec![]).unwrap();
+    let reservations = store.list_reservations().unwrap();
+    assert_eq!(reservations.len(), 1);
+    assert_eq!(reservations[0].agent, "B");
+}
+
+#[test]
+fn test_mesh_feed() {
+    let dir = tempdir().unwrap();
+    FileStore::init(dir.path()).unwrap();
+
+    use tak::store::mesh::MeshStore;
+    let store = MeshStore::open(&dir.path().join(".tak"));
+
+    store.join("A", None).unwrap();
+    store.join("B", None).unwrap();
+    store.send("A", "B", "hello", None).unwrap();
+
+    let events = store.read_feed(None).unwrap();
+    // join A, join B, send A->B = 3 events
+    assert!(events.len() >= 3);
+
+    // Limit
+    let last = store.read_feed(Some(1)).unwrap();
+    assert_eq!(last.len(), 1);
+    assert_eq!(last[0].event_type, "mesh.send");
+}
+
+#[test]
+fn test_mesh_leave_cleans_reservations() {
+    let dir = tempdir().unwrap();
+    FileStore::init(dir.path()).unwrap();
+
+    use tak::store::mesh::MeshStore;
+    let store = MeshStore::open(&dir.path().join(".tak"));
+
+    store.join("A", None).unwrap();
+    store.reserve("A", vec!["src/".into()], None).unwrap();
+    store.leave("A").unwrap();
+
+    let reservations = store.list_reservations().unwrap();
+    assert!(reservations.is_empty());
+}
+
 #[test]
 fn test_learn_index_auto_rebuild() {
     let dir = tempdir().unwrap();
