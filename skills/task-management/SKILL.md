@@ -25,6 +25,12 @@ tak create "Write unit tests" --parent 3
 
 # Create with dependencies
 tak create "Deploy to staging" --depends-on 4,5
+
+# Create with contract (executable spec)
+tak create "Refactor auth module" --objective "Consolidate auth into single module" \
+  --verify "cargo test" --verify "cargo clippy" \
+  --constraint "No unsafe code" --constraint "Backwards compatible" \
+  --criterion "All auth logic in src/auth/" --criterion "No public API changes"
 ```
 
 ### Viewing tasks
@@ -62,6 +68,10 @@ tak tree --pretty   # with box-drawing characters
 ```bash
 # Edit fields
 tak edit 1 --title "New title" -d "Updated description" --kind epic --tag new-tag
+
+# Edit contract fields
+tak edit 1 --objective "New objective" --verify "cargo test" --constraint "No panics"
+tak edit 1 --objective ""   # Clear objective
 
 # Claim the next available task (atomic find+start, preferred for multi-agent)
 tak claim --assignee agent-1
@@ -120,6 +130,17 @@ tak next
 # Rebuild the index (after git pull, merge, etc.)
 tak reindex
 ```
+
+## Task Contract
+
+Tasks can carry an executable spec via the `contract` field:
+
+- **objective** — One-sentence outcome definition (`--objective`)
+- **acceptance_criteria** — Checklist of what "done" means (`--criterion`, repeatable)
+- **verification** — Commands to verify completion (`--verify`, repeatable)
+- **constraints** — Rules the implementer must follow (`--constraint`, repeatable)
+
+Contract fields are optional. Empty contracts are omitted from JSON output. In pretty output, verification commands are prefixed with `$` to distinguish them from prose.
 
 ## Task Kinds
 
