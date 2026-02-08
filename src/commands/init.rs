@@ -9,12 +9,13 @@ pub fn run(repo_root: &Path) -> Result<()> {
     let store = FileStore::init(repo_root)?;
     Index::open(&store.root().join("index.db"))?;
 
-    // Create sidecar directories
+    // Create sidecar and learnings directories
     let tak = store.root();
     fs::create_dir_all(tak.join("context"))?;
     fs::create_dir_all(tak.join("history"))?;
     fs::create_dir_all(tak.join("artifacts"))?;
     fs::create_dir_all(tak.join("verification_results"))?;
+    fs::create_dir_all(tak.join("learnings"))?;
 
     // Write .gitignore for derived/ephemeral data
     fs::write(
