@@ -2,6 +2,7 @@ use crate::error::{Result, TakError};
 use crate::model::Status;
 use crate::output::{self, Format};
 use crate::store::repo::Repo;
+use crate::{git, model};
 use chrono::Utc;
 use std::path::Path;
 
@@ -58,6 +59,18 @@ pub fn start(repo_root: &Path, id: u64, assignee: Option<String>, format: Format
     if let Some(a) = assignee {
         task.assignee = Some(a);
     }
+
+    // Capture git HEAD on first start (only if not already set)
+    if task.git.start_commit.is_none()
+        && let Some(info) = git::current_head_info(repo_root)
+    {
+        task.git = model::GitInfo {
+            branch: info.branch,
+            start_commit: Some(info.sha),
+            ..task.git
+        };
+    }
+
     task.updated_at = Utc::now();
     repo.store.write(&task)?;
     repo.index.upsert(&task)?;
@@ -67,7 +80,29 @@ pub fn start(repo_root: &Path, id: u64, assignee: Option<String>, format: Format
 }
 
 pub fn finish(repo_root: &Path, id: u64, format: Format) -> Result<()> {
-    set_status(repo_root, id, Status::Done, None, format)
+    let repo = Repo::open(repo_root)?;
+    let mut task = repo.store.read(id)?;
+
+    transition(task.status, Status::Done)
+        .map_err(|(from, to)| TakError::InvalidTransition(from, to))?;
+
+    task.status = Status::Done;
+
+    // Capture end commit and collect commit range if start_commit exists
+    if let Some(info) = git::current_head_info(repo_root) {
+        task.git.end_commit = Some(info.sha.clone());
+
+        if let Some(ref start) = task.git.start_commit {
+            task.git.commits = git::commits_since(repo_root, start, &info.sha);
+        }
+    }
+
+    task.updated_at = Utc::now();
+    repo.store.write(&task)?;
+    repo.index.upsert(&task)?;
+
+    output::print_task(&task, format)?;
+    Ok(())
 }
 
 pub fn cancel(repo_root: &Path, id: u64, format: Format) -> Result<()> {

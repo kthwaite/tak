@@ -1164,6 +1164,7 @@ fn test_edit_adds_contract_fields() {
         None,
         None,
         None,
+        None,
         Format::Json,
     )
     .unwrap();
@@ -1311,6 +1312,7 @@ fn test_edit_sets_planning_fields() {
         Some(tak::model::Estimate::Xl),
         Some(vec!["python".into()]),
         Some(tak::model::Risk::High),
+        None,
         Format::Json,
     )
     .unwrap();
@@ -1407,4 +1409,154 @@ fn test_show_planning_in_pretty_output() {
     assert!(json.contains("\"l\""));
     assert!(json.contains("\"medium\""));
     assert!(json.contains("rust"));
+}
+
+#[test]
+fn test_start_captures_git_info() {
+    let dir = tempdir().unwrap();
+
+    // Initialize a git repo with one commit so HEAD exists
+    let repo = git2::Repository::init(dir.path()).unwrap();
+    {
+        let mut config = repo.config().unwrap();
+        config.set_str("user.name", "Test").unwrap();
+        config.set_str("user.email", "test@test.com").unwrap();
+    }
+    let sig = repo.signature().unwrap();
+    let tree_id = {
+        let mut idx = repo.index().unwrap();
+        idx.write_tree().unwrap()
+    };
+    let tree = repo.find_tree(tree_id).unwrap();
+    repo.commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+        .unwrap();
+    // Create a branch name we can verify
+    repo.set_head("refs/heads/main").unwrap();
+
+    // Initialize tak
+    let store = FileStore::init(dir.path()).unwrap();
+    store
+        .create(
+            "Test".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![],
+            vec![],
+            Contract::default(),
+            Planning::default(),
+        )
+        .unwrap();
+
+    let idx = Index::open(&store.root().join("index.db")).unwrap();
+    idx.rebuild(&store.list_all().unwrap()).unwrap();
+    drop(idx);
+
+    // Start the task
+    tak::commands::lifecycle::start(dir.path(), 1, None, Format::Json).unwrap();
+
+    let task = store.read(1).unwrap();
+    assert_eq!(task.git.branch.as_deref(), Some("main"));
+    assert!(
+        task.git.start_commit.is_some(),
+        "start_commit should be populated"
+    );
+    assert_eq!(
+        task.git.start_commit.as_ref().unwrap().len(),
+        40,
+        "should be a full SHA"
+    );
+}
+
+#[test]
+fn test_finish_captures_commit_range() {
+    let dir = tempdir().unwrap();
+
+    // Initialize a git repo with one commit
+    let repo = git2::Repository::init(dir.path()).unwrap();
+    {
+        let mut config = repo.config().unwrap();
+        config.set_str("user.name", "Test").unwrap();
+        config.set_str("user.email", "test@test.com").unwrap();
+    }
+    let sig = repo.signature().unwrap();
+    let tree_id = {
+        let mut idx = repo.index().unwrap();
+        idx.write_tree().unwrap()
+    };
+    let tree = repo.find_tree(tree_id).unwrap();
+    let initial_oid = repo
+        .commit(Some("HEAD"), &sig, &sig, "initial commit", &tree, &[])
+        .unwrap();
+    repo.set_head("refs/heads/main").unwrap();
+
+    // Initialize tak and create + start a task
+    let store = FileStore::init(dir.path()).unwrap();
+    store
+        .create(
+            "Test".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![],
+            vec![],
+            Contract::default(),
+            Planning::default(),
+        )
+        .unwrap();
+
+    let idx = Index::open(&store.root().join("index.db")).unwrap();
+    idx.rebuild(&store.list_all().unwrap()).unwrap();
+    drop(idx);
+
+    tak::commands::lifecycle::start(dir.path(), 1, None, Format::Json).unwrap();
+
+    // Make two more commits after start
+    let initial_commit = repo.find_commit(initial_oid).unwrap();
+
+    // Write a file to get a different tree for commit 2
+    fs::write(dir.path().join("file1.txt"), "content1").unwrap();
+    let mut index = repo.index().unwrap();
+    index.add_path(std::path::Path::new("file1.txt")).unwrap();
+    index.write().unwrap();
+    let tree2_id = index.write_tree().unwrap();
+    let tree2 = repo.find_tree(tree2_id).unwrap();
+    let c2_oid = repo
+        .commit(
+            Some("HEAD"),
+            &sig,
+            &sig,
+            "add file1",
+            &tree2,
+            &[&initial_commit],
+        )
+        .unwrap();
+
+    let c2 = repo.find_commit(c2_oid).unwrap();
+    fs::write(dir.path().join("file2.txt"), "content2").unwrap();
+    let mut index = repo.index().unwrap();
+    index.add_path(std::path::Path::new("file2.txt")).unwrap();
+    index.write().unwrap();
+    let tree3_id = index.write_tree().unwrap();
+    let tree3 = repo.find_tree(tree3_id).unwrap();
+    repo.commit(Some("HEAD"), &sig, &sig, "add file2", &tree3, &[&c2])
+        .unwrap();
+
+    // Finish the task
+    tak::commands::lifecycle::finish(dir.path(), 1, Format::Json).unwrap();
+
+    let task = store.read(1).unwrap();
+    assert_eq!(task.status, Status::Done);
+    assert!(
+        task.git.end_commit.is_some(),
+        "end_commit should be populated"
+    );
+    assert_eq!(
+        task.git.commits.len(),
+        2,
+        "should have 2 commits since start"
+    );
+    // Commits are in reverse chronological order (revwalk default)
+    assert!(task.git.commits[0].contains("add file2"));
+    assert!(task.git.commits[1].contains("add file1"));
 }

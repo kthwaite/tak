@@ -84,6 +84,10 @@ tak edit 1 --objective ""   # Clear objective
 tak edit 1 --priority high --estimate m --risk low
 tak edit 1 --skill rust --skill sql
 
+# Set pull request URL
+tak edit 1 --pr "https://github.com/org/repo/pull/42"
+tak edit 1 --pr ""   # Clear PR
+
 # Claim the next available task (atomic find+start, preferred for multi-agent)
 tak claim --assignee agent-1
 
@@ -152,6 +156,18 @@ Tasks can carry an executable spec via the `contract` field:
 - **constraints** — Rules the implementer must follow (`--constraint`, repeatable)
 
 Contract fields are optional. Empty contracts are omitted from JSON output. In pretty output, verification commands are prefixed with `$` to distinguish them from prose.
+
+## Git Provenance
+
+Tasks automatically track git context through their lifecycle:
+
+- **branch** — Branch name at `tak start` time (auto-captured)
+- **start_commit** — HEAD SHA when `tak start` is first run (auto-captured)
+- **end_commit** — HEAD SHA when `tak finish` is run (auto-captured)
+- **commits** — One-line summaries of commits between start and finish (auto-captured)
+- **pr** — Pull request URL (set manually via `tak edit --pr`)
+
+Git info is captured automatically by `start` and `finish` when the repo is inside a git repository. It degrades gracefully when git is not available. The `--pr` flag on `edit` allows associating a pull request URL after the fact.
 
 ## Task Planning
 

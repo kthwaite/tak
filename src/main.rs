@@ -147,6 +147,9 @@ enum Commands {
         /// Set risk level
         #[arg(long, value_enum)]
         risk: Option<Risk>,
+        /// Set pull request URL
+        #[arg(long)]
+        pr: Option<String>,
     },
     /// Set a task to in_progress
     Start {
@@ -359,6 +362,7 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
             estimate,
             skill,
             risk,
+            pr,
         } => tak::commands::edit::run(
             &root,
             id,
@@ -374,6 +378,7 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
             estimate,
             skill,
             risk,
+            pr,
             format,
         ),
         Commands::Start { id, assignee } => {
