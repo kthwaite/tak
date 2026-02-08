@@ -61,6 +61,34 @@ impl std::fmt::Display for DepType {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct Contract {
+    /// One-sentence outcome definition.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub objective: Option<String>,
+
+    /// Checklist of acceptance criteria.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub acceptance_criteria: Vec<String>,
+
+    /// Commands to verify the task is done.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub verification: Vec<String>,
+
+    /// Constraints the implementer must respect.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub constraints: Vec<String>,
+}
+
+impl Contract {
+    pub fn is_empty(&self) -> bool {
+        self.objective.is_none()
+            && self.acceptance_criteria.is_empty()
+            && self.verification.is_empty()
+            && self.constraints.is_empty()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Task {
     pub id: u64,
@@ -77,6 +105,8 @@ pub struct Task {
     pub assignee: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
+    #[serde(default, skip_serializing_if = "Contract::is_empty")]
+    pub contract: Contract,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     /// Preserve unknown fields for forward compatibility.
@@ -140,6 +170,7 @@ mod tests {
             depends_on: vec![Dependency::simple(2), Dependency::simple(3)],
             assignee: Some("agent-1".into()),
             tags: vec!["backend".into()],
+            contract: Contract::default(),
             created_at: now,
             updated_at: now,
             extensions: serde_json::Map::new(),
@@ -169,6 +200,7 @@ mod tests {
             depends_on: vec![],
             assignee: None,
             tags: vec![],
+            contract: Contract::default(),
             created_at: now,
             updated_at: now,
             extensions: serde_json::Map::new(),
@@ -201,6 +233,7 @@ mod tests {
                 "keep".into(),
                 "keep".into(),
             ],
+            contract: Contract::default(),
             created_at: now,
             updated_at: now,
             extensions: serde_json::Map::new(),
@@ -267,5 +300,67 @@ mod tests {
         let reparsed: serde_json::Value = serde_json::from_str(&serialized).unwrap();
         assert_eq!(reparsed["custom_field"], "preserved");
         assert_eq!(reparsed["nested"]["key"], "value");
+    }
+
+    #[test]
+    fn contract_round_trips() {
+        let now = Utc::now();
+        let task = Task {
+            id: 1,
+            title: "Contracted".into(),
+            description: None,
+            status: Status::Pending,
+            kind: Kind::Task,
+            parent: None,
+            depends_on: vec![],
+            assignee: None,
+            tags: vec![],
+            contract: Contract {
+                objective: Some("Ship the widget".into()),
+                acceptance_criteria: vec!["Tests pass".into(), "No warnings".into()],
+                verification: vec!["cargo test".into(), "cargo clippy".into()],
+                constraints: vec!["No unsafe".into()],
+            },
+            created_at: now,
+            updated_at: now,
+            extensions: serde_json::Map::new(),
+        };
+        let json = serde_json::to_string_pretty(&task).unwrap();
+        let parsed: Task = serde_json::from_str(&json).unwrap();
+        assert_eq!(task, parsed);
+        assert_eq!(
+            parsed.contract.objective.as_deref(),
+            Some("Ship the widget")
+        );
+        assert_eq!(parsed.contract.verification.len(), 2);
+    }
+
+    #[test]
+    fn empty_contract_omitted_from_json() {
+        let now = Utc::now();
+        let task = Task {
+            id: 1,
+            title: "Plain task".into(),
+            description: None,
+            status: Status::Pending,
+            kind: Kind::Task,
+            parent: None,
+            depends_on: vec![],
+            assignee: None,
+            tags: vec![],
+            contract: Contract::default(),
+            created_at: now,
+            updated_at: now,
+            extensions: serde_json::Map::new(),
+        };
+        let json = serde_json::to_string(&task).unwrap();
+        assert!(
+            !json.contains("contract"),
+            "empty contract should not appear in JSON"
+        );
+        assert!(!json.contains("objective"));
+        assert!(!json.contains("acceptance_criteria"));
+        assert!(!json.contains("verification"));
+        assert!(!json.contains("constraints"));
     }
 }

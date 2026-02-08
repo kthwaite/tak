@@ -528,7 +528,7 @@ fn detect_parent_cycle(tasks: &HashMap<u64, Task>) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Dependency, Kind, Status};
+    use crate::model::{Contract, Dependency, Kind, Status};
     use chrono::Utc;
 
     fn make_task(id: u64, parent: Option<u64>, deps: Vec<u64>) -> Task {
@@ -543,6 +543,7 @@ mod tests {
             depends_on: deps.into_iter().map(Dependency::simple).collect(),
             assignee: None,
             tags: vec![],
+            contract: Contract::default(),
             created_at: now,
             updated_at: now,
             extensions: serde_json::Map::new(),
