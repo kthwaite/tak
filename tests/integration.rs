@@ -4,7 +4,7 @@ use tempfile::tempdir;
 
 use chrono::Utc;
 use tak::error::TakError;
-use tak::model::{Contract, DepType, Kind, Planning, Status};
+use tak::model::{Contract, DepType, Kind, LearningCategory, Planning, Status};
 use tak::output::Format;
 use tak::store::files::FileStore;
 use tak::store::index::Index;
@@ -1974,4 +1974,569 @@ fn test_verify_stores_result() {
     assert_eq!(vr.results[0].command, "true");
     assert!(vr.results[1].passed);
     assert_eq!(vr.results[1].command, "echo ok");
+}
+
+// === Learnings system tests (Phase 8) ===
+
+#[test]
+fn test_learn_add_and_show() {
+    let dir = tempdir().unwrap();
+    let store = FileStore::init(dir.path()).unwrap();
+    fs::create_dir_all(dir.path().join(".tak/learnings")).unwrap();
+
+    store
+        .create(
+            "Auth task".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![],
+            vec![],
+            Contract::default(),
+            Planning::default(),
+        )
+        .unwrap();
+
+    let idx = Index::open(&store.root().join("index.db")).unwrap();
+    idx.rebuild(&store.list_all().unwrap()).unwrap();
+    drop(idx);
+
+    // Add a learning linked to task 1
+    tak::commands::learn::add(
+        dir.path(),
+        "Always validate input".into(),
+        Some("Never trust user input".into()),
+        LearningCategory::Pitfall,
+        vec!["security".into()],
+        vec![1],
+        Format::Json,
+    )
+    .unwrap();
+
+    // Show learning
+    tak::commands::learn::show(dir.path(), 1, Format::Json).unwrap();
+
+    // Verify via direct store read
+    let repo = Repo::open(dir.path()).unwrap();
+    let learning = repo.learnings.read(1).unwrap();
+    assert_eq!(learning.title, "Always validate input");
+    assert_eq!(
+        learning.description.as_deref(),
+        Some("Never trust user input")
+    );
+    assert_eq!(learning.category, LearningCategory::Pitfall);
+    assert_eq!(learning.tags, vec!["security"]);
+    assert_eq!(learning.task_ids, vec![1]);
+
+    // Task should have the learning ID linked
+    let task = repo.store.read(1).unwrap();
+    assert_eq!(task.learnings, vec![1]);
+}
+
+#[test]
+fn test_learn_list_with_filters() {
+    let dir = tempdir().unwrap();
+    let store = FileStore::init(dir.path()).unwrap();
+    fs::create_dir_all(dir.path().join(".tak/learnings")).unwrap();
+
+    store
+        .create(
+            "Task A".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![],
+            vec![],
+            Contract::default(),
+            Planning::default(),
+        )
+        .unwrap();
+
+    let idx = Index::open(&store.root().join("index.db")).unwrap();
+    idx.rebuild(&store.list_all().unwrap()).unwrap();
+    drop(idx);
+
+    tak::commands::learn::add(
+        dir.path(),
+        "Use FTS5".into(),
+        None,
+        LearningCategory::Tool,
+        vec!["sqlite".into()],
+        vec![1],
+        Format::Json,
+    )
+    .unwrap();
+
+    tak::commands::learn::add(
+        dir.path(),
+        "Beware of deadlocks".into(),
+        None,
+        LearningCategory::Pitfall,
+        vec!["concurrency".into()],
+        vec![],
+        Format::Json,
+    )
+    .unwrap();
+
+    tak::commands::learn::add(
+        dir.path(),
+        "Cargo workspace".into(),
+        None,
+        LearningCategory::Tool,
+        vec!["rust".into()],
+        vec![],
+        Format::Json,
+    )
+    .unwrap();
+
+    // List all
+    tak::commands::learn::list(dir.path(), None, None, None, Format::Json).unwrap();
+
+    // Filter by category
+    tak::commands::learn::list(
+        dir.path(),
+        Some(LearningCategory::Tool),
+        None,
+        None,
+        Format::Json,
+    )
+    .unwrap();
+
+    // Filter by tag
+    tak::commands::learn::list(dir.path(), None, Some("sqlite".into()), None, Format::Json)
+        .unwrap();
+
+    // Filter by task
+    tak::commands::learn::list(dir.path(), None, None, Some(1), Format::Json).unwrap();
+
+    // Verify via index queries
+    let repo = Repo::open(dir.path()).unwrap();
+    let all = repo.index.query_learnings(None, None, None).unwrap();
+    assert_eq!(all.len(), 3);
+
+    let tools = repo
+        .index
+        .query_learnings(Some("tool"), None, None)
+        .unwrap();
+    assert_eq!(tools.len(), 2);
+
+    let sqlite = repo
+        .index
+        .query_learnings(None, Some("sqlite"), None)
+        .unwrap();
+    assert_eq!(sqlite.len(), 1);
+    assert_eq!(sqlite[0], 1);
+
+    let for_task1 = repo.index.query_learnings(None, None, Some(1)).unwrap();
+    assert_eq!(for_task1.len(), 1);
+    assert_eq!(for_task1[0], 1);
+}
+
+#[test]
+fn test_learn_edit() {
+    let dir = tempdir().unwrap();
+    let store = FileStore::init(dir.path()).unwrap();
+    fs::create_dir_all(dir.path().join(".tak/learnings")).unwrap();
+
+    store
+        .create(
+            "Task A".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![],
+            vec![],
+            Contract::default(),
+            Planning::default(),
+        )
+        .unwrap();
+    store
+        .create(
+            "Task B".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![],
+            vec![],
+            Contract::default(),
+            Planning::default(),
+        )
+        .unwrap();
+
+    let idx = Index::open(&store.root().join("index.db")).unwrap();
+    idx.rebuild(&store.list_all().unwrap()).unwrap();
+    drop(idx);
+
+    tak::commands::learn::add(
+        dir.path(),
+        "Original title".into(),
+        None,
+        LearningCategory::Insight,
+        vec![],
+        vec![1],
+        Format::Json,
+    )
+    .unwrap();
+
+    // Edit title and add task link
+    tak::commands::learn::edit(
+        dir.path(),
+        1,
+        Some("Updated title".into()),
+        Some("New description".into()),
+        Some(LearningCategory::Pattern),
+        Some(vec!["new-tag".into()]),
+        vec![2],
+        vec![],
+        Format::Json,
+    )
+    .unwrap();
+
+    let repo = Repo::open(dir.path()).unwrap();
+    let learning = repo.learnings.read(1).unwrap();
+    assert_eq!(learning.title, "Updated title");
+    assert_eq!(learning.description.as_deref(), Some("New description"));
+    assert_eq!(learning.category, LearningCategory::Pattern);
+    assert_eq!(learning.tags, vec!["new-tag"]);
+    assert_eq!(learning.task_ids, vec![1, 2]);
+
+    // Both tasks should link to learning 1
+    let t1 = repo.store.read(1).unwrap();
+    assert!(t1.learnings.contains(&1));
+    let t2 = repo.store.read(2).unwrap();
+    assert!(t2.learnings.contains(&1));
+
+    // Remove task link
+    tak::commands::learn::edit(
+        dir.path(),
+        1,
+        None,
+        None,
+        None,
+        None,
+        vec![],
+        vec![1],
+        Format::Json,
+    )
+    .unwrap();
+
+    let repo = Repo::open(dir.path()).unwrap();
+    let learning = repo.learnings.read(1).unwrap();
+    assert_eq!(learning.task_ids, vec![2]);
+
+    // Task 1 should no longer link to learning 1
+    let t1 = repo.store.read(1).unwrap();
+    assert!(!t1.learnings.contains(&1));
+}
+
+#[test]
+fn test_learn_remove() {
+    let dir = tempdir().unwrap();
+    let store = FileStore::init(dir.path()).unwrap();
+    fs::create_dir_all(dir.path().join(".tak/learnings")).unwrap();
+
+    store
+        .create(
+            "Task A".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![],
+            vec![],
+            Contract::default(),
+            Planning::default(),
+        )
+        .unwrap();
+
+    let idx = Index::open(&store.root().join("index.db")).unwrap();
+    idx.rebuild(&store.list_all().unwrap()).unwrap();
+    drop(idx);
+
+    tak::commands::learn::add(
+        dir.path(),
+        "Doomed learning".into(),
+        None,
+        LearningCategory::Insight,
+        vec![],
+        vec![1],
+        Format::Json,
+    )
+    .unwrap();
+
+    // Verify task links to learning
+    let repo = Repo::open(dir.path()).unwrap();
+    let task = repo.store.read(1).unwrap();
+    assert_eq!(task.learnings, vec![1]);
+    drop(repo);
+
+    // Remove learning
+    tak::commands::learn::remove(dir.path(), 1, Format::Json).unwrap();
+
+    // Learning should be gone
+    let repo = Repo::open(dir.path()).unwrap();
+    assert!(matches!(
+        repo.learnings.read(1).unwrap_err(),
+        TakError::LearningNotFound(1)
+    ));
+
+    // Task should no longer link to learning
+    let task = repo.store.read(1).unwrap();
+    assert!(task.learnings.is_empty());
+}
+
+#[test]
+fn test_learn_suggest_via_fts() {
+    let dir = tempdir().unwrap();
+    let store = FileStore::init(dir.path()).unwrap();
+    fs::create_dir_all(dir.path().join(".tak/learnings")).unwrap();
+
+    // Create a task with a title containing words that match learnings
+    store
+        .create(
+            "Fix authentication bug".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![],
+            vec![],
+            Contract::default(),
+            Planning::default(),
+        )
+        .unwrap();
+
+    let idx = Index::open(&store.root().join("index.db")).unwrap();
+    idx.rebuild(&store.list_all().unwrap()).unwrap();
+    drop(idx);
+
+    // Add learnings with matching and non-matching content
+    tak::commands::learn::add(
+        dir.path(),
+        "Authentication tokens should be rotated".into(),
+        Some("JWT tokens need regular rotation for security".into()),
+        LearningCategory::Insight,
+        vec![],
+        vec![],
+        Format::Json,
+    )
+    .unwrap();
+
+    tak::commands::learn::add(
+        dir.path(),
+        "Database indexing strategy".into(),
+        Some("Always add indexes for frequently queried columns".into()),
+        LearningCategory::Pattern,
+        vec![],
+        vec![],
+        Format::Json,
+    )
+    .unwrap();
+
+    tak::commands::learn::add(
+        dir.path(),
+        "Fix common auth bugs".into(),
+        Some("Common pitfalls in authentication code".into()),
+        LearningCategory::Pitfall,
+        vec![],
+        vec![],
+        Format::Json,
+    )
+    .unwrap();
+
+    // Suggest learnings for task 1 ("Fix authentication bug")
+    // Should find learnings with "authentication" or "auth" or "fix" or "bug"
+    let repo = Repo::open(dir.path()).unwrap();
+    let suggested = repo
+        .index
+        .suggest_learnings("Fix authentication bug")
+        .unwrap();
+    assert!(!suggested.is_empty(), "should find relevant learnings");
+
+    // Learning 1 and 3 should be suggested (both mention auth/authentication)
+    assert!(
+        suggested.contains(&1) || suggested.contains(&3),
+        "should find at least one auth-related learning"
+    );
+}
+
+#[test]
+fn test_learn_suggest_empty_title() {
+    let dir = tempdir().unwrap();
+    let store = FileStore::init(dir.path()).unwrap();
+    fs::create_dir_all(dir.path().join(".tak/learnings")).unwrap();
+
+    store
+        .create(
+            "".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![],
+            vec![],
+            Contract::default(),
+            Planning::default(),
+        )
+        .unwrap();
+
+    let idx = Index::open(&store.root().join("index.db")).unwrap();
+    idx.rebuild(&store.list_all().unwrap()).unwrap();
+    drop(idx);
+
+    // Suggest with empty title should return empty, not error
+    tak::commands::learn::suggest(dir.path(), 1, Format::Json).unwrap();
+}
+
+#[test]
+fn test_learnings_for_task_index_query() {
+    let dir = tempdir().unwrap();
+    let store = FileStore::init(dir.path()).unwrap();
+    fs::create_dir_all(dir.path().join(".tak/learnings")).unwrap();
+
+    store
+        .create(
+            "Task A".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![],
+            vec![],
+            Contract::default(),
+            Planning::default(),
+        )
+        .unwrap();
+    store
+        .create(
+            "Task B".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![],
+            vec![],
+            Contract::default(),
+            Planning::default(),
+        )
+        .unwrap();
+
+    let idx = Index::open(&store.root().join("index.db")).unwrap();
+    idx.rebuild(&store.list_all().unwrap()).unwrap();
+    drop(idx);
+
+    tak::commands::learn::add(
+        dir.path(),
+        "Learning for A".into(),
+        None,
+        LearningCategory::Insight,
+        vec![],
+        vec![1],
+        Format::Json,
+    )
+    .unwrap();
+
+    tak::commands::learn::add(
+        dir.path(),
+        "Learning for both".into(),
+        None,
+        LearningCategory::Pattern,
+        vec![],
+        vec![1, 2],
+        Format::Json,
+    )
+    .unwrap();
+
+    tak::commands::learn::add(
+        dir.path(),
+        "Learning for B".into(),
+        None,
+        LearningCategory::Tool,
+        vec![],
+        vec![2],
+        Format::Json,
+    )
+    .unwrap();
+
+    let repo = Repo::open(dir.path()).unwrap();
+    let for_a = repo.index.learnings_for_task(1).unwrap();
+    assert_eq!(for_a, vec![1, 2]);
+
+    let for_b = repo.index.learnings_for_task(2).unwrap();
+    assert_eq!(for_b, vec![2, 3]);
+
+    let for_none = repo.index.learnings_for_task(999).unwrap();
+    assert!(for_none.is_empty());
+}
+
+#[test]
+fn test_learn_remove_nonexistent_fails() {
+    let dir = tempdir().unwrap();
+    FileStore::init(dir.path()).unwrap();
+    fs::create_dir_all(dir.path().join(".tak/learnings")).unwrap();
+
+    let idx = Index::open(&dir.path().join(".tak/index.db")).unwrap();
+    idx.rebuild(&[]).unwrap();
+    drop(idx);
+
+    let result = tak::commands::learn::remove(dir.path(), 999, Format::Json);
+    assert!(matches!(
+        result.unwrap_err(),
+        TakError::LearningNotFound(999)
+    ));
+}
+
+#[test]
+fn test_learn_add_invalid_task_fails() {
+    let dir = tempdir().unwrap();
+    FileStore::init(dir.path()).unwrap();
+    fs::create_dir_all(dir.path().join(".tak/learnings")).unwrap();
+
+    let idx = Index::open(&dir.path().join(".tak/index.db")).unwrap();
+    idx.rebuild(&[]).unwrap();
+    drop(idx);
+
+    let result = tak::commands::learn::add(
+        dir.path(),
+        "Bad link".into(),
+        None,
+        LearningCategory::Insight,
+        vec![],
+        vec![999],
+        Format::Json,
+    );
+    assert!(matches!(result.unwrap_err(), TakError::TaskNotFound(999)));
+}
+
+#[test]
+fn test_learn_index_auto_rebuild() {
+    let dir = tempdir().unwrap();
+    let store = FileStore::init(dir.path()).unwrap();
+    fs::create_dir_all(dir.path().join(".tak/learnings")).unwrap();
+
+    let idx = Index::open(&store.root().join("index.db")).unwrap();
+    idx.rebuild(&store.list_all().unwrap()).unwrap();
+    drop(idx);
+
+    // Add a learning via direct store (bypassing index)
+    let lstore = tak::store::learnings::LearningStore::open(store.root());
+    let learning = lstore
+        .create(
+            "Direct learning".into(),
+            None,
+            LearningCategory::Insight,
+            vec!["test".into()],
+            vec![],
+        )
+        .unwrap();
+    assert_eq!(learning.id, 1);
+
+    // Delete the index, force rebuild via Repo::open()
+    fs::remove_file(store.root().join("index.db")).unwrap();
+
+    // Repo::open should auto-rebuild both tasks and learnings
+    let repo = Repo::open(dir.path()).unwrap();
+    let ids = repo.index.query_learnings(None, None, None).unwrap();
+    assert_eq!(ids, vec![1]);
+
+    let by_tag = repo
+        .index
+        .query_learnings(None, Some("test"), None)
+        .unwrap();
+    assert_eq!(by_tag, vec![1]);
 }

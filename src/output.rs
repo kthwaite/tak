@@ -111,6 +111,10 @@ pub fn print_task(task: &Task, format: Format) -> Result<()> {
                     }
                 }
             }
+            if !task.learnings.is_empty() {
+                let ids: Vec<String> = task.learnings.iter().map(|id| format!("L{id}")).collect();
+                println!("  learnings: {}", ids.join(", "));
+            }
         }
         Format::Minimal => {
             let assignee = task.assignee.as_deref().unwrap_or("-");

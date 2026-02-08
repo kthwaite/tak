@@ -3,7 +3,7 @@ use std::path::Path;
 use rusqlite::{Connection, params};
 
 use crate::error::Result;
-use crate::model::Task;
+use crate::model::{Learning, Task};
 
 pub struct Index {
     conn: Connection,
@@ -62,6 +62,32 @@ impl Index {
             CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
             CREATE INDEX IF NOT EXISTS idx_tasks_kind ON tasks(kind);
             CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_id);
+            CREATE TABLE IF NOT EXISTS learnings (
+                id INTEGER PRIMARY KEY,
+                numeric_id INTEGER NOT NULL UNIQUE,
+                title TEXT NOT NULL,
+                description TEXT,
+                category TEXT NOT NULL DEFAULT 'insight',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS learning_tags (
+                learning_id INTEGER NOT NULL REFERENCES learnings(id),
+                tag TEXT NOT NULL,
+                PRIMARY KEY (learning_id, tag)
+            );
+            CREATE TABLE IF NOT EXISTS learning_tasks (
+                learning_id INTEGER NOT NULL REFERENCES learnings(id),
+                task_id INTEGER NOT NULL,
+                PRIMARY KEY (learning_id, task_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_learning_tasks_task ON learning_tasks(task_id);
+            CREATE VIRTUAL TABLE IF NOT EXISTS learnings_fts USING fts5(
+                title,
+                description,
+                content=learnings,
+                content_rowid=numeric_id
+            );
             CREATE TABLE IF NOT EXISTS metadata (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
@@ -344,6 +370,263 @@ impl Index {
         Ok(())
     }
 
+    // === Learning index methods ===
+
+    pub fn upsert_learning(&self, learning: &Learning) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+
+        // Read old data for FTS cleanup, if this learning already exists
+        let old: Option<(String, Option<String>)> = {
+            let mut stmt = tx.prepare("SELECT title, description FROM learnings WHERE id = ?1")?;
+            match stmt.query_row(params![learning.id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+            }) {
+                Ok(row) => Some(row),
+                Err(rusqlite::Error::QueryReturnedNoRows) => None,
+                Err(e) => return Err(e.into()),
+            }
+        };
+
+        // Delete old FTS entry with actual content values
+        if let Some((old_title, old_desc)) = old {
+            tx.execute(
+                "INSERT INTO learnings_fts(learnings_fts, rowid, title, description) VALUES('delete', ?1, ?2, ?3)",
+                params![learning.id, old_title, old_desc],
+            )?;
+        }
+
+        // Delete from junction tables and main table
+        tx.execute(
+            "DELETE FROM learning_tags WHERE learning_id = ?1",
+            params![learning.id],
+        )?;
+        tx.execute(
+            "DELETE FROM learning_tasks WHERE learning_id = ?1",
+            params![learning.id],
+        )?;
+        tx.execute("DELETE FROM learnings WHERE id = ?1", params![learning.id])?;
+
+        // Insert new data
+        tx.execute(
+            "INSERT INTO learnings (id, numeric_id, title, description, category, created_at, updated_at)
+             VALUES (?1, ?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                learning.id, learning.title, learning.description,
+                learning.category.to_string(),
+                learning.created_at.to_rfc3339(), learning.updated_at.to_rfc3339(),
+            ],
+        )?;
+
+        // Insert into FTS
+        tx.execute(
+            "INSERT INTO learnings_fts(rowid, title, description) VALUES(?1, ?2, ?3)",
+            params![learning.id, learning.title, learning.description],
+        )?;
+
+        for tag in &learning.tags {
+            tx.execute(
+                "INSERT OR IGNORE INTO learning_tags (learning_id, tag) VALUES (?1, ?2)",
+                params![learning.id, tag],
+            )?;
+        }
+        for &task_id in &learning.task_ids {
+            tx.execute(
+                "INSERT OR IGNORE INTO learning_tasks (learning_id, task_id) VALUES (?1, ?2)",
+                params![learning.id, task_id],
+            )?;
+        }
+
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn delete_learning(&self, id: u64) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+
+        // Read old data for FTS cleanup
+        let old: Option<(String, Option<String>)> = {
+            let mut stmt = tx.prepare("SELECT title, description FROM learnings WHERE id = ?1")?;
+            match stmt.query_row(params![id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+            }) {
+                Ok(row) => Some(row),
+                Err(rusqlite::Error::QueryReturnedNoRows) => None,
+                Err(e) => return Err(e.into()),
+            }
+        };
+
+        if let Some((old_title, old_desc)) = old {
+            tx.execute(
+                "INSERT INTO learnings_fts(learnings_fts, rowid, title, description) VALUES('delete', ?1, ?2, ?3)",
+                params![id, old_title, old_desc],
+            )?;
+        }
+
+        tx.execute(
+            "DELETE FROM learning_tags WHERE learning_id = ?1",
+            params![id],
+        )?;
+        tx.execute(
+            "DELETE FROM learning_tasks WHERE learning_id = ?1",
+            params![id],
+        )?;
+        tx.execute("DELETE FROM learnings WHERE id = ?1", params![id])?;
+
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn rebuild_learnings(&self, learnings: &[Learning]) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute_batch(
+            "DELETE FROM learning_tags; DELETE FROM learning_tasks; DELETE FROM learnings; DELETE FROM learnings_fts;",
+        )?;
+
+        for learning in learnings {
+            tx.execute(
+                "INSERT INTO learnings (id, numeric_id, title, description, category, created_at, updated_at)
+                 VALUES (?1, ?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    learning.id, learning.title, learning.description,
+                    learning.category.to_string(),
+                    learning.created_at.to_rfc3339(), learning.updated_at.to_rfc3339(),
+                ],
+            )?;
+            tx.execute(
+                "INSERT INTO learnings_fts(rowid, title, description) VALUES(?1, ?2, ?3)",
+                params![learning.id, learning.title, learning.description],
+            )?;
+            for tag in &learning.tags {
+                tx.execute(
+                    "INSERT OR IGNORE INTO learning_tags (learning_id, tag) VALUES (?1, ?2)",
+                    params![learning.id, tag],
+                )?;
+            }
+            for &task_id in &learning.task_ids {
+                tx.execute(
+                    "INSERT OR IGNORE INTO learning_tasks (learning_id, task_id) VALUES (?1, ?2)",
+                    params![learning.id, task_id],
+                )?;
+            }
+        }
+
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Query learnings, optionally filtered by category and/or tag.
+    pub fn query_learnings(
+        &self,
+        category: Option<&str>,
+        tag: Option<&str>,
+        task_id: Option<u64>,
+    ) -> Result<Vec<u64>> {
+        let mut conditions = Vec::new();
+        let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+        let mut param_idx = 1;
+
+        let mut from = "learnings l".to_string();
+
+        if let Some(cat) = category {
+            conditions.push(format!("l.category = ?{param_idx}"));
+            param_values.push(Box::new(cat.to_string()));
+            param_idx += 1;
+        }
+        if let Some(t) = tag {
+            from.push_str(&format!(
+                " JOIN learning_tags lt ON lt.learning_id = l.id AND lt.tag = ?{param_idx}"
+            ));
+            param_values.push(Box::new(t.to_string()));
+            param_idx += 1;
+        }
+        if let Some(tid) = task_id {
+            from.push_str(&format!(
+                " JOIN learning_tasks lta ON lta.learning_id = l.id AND lta.task_id = ?{param_idx}"
+            ));
+            param_values.push(Box::new(tid));
+            let _ = param_idx; // suppress unused warning
+        }
+
+        let where_clause = if conditions.is_empty() {
+            String::new()
+        } else {
+            format!(" WHERE {}", conditions.join(" AND "))
+        };
+
+        let sql = format!("SELECT l.id FROM {from}{where_clause} ORDER BY l.id");
+        let params: Vec<&dyn rusqlite::types::ToSql> =
+            param_values.iter().map(|p| p.as_ref()).collect();
+
+        let mut stmt = self.conn.prepare(&sql)?;
+        let ids = stmt
+            .query_map(params.as_slice(), |row| row.get(0))?
+            .collect::<std::result::Result<Vec<u64>, _>>()?;
+        Ok(ids)
+    }
+
+    /// Full-text search for learnings relevant to a given query string.
+    /// Returns learning IDs ordered by FTS5 rank (most relevant first).
+    pub fn suggest_learnings(&self, query: &str) -> Result<Vec<u64>> {
+        let query = query.trim();
+        if query.is_empty() {
+            return Ok(vec![]);
+        }
+
+        // Sanitize: extract alphanumeric tokens, join with spaces for FTS5 implicit AND
+        let tokens: Vec<&str> = query
+            .split(|c: char| !c.is_alphanumeric() && c != '_')
+            .filter(|t| !t.is_empty())
+            .collect();
+        if tokens.is_empty() {
+            return Ok(vec![]);
+        }
+
+        // Use OR between tokens for broader matching
+        let fts_query = tokens.join(" OR ");
+
+        let mut stmt = self.conn.prepare(
+            "SELECT l.id FROM learnings l
+             JOIN learnings_fts f ON f.rowid = l.numeric_id
+             WHERE learnings_fts MATCH ?1
+             ORDER BY rank",
+        )?;
+        let ids = stmt
+            .query_map(params![fts_query], |row| row.get(0))?
+            .collect::<std::result::Result<Vec<u64>, _>>()?;
+        Ok(ids)
+    }
+
+    /// Return learning IDs linked to a given task ID.
+    pub fn learnings_for_task(&self, task_id: u64) -> Result<Vec<u64>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT learning_id FROM learning_tasks WHERE task_id = ?1 ORDER BY learning_id",
+        )?;
+        let ids = stmt
+            .query_map(params![task_id], |row| row.get(0))?
+            .collect::<std::result::Result<Vec<u64>, _>>()?;
+        Ok(ids)
+    }
+
+    pub fn get_learning_fingerprint(&self) -> Result<Option<String>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT value FROM metadata WHERE key = 'learning_fingerprint'")?;
+        let result = stmt.query_row([], |row| row.get::<_, String>(0));
+        match result {
+            Ok(fp) => Ok(Some(fp)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    pub fn set_learning_fingerprint(&self, fingerprint: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO metadata (key, value) VALUES ('learning_fingerprint', ?1)",
+            params![fingerprint],
+        )?;
+        Ok(())
+    }
+
     pub fn conn(&self) -> &Connection {
         &self.conn
     }
@@ -371,6 +654,7 @@ mod tests {
             planning: Planning::default(),
             git: GitInfo::default(),
             execution: Execution::default(),
+            learnings: vec![],
             created_at: now,
             updated_at: now,
             extensions: serde_json::Map::new(),
@@ -575,6 +859,7 @@ mod tests {
                 planning: Planning::default(),
                 git: GitInfo::default(),
                 execution: Execution::default(),
+                learnings: vec![],
                 created_at: now,
                 updated_at: now,
                 extensions: serde_json::Map::new(),
@@ -593,6 +878,7 @@ mod tests {
                 planning: Planning::default(),
                 git: GitInfo::default(),
                 execution: Execution::default(),
+                learnings: vec![],
                 created_at: now,
                 updated_at: now,
                 extensions: serde_json::Map::new(),
@@ -623,6 +909,7 @@ mod tests {
             planning: Planning::default(),
             git: GitInfo::default(),
             execution: Execution::default(),
+            learnings: vec![],
             created_at: now,
             updated_at: now,
             extensions: serde_json::Map::new(),

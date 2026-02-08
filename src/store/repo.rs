@@ -3,12 +3,14 @@ use std::path::{Path, PathBuf};
 use crate::error::{Result, TakError};
 use crate::store::files::FileStore;
 use crate::store::index::Index;
+use crate::store::learnings::LearningStore;
 use crate::store::sidecars::SidecarStore;
 
 pub struct Repo {
     pub store: FileStore,
     pub index: Index,
     pub sidecars: SidecarStore,
+    pub learnings: LearningStore,
 }
 
 impl Repo {
@@ -36,11 +38,22 @@ impl Repo {
         index.set_fingerprint(&current_fp)?;
 
         let sidecars = SidecarStore::open(store.root());
+        let learnings = LearningStore::open(store.root());
+
+        // Rebuild learnings index if stale or missing
+        let current_lfp = learnings.fingerprint()?;
+        let stored_lfp = index.get_learning_fingerprint()?;
+        if stored_lfp.as_deref() != Some(current_lfp.as_str()) {
+            let all_learnings = learnings.list_all()?;
+            index.rebuild_learnings(&all_learnings)?;
+            index.set_learning_fingerprint(&current_lfp)?;
+        }
 
         Ok(Self {
             store,
             index,
             sidecars,
+            learnings,
         })
     }
 }

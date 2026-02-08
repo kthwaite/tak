@@ -104,6 +104,7 @@ impl FileStore {
             planning,
             git: GitInfo::default(),
             execution: Execution::default(),
+            learnings: vec![],
             created_at: now,
             updated_at: now,
             extensions: serde_json::Map::new(),
