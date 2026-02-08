@@ -1091,6 +1091,48 @@ fn test_doctor_missing_index() {
 }
 
 #[test]
+fn test_edit_adds_contract_fields() {
+    let dir = tempdir().unwrap();
+    let store = FileStore::init(dir.path()).unwrap();
+    store
+        .create(
+            "Bare task".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![],
+            vec![],
+            Contract::default(),
+        )
+        .unwrap();
+
+    let idx = Index::open(&store.root().join("index.db")).unwrap();
+    idx.rebuild(&store.list_all().unwrap()).unwrap();
+    drop(idx);
+
+    tak::commands::edit::run(
+        dir.path(),
+        1,
+        None,
+        None,
+        None,
+        None,
+        Some("Build it".into()),
+        Some(vec!["cargo test".into()]),
+        Some(vec!["No panics".into()]),
+        Some(vec!["Compiles clean".into()]),
+        Format::Json,
+    )
+    .unwrap();
+
+    let task = store.read(1).unwrap();
+    assert_eq!(task.contract.objective.as_deref(), Some("Build it"));
+    assert_eq!(task.contract.verification, vec!["cargo test"]);
+    assert_eq!(task.contract.constraints, vec!["No panics"]);
+    assert_eq!(task.contract.acceptance_criteria, vec!["Compiles clean"]);
+}
+
+#[test]
 fn test_create_with_contract() {
     let dir = tempdir().unwrap();
     let store = FileStore::init(dir.path()).unwrap();

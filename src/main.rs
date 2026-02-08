@@ -108,6 +108,18 @@ enum Commands {
         /// Replace tags (comma-separated)
         #[arg(long, value_delimiter = ',')]
         tag: Option<Vec<String>>,
+        /// Set objective
+        #[arg(long)]
+        objective: Option<String>,
+        /// Replace verification commands (repeatable)
+        #[arg(long = "verify")]
+        verify: Option<Vec<String>>,
+        /// Replace constraints (repeatable)
+        #[arg(long)]
+        constraint: Option<Vec<String>>,
+        /// Replace acceptance criteria (repeatable)
+        #[arg(long = "criterion")]
+        criterion: Option<Vec<String>>,
     },
     /// Set a task to in_progress
     Start {
@@ -299,7 +311,23 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
             description,
             kind,
             tag,
-        } => tak::commands::edit::run(&root, id, title, description, kind, tag, format),
+            objective,
+            verify,
+            constraint,
+            criterion,
+        } => tak::commands::edit::run(
+            &root,
+            id,
+            title,
+            description,
+            kind,
+            tag,
+            objective,
+            verify,
+            constraint,
+            criterion,
+            format,
+        ),
         Commands::Start { id, assignee } => {
             tak::commands::lifecycle::start(&root, id, assignee, format)
         }

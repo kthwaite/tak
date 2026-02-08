@@ -5,6 +5,7 @@ use crate::store::repo::Repo;
 use chrono::Utc;
 use std::path::Path;
 
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     repo_root: &Path,
     id: u64,
@@ -12,6 +13,10 @@ pub fn run(
     description: Option<String>,
     kind: Option<Kind>,
     tags: Option<Vec<String>>,
+    objective: Option<String>,
+    verify: Option<Vec<String>>,
+    constraint: Option<Vec<String>>,
+    criterion: Option<Vec<String>>,
     format: Format,
 ) -> Result<()> {
     let repo = Repo::open(repo_root)?;
@@ -32,6 +37,24 @@ pub fn run(
     }
     if let Some(t) = tags {
         task.tags = t;
+    }
+
+    // Contract fields — each is individually optional
+    if let Some(o) = objective {
+        if o.is_empty() {
+            task.contract.objective = None;
+        } else {
+            task.contract.objective = Some(o);
+        }
+    }
+    if let Some(v) = verify {
+        task.contract.verification = v;
+    }
+    if let Some(c) = constraint {
+        task.contract.constraints = c;
+    }
+    if let Some(c) = criterion {
+        task.contract.acceptance_criteria = c;
     }
 
     task.normalize();
