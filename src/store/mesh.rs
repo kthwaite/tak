@@ -252,6 +252,7 @@ impl MeshStore {
 
     /// Unregister an agent. Removes registry entry, inbox, and reservations.
     pub fn leave(&self, name: &str) -> crate::error::Result<()> {
+        Self::validate_name(name)?;
         let lock = lock::acquire_lock(&self.registry_lock_path())?;
 
         let path = self.registration_path(name);
@@ -344,7 +345,7 @@ impl MeshStore {
         let path = self.reservations_path();
         if path.exists() {
             let content = fs::read_to_string(&path)?;
-            let reservations: Vec<Reservation> = serde_json::from_str(&content).unwrap_or_default();
+            let reservations: Vec<Reservation> = serde_json::from_str(&content)?;
             let filtered: Vec<&Reservation> =
                 reservations.iter().filter(|r| r.agent != name).collect();
             let json = serde_json::to_string_pretty(&filtered)?;
@@ -364,6 +365,8 @@ impl MeshStore {
         text: &str,
         reply_to: Option<&str>,
     ) -> crate::error::Result<Message> {
+        Self::validate_name(from)?;
+        Self::validate_name(to)?;
         // Verify recipient exists
         let to_path = self.registration_path(to);
         if !to_path.exists() {
@@ -385,7 +388,8 @@ impl MeshStore {
         let inbox = self.agent_inbox_dir(to);
         fs::create_dir_all(&inbox)?;
         let ts = now.format("%Y%m%d%H%M%S%3f");
-        let filename = format!("{ts}-{}.json", &msg.id[..8]);
+        let short_id = msg.id.get(..8).unwrap_or(&msg.id);
+        let filename = format!("{ts}-{short_id}.json");
         let json = serde_json::to_string_pretty(&msg)?;
         fs::write(inbox.join(&filename), json)?;
 
@@ -404,6 +408,7 @@ impl MeshStore {
 
     /// Broadcast a message to all registered agents (except sender).
     pub fn broadcast(&self, from: &str, text: &str) -> crate::error::Result<Vec<Message>> {
+        Self::validate_name(from)?;
         let agents = self.list_agents()?;
         let mut messages = Vec::new();
         for agent in &agents {
@@ -417,6 +422,7 @@ impl MeshStore {
 
     /// Read inbox messages for an agent. If `ack` is true, delete after reading.
     pub fn inbox(&self, name: &str, ack: bool) -> crate::error::Result<Vec<Message>> {
+        Self::validate_name(name)?;
         let dir = self.agent_inbox_dir(name);
         if !dir.exists() {
             return Ok(vec![]);
@@ -462,10 +468,11 @@ impl MeshStore {
         paths: Vec<String>,
         reason: Option<&str>,
     ) -> crate::error::Result<Reservation> {
+        Self::validate_name(agent)?;
         let lock = lock::acquire_lock(&self.reservations_lock_path())?;
 
         let content = fs::read_to_string(self.reservations_path())?;
-        let mut reservations: Vec<Reservation> = serde_json::from_str(&content).unwrap_or_default();
+        let mut reservations: Vec<Reservation> = serde_json::from_str(&content)?;
 
         // Check for conflicts with other agents
         for existing in &reservations {
@@ -515,10 +522,11 @@ impl MeshStore {
 
     /// Release reservations. If `paths` is empty, release all for the agent.
     pub fn release(&self, agent: &str, paths: Vec<String>) -> crate::error::Result<()> {
+        Self::validate_name(agent)?;
         let lock = lock::acquire_lock(&self.reservations_lock_path())?;
 
         let content = fs::read_to_string(self.reservations_path())?;
-        let mut reservations: Vec<Reservation> = serde_json::from_str(&content).unwrap_or_default();
+        let mut reservations: Vec<Reservation> = serde_json::from_str(&content)?;
 
         if paths.is_empty() {
             // Release all
@@ -561,7 +569,7 @@ impl MeshStore {
             return Ok(vec![]);
         }
         let content = fs::read_to_string(&path)?;
-        let reservations: Vec<Reservation> = serde_json::from_str(&content).unwrap_or_default();
+        let reservations: Vec<Reservation> = serde_json::from_str(&content)?;
         Ok(reservations)
     }
 }
@@ -786,6 +794,20 @@ mod tests {
     }
 
     #[test]
+    fn path_traversal_rejected_on_all_entry_points() {
+        let (_dir, store) = setup_mesh();
+        let evil = "../../../etc";
+        assert!(store.join(evil, None).is_err());
+        assert!(store.leave(evil).is_err());
+        assert!(store.send(evil, "ok", "hi", None).is_err());
+        assert!(store.send("ok", evil, "hi", None).is_err());
+        assert!(store.inbox(evil, false).is_err());
+        assert!(store.broadcast(evil, "hi").is_err());
+        assert!(store.reserve(evil, vec!["f".into()], None).is_err());
+        assert!(store.release(evil, vec![]).is_err());
+    }
+
+    #[test]
     fn leave_removes_registration() {
         let (_dir, store) = setup_mesh();
         store.join("agent-1", None).unwrap();
@@ -949,6 +971,18 @@ mod tests {
 
         let all = store.list_reservations().unwrap();
         assert!(all.is_empty());
+    }
+
+    #[test]
+    fn corrupt_reservations_errors_instead_of_silent_drop() {
+        let (_dir, store) = setup_mesh();
+        store.join("A", None).unwrap();
+        // Write corrupt data
+        fs::write(store.reservations_path(), "NOT VALID JSON").unwrap();
+        // All reservation operations should error, not silently default
+        assert!(store.list_reservations().is_err());
+        assert!(store.reserve("A", vec!["src/a.rs".into()], None).is_err());
+        assert!(store.release("A", vec![]).is_err());
     }
 
     #[test]

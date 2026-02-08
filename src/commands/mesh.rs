@@ -98,7 +98,7 @@ pub fn inbox(repo_root: &Path, name: &str, ack: bool, format: Format) -> Result<
                 println!("{}", "No messages.".dimmed());
             } else {
                 for m in &msgs {
-                    let short_id = &m.id[..8];
+                    let short_id = m.id.get(..8).unwrap_or(&m.id);
                     println!(
                         "{} {} {}",
                         format!("[{}]", short_id).dimmed(),
