@@ -265,7 +265,13 @@ mod tests {
     fn delete_learning() {
         let (_dir, store) = setup();
         store
-            .create("Doomed".into(), None, LearningCategory::Insight, vec![], vec![])
+            .create(
+                "Doomed".into(),
+                None,
+                LearningCategory::Insight,
+                vec![],
+                vec![],
+            )
             .unwrap();
         store.delete(1).unwrap();
         assert!(store.read(1).is_err());
@@ -297,7 +303,13 @@ mod tests {
     fn write_updates_learning() {
         let (_dir, store) = setup();
         let mut learning = store
-            .create("Original".into(), None, LearningCategory::Insight, vec![], vec![])
+            .create(
+                "Original".into(),
+                None,
+                LearningCategory::Insight,
+                vec![],
+                vec![],
+            )
             .unwrap();
         learning.title = "Updated".into();
         learning.updated_at = Utc::now();

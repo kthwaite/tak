@@ -377,9 +377,7 @@ impl Index {
 
         // Read old data for FTS cleanup, if this learning already exists
         let old: Option<(String, Option<String>)> = {
-            let mut stmt = tx.prepare(
-                "SELECT title, description FROM learnings WHERE id = ?1",
-            )?;
+            let mut stmt = tx.prepare("SELECT title, description FROM learnings WHERE id = ?1")?;
             match stmt.query_row(params![learning.id], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
             }) {
@@ -398,8 +396,14 @@ impl Index {
         }
 
         // Delete from junction tables and main table
-        tx.execute("DELETE FROM learning_tags WHERE learning_id = ?1", params![learning.id])?;
-        tx.execute("DELETE FROM learning_tasks WHERE learning_id = ?1", params![learning.id])?;
+        tx.execute(
+            "DELETE FROM learning_tags WHERE learning_id = ?1",
+            params![learning.id],
+        )?;
+        tx.execute(
+            "DELETE FROM learning_tasks WHERE learning_id = ?1",
+            params![learning.id],
+        )?;
         tx.execute("DELETE FROM learnings WHERE id = ?1", params![learning.id])?;
 
         // Insert new data
@@ -441,9 +445,7 @@ impl Index {
 
         // Read old data for FTS cleanup
         let old: Option<(String, Option<String>)> = {
-            let mut stmt = tx.prepare(
-                "SELECT title, description FROM learnings WHERE id = ?1",
-            )?;
+            let mut stmt = tx.prepare("SELECT title, description FROM learnings WHERE id = ?1")?;
             match stmt.query_row(params![id], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
             }) {
@@ -460,8 +462,14 @@ impl Index {
             )?;
         }
 
-        tx.execute("DELETE FROM learning_tags WHERE learning_id = ?1", params![id])?;
-        tx.execute("DELETE FROM learning_tasks WHERE learning_id = ?1", params![id])?;
+        tx.execute(
+            "DELETE FROM learning_tags WHERE learning_id = ?1",
+            params![id],
+        )?;
+        tx.execute(
+            "DELETE FROM learning_tasks WHERE learning_id = ?1",
+            params![id],
+        )?;
         tx.execute("DELETE FROM learnings WHERE id = ?1", params![id])?;
 
         tx.commit()?;
@@ -546,7 +554,8 @@ impl Index {
         };
 
         let sql = format!("SELECT l.id FROM {from}{where_clause} ORDER BY l.id");
-        let params: Vec<&dyn rusqlite::types::ToSql> = param_values.iter().map(|p| p.as_ref()).collect();
+        let params: Vec<&dyn rusqlite::types::ToSql> =
+            param_values.iter().map(|p| p.as_ref()).collect();
 
         let mut stmt = self.conn.prepare(&sql)?;
         let ids = stmt

@@ -2020,7 +2020,10 @@ fn test_learn_add_and_show() {
     let repo = Repo::open(dir.path()).unwrap();
     let learning = repo.learnings.read(1).unwrap();
     assert_eq!(learning.title, "Always validate input");
-    assert_eq!(learning.description.as_deref(), Some("Never trust user input"));
+    assert_eq!(
+        learning.description.as_deref(),
+        Some("Never trust user input")
+    );
     assert_eq!(learning.category, LearningCategory::Pitfall);
     assert_eq!(learning.tags, vec!["security"]);
     assert_eq!(learning.task_ids, vec![1]);
@@ -2111,10 +2114,16 @@ fn test_learn_list_with_filters() {
     let all = repo.index.query_learnings(None, None, None).unwrap();
     assert_eq!(all.len(), 3);
 
-    let tools = repo.index.query_learnings(Some("tool"), None, None).unwrap();
+    let tools = repo
+        .index
+        .query_learnings(Some("tool"), None, None)
+        .unwrap();
     assert_eq!(tools.len(), 2);
 
-    let sqlite = repo.index.query_learnings(None, Some("sqlite"), None).unwrap();
+    let sqlite = repo
+        .index
+        .query_learnings(None, Some("sqlite"), None)
+        .unwrap();
     assert_eq!(sqlite.len(), 1);
     assert_eq!(sqlite[0], 1);
 
@@ -2336,7 +2345,10 @@ fn test_learn_suggest_via_fts() {
     // Suggest learnings for task 1 ("Fix authentication bug")
     // Should find learnings with "authentication" or "auth" or "fix" or "bug"
     let repo = Repo::open(dir.path()).unwrap();
-    let suggested = repo.index.suggest_learnings("Fix authentication bug").unwrap();
+    let suggested = repo
+        .index
+        .suggest_learnings("Fix authentication bug")
+        .unwrap();
     assert!(!suggested.is_empty(), "should find relevant learnings");
 
     // Learning 1 and 3 should be suggested (both mention auth/authentication)
@@ -2488,10 +2500,7 @@ fn test_learn_add_invalid_task_fails() {
         vec![999],
         Format::Json,
     );
-    assert!(matches!(
-        result.unwrap_err(),
-        TakError::TaskNotFound(999)
-    ));
+    assert!(matches!(result.unwrap_err(), TakError::TaskNotFound(999)));
 }
 
 #[test]
@@ -2525,6 +2534,9 @@ fn test_learn_index_auto_rebuild() {
     let ids = repo.index.query_learnings(None, None, None).unwrap();
     assert_eq!(ids, vec![1]);
 
-    let by_tag = repo.index.query_learnings(None, Some("test"), None).unwrap();
+    let by_tag = repo
+        .index
+        .query_learnings(None, Some("test"), None)
+        .unwrap();
     assert_eq!(by_tag, vec![1]);
 }

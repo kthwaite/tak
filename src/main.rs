@@ -529,7 +529,15 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
                 category,
                 tag,
                 task_ids,
-            } => tak::commands::learn::add(&root, title, description, category, tag, task_ids, format),
+            } => tak::commands::learn::add(
+                &root,
+                title,
+                description,
+                category,
+                tag,
+                task_ids,
+                format,
+            ),
             LearnAction::List {
                 category,
                 tag,

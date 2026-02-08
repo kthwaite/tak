@@ -23,7 +23,9 @@ pub fn add(
         repo.store.read(tid)?;
     }
 
-    let learning = repo.learnings.create(title, description, category, tags, task_ids.clone())?;
+    let learning = repo
+        .learnings
+        .create(title, description, category, tags, task_ids.clone())?;
     repo.index.upsert_learning(&learning)?;
 
     // Update learning fingerprint
@@ -223,7 +225,10 @@ pub fn print_learning(learning: &Learning, format: Format) -> Result<()> {
     match format {
         Format::Json => println!("{}", serde_json::to_string(learning)?),
         Format::Pretty => {
-            println!("[L{}] {} ({})", learning.id, learning.title, learning.category);
+            println!(
+                "[L{}] {} ({})",
+                learning.id, learning.title, learning.category
+            );
             if let Some(ref desc) = learning.description {
                 println!("  {}", desc);
             }
@@ -237,10 +242,7 @@ pub fn print_learning(learning: &Learning, format: Format) -> Result<()> {
         }
         Format::Minimal => {
             let title = crate::output::truncate_title(&learning.title, 20);
-            println!(
-                "L{:>3} {:20} {:8}",
-                learning.id, title, learning.category
-            );
+            println!("L{:>3} {:20} {:8}", learning.id, title, learning.category);
         }
     }
     Ok(())
