@@ -195,24 +195,162 @@ pub fn print_task(task: &Task, format: Format) -> Result<()> {
     Ok(())
 }
 
-pub fn truncate_title(title: &str, max_len: usize) -> String {
-    if title.chars().count() > max_len {
-        let truncated: String = title.chars().take(max_len - 3).collect();
+fn truncate_text(text: &str, max_len: usize) -> String {
+    if text.chars().count() > max_len {
+        let keep = max_len.saturating_sub(3);
+        let truncated: String = text.chars().take(keep).collect();
         format!("{}...", truncated)
     } else {
-        title.to_string()
+        text.to_string()
     }
+}
+
+pub fn truncate_title(title: &str, max_len: usize) -> String {
+    truncate_text(title, max_len)
+}
+
+fn display_width(text: &str) -> usize {
+    text.chars().count()
+}
+
+fn build_table_border(left: char, middle: char, right: char, widths: &[usize]) -> String {
+    let mut line = String::new();
+    line.push(left);
+    for (idx, width) in widths.iter().enumerate() {
+        line.push_str(&"─".repeat(*width + 2));
+        if idx + 1 < widths.len() {
+            line.push(middle);
+        }
+    }
+    line.push(right);
+    line
+}
+
+fn print_table_row(cells: &[String]) {
+    let mut line = String::from("│");
+    for cell in cells {
+        line.push(' ');
+        line.push_str(cell);
+        line.push(' ');
+        line.push('│');
+    }
+    println!("{}", line);
+}
+
+fn style_status_cell(status: Status, padded: String) -> String {
+    match status {
+        Status::Pending => padded.yellow().to_string(),
+        Status::InProgress => padded.blue().to_string(),
+        Status::Done => padded.green().to_string(),
+        Status::Cancelled => padded.red().to_string(),
+    }
+}
+
+fn style_priority_cell(priority: Option<Priority>, padded: String) -> String {
+    match priority {
+        Some(Priority::Critical) => padded.red().bold().to_string(),
+        Some(Priority::High) => padded.red().to_string(),
+        Some(Priority::Medium) => padded.yellow().to_string(),
+        Some(Priority::Low) => padded.green().to_string(),
+        None => padded.dimmed().to_string(),
+    }
+}
+
+fn print_tasks_pretty_table(tasks: &[Task]) {
+    const TITLE_MAX_WIDTH: usize = 48;
+    const ASSIGNEE_MAX_WIDTH: usize = 20;
+    const TAGS_MAX_WIDTH: usize = 28;
+
+    let headers = ["ID", "TITLE", "KIND", "STATUS", "ASSIGNEE", "PRIORITY", "TAGS"];
+
+    let rows: Vec<[String; 7]> = tasks
+        .iter()
+        .map(|task| {
+            let assignee = truncate_text(task.assignee.as_deref().unwrap_or("-"), ASSIGNEE_MAX_WIDTH);
+            let priority = task
+                .planning
+                .priority
+                .map(|p| p.to_string())
+                .unwrap_or_else(|| "-".to_string());
+            let tags = if task.tags.is_empty() {
+                "-".to_string()
+            } else {
+                task.tags.join(", ")
+            };
+
+            [
+                task.id.to_string(),
+                truncate_text(&task.title, TITLE_MAX_WIDTH),
+                task.kind.to_string(),
+                task.status.to_string(),
+                assignee,
+                priority,
+                truncate_text(&tags, TAGS_MAX_WIDTH),
+            ]
+        })
+        .collect();
+
+    let mut widths: Vec<usize> = headers.iter().map(|h| display_width(h)).collect();
+    for row in &rows {
+        for (idx, cell) in row.iter().enumerate() {
+            widths[idx] = widths[idx].max(display_width(cell));
+        }
+    }
+
+    println!("{}", build_table_border('┌', '┬', '┐', &widths).dimmed());
+
+    let header_cells: Vec<String> = headers
+        .iter()
+        .enumerate()
+        .map(|(idx, header)| {
+            format!("{:<width$}", header, width = widths[idx])
+                .bold()
+                .to_string()
+        })
+        .collect();
+    print_table_row(&header_cells);
+
+    println!("{}", build_table_border('├', '┼', '┤', &widths).dimmed());
+
+    for (task, row) in tasks.iter().zip(rows.iter()) {
+        let id = format!("{:>width$}", &row[0], width = widths[0])
+            .cyan()
+            .bold()
+            .to_string();
+        let title = format!("{:<width$}", &row[1], width = widths[1]);
+        let kind = format!("{:<width$}", &row[2], width = widths[2]);
+        let status = style_status_cell(task.status, format!("{:<width$}", &row[3], width = widths[3]));
+
+        let assignee_text = format!("{:<width$}", &row[4], width = widths[4]);
+        let assignee = if task.assignee.is_some() {
+            assignee_text.cyan().to_string()
+        } else {
+            assignee_text.dimmed().to_string()
+        };
+
+        let priority = style_priority_cell(
+            task.planning.priority,
+            format!("{:<width$}", &row[5], width = widths[5]),
+        );
+
+        let tags_text = format!("{:<width$}", &row[6], width = widths[6]);
+        let tags = if task.tags.is_empty() {
+            tags_text.dimmed().to_string()
+        } else {
+            tags_text.cyan().to_string()
+        };
+
+        let cells = [id, title, kind, status, assignee, priority, tags];
+        print_table_row(&cells);
+    }
+
+    println!("{}", build_table_border('└', '┴', '┘', &widths).dimmed());
 }
 
 pub fn print_tasks(tasks: &[Task], format: Format) -> Result<()> {
     match format {
         Format::Json => println!("{}", serde_json::to_string(tasks)?),
-        Format::Pretty => {
-            for task in tasks {
-                print_task(task, Format::Pretty)?;
-                println!();
-            }
-        }
+        Format::Pretty => print_tasks_pretty_table(tasks),
         Format::Minimal => {
             println!(
                 "{:>4} {:12} {:6} {:10} ASSIGNEE",
