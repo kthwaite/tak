@@ -7,6 +7,7 @@ use crate::model::Status;
 use crate::output::{self, Format};
 use crate::store::lock;
 use crate::store::repo::Repo;
+use crate::{git, model};
 
 pub fn run(repo_root: &Path, assignee: String, tag: Option<String>, format: Format) -> Result<()> {
     let lock_path = repo_root.join(".tak").join("claim.lock");
@@ -46,6 +47,18 @@ pub fn run(repo_root: &Path, assignee: String, tag: Option<String>, format: Form
     let mut task = repo.store.read(id)?;
     task.status = Status::InProgress;
     task.assignee = Some(assignee);
+
+    // Capture git HEAD on first start (only if not already set)
+    if task.git.start_commit.is_none()
+        && let Some(info) = git::current_head_info(repo_root)
+    {
+        task.git = model::GitInfo {
+            branch: info.branch,
+            start_commit: Some(info.sha),
+            ..task.git
+        };
+    }
+
     task.updated_at = Utc::now();
     repo.store.write(&task)?;
     repo.index.upsert(&task)?;
