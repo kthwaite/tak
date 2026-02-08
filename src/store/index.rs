@@ -36,6 +36,8 @@ impl Index {
                 kind TEXT NOT NULL DEFAULT 'task',
                 parent_id INTEGER REFERENCES tasks(id),
                 assignee TEXT,
+                priority INTEGER,
+                estimate TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
@@ -51,6 +53,11 @@ impl Index {
                 tag TEXT NOT NULL,
                 PRIMARY KEY (task_id, tag)
             );
+            CREATE TABLE IF NOT EXISTS skills (
+                task_id INTEGER NOT NULL REFERENCES tasks(id),
+                skill TEXT NOT NULL,
+                PRIMARY KEY (task_id, skill)
+            );
             CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
             CREATE INDEX IF NOT EXISTS idx_tasks_kind ON tasks(kind);
             CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_id);
@@ -64,17 +71,21 @@ impl Index {
 
     pub fn rebuild(&self, tasks: &[Task]) -> Result<()> {
         let tx = self.conn.unchecked_transaction()?;
-        tx.execute_batch("DELETE FROM tags; DELETE FROM dependencies; DELETE FROM tasks;")?;
+        tx.execute_batch(
+            "DELETE FROM skills; DELETE FROM tags; DELETE FROM dependencies; DELETE FROM tasks;",
+        )?;
 
         // Pass 1: insert all task rows with parent_id deferred (avoids FK failures)
         for task in tasks {
             tx.execute(
-                "INSERT INTO tasks (id, title, description, status, kind, parent_id, assignee, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, ?7, ?8)",
+                "INSERT INTO tasks (id, title, description, status, kind, parent_id, assignee, priority, estimate, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, ?7, ?8, ?9, ?10)",
                 params![
                     task.id, task.title, task.description,
                     task.status.to_string(), task.kind.to_string(),
                     task.assignee,
+                    task.planning.priority.map(|p| p.rank() as i64),
+                    task.planning.estimate.map(|e| e.to_string()),
                     task.created_at.to_rfc3339(), task.updated_at.to_rfc3339(),
                 ],
             )?;
@@ -100,6 +111,12 @@ impl Index {
                     params![task.id, tag],
                 )?;
             }
+            for skill in &task.planning.required_skills {
+                tx.execute(
+                    "INSERT OR IGNORE INTO skills (task_id, skill) VALUES (?1, ?2)",
+                    params![task.id, skill],
+                )?;
+            }
         }
 
         tx.commit()?;
@@ -110,12 +127,14 @@ impl Index {
         let tx = self.conn.unchecked_transaction()?;
 
         tx.execute(
-            "INSERT OR REPLACE INTO tasks (id, title, description, status, kind, parent_id, assignee, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            "INSERT OR REPLACE INTO tasks (id, title, description, status, kind, parent_id, assignee, priority, estimate, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 task.id, task.title, task.description,
                 task.status.to_string(), task.kind.to_string(),
                 task.parent, task.assignee,
+                task.planning.priority.map(|p| p.rank() as i64),
+                task.planning.estimate.map(|e| e.to_string()),
                 task.created_at.to_rfc3339(), task.updated_at.to_rfc3339(),
             ],
         )?;
@@ -136,6 +155,13 @@ impl Index {
                 params![task.id, tag],
             )?;
         }
+        tx.execute("DELETE FROM skills WHERE task_id = ?1", params![task.id])?;
+        for skill in &task.planning.required_skills {
+            tx.execute(
+                "INSERT OR IGNORE INTO skills (task_id, skill) VALUES (?1, ?2)",
+                params![task.id, skill],
+            )?;
+        }
 
         tx.commit()?;
         Ok(())
@@ -143,6 +169,7 @@ impl Index {
 
     pub fn remove(&self, id: u64) -> Result<()> {
         let tx = self.conn.unchecked_transaction()?;
+        tx.execute("DELETE FROM skills WHERE task_id = ?1", params![id])?;
         tx.execute("DELETE FROM tags WHERE task_id = ?1", params![id])?;
         tx.execute("DELETE FROM dependencies WHERE task_id = ?1", params![id])?;
         tx.execute(
@@ -169,7 +196,7 @@ impl Index {
                      WHERE d.task_id = t.id
                      AND dep.status NOT IN ('done', 'cancelled')
                  )
-                 ORDER BY t.id",
+                 ORDER BY COALESCE(t.priority, 4), t.id",
                 true,
             ),
             None => (
@@ -182,7 +209,7 @@ impl Index {
                      WHERE d.task_id = t.id
                      AND dep.status NOT IN ('done', 'cancelled')
                  )
-                 ORDER BY t.id",
+                 ORDER BY COALESCE(t.priority, 4), t.id",
                 false,
             ),
         };
@@ -622,5 +649,29 @@ mod tests {
         assert!(idx.would_parent_cycle(1, 1).unwrap());
         // Reparenting task 3 under task 1 is fine (it's already transitively there)
         assert!(!idx.would_parent_cycle(3, 1).unwrap());
+    }
+
+    #[test]
+    fn available_ordered_by_priority_then_id() {
+        use crate::model::Priority;
+
+        let idx = Index::open_memory().unwrap();
+
+        let mut t1 = make_task(1, Status::Pending, vec![], None);
+        t1.planning.priority = Some(Priority::Low);
+
+        let mut t2 = make_task(2, Status::Pending, vec![], None);
+        t2.planning.priority = Some(Priority::Critical);
+
+        let t3 = make_task(3, Status::Pending, vec![], None);
+        // No priority — should sort last
+
+        let mut t4 = make_task(4, Status::Pending, vec![], None);
+        t4.planning.priority = Some(Priority::High);
+
+        idx.rebuild(&[t1, t2, t3, t4]).unwrap();
+        let avail = idx.available(None).unwrap();
+        // Expected order: critical(2), high(4), low(1), none(3)
+        assert_eq!(avail, vec![2, 4, 1, 3]);
     }
 }
