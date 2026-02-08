@@ -139,6 +139,26 @@ tak reparent 5 --to 1
 tak orphan 5
 ```
 
+### Context notes and history
+
+```bash
+# Set context notes for a task (free-form markdown)
+tak context 1 --set "This task requires careful migration of the auth tokens table."
+
+# Read context notes
+tak context 1
+
+# Clear context notes
+tak context 1 --clear
+
+# View task history log (auto-populated by lifecycle commands)
+tak log 1
+
+# Run verification commands from task contract
+tak verify 1
+tak verify 1 --pretty   # PASS/FAIL with stderr details
+```
+
 ### Finding work
 
 ```bash
@@ -162,6 +182,8 @@ Tasks can carry an executable spec via the `contract` field:
 - **constraints** — Rules the implementer must follow (`--constraint`, repeatable)
 
 Contract fields are optional. Empty contracts are omitted from JSON output. In pretty output, verification commands are prefixed with `$` to distinguish them from prose.
+
+Use `tak verify ID` to run verification commands and check pass/fail status.
 
 ## Git Provenance
 
@@ -212,6 +234,27 @@ Tasks track runtime execution state via the `execution` field:
 
 Execution fields are optional. Empty execution is omitted from JSON output. In pretty output, execution metadata is shown when non-empty (attempts, last error, handoff summary, blocked reason).
 
+## Sidecar Files
+
+Each task can have associated sidecar files stored alongside the task JSON:
+
+- **Context notes** (`.tak/context/{id}.md`) — Free-form markdown notes, instructions, or context for a task. Set via `tak context ID --set TEXT`, read via `tak context ID`, clear via `tak context ID --clear`.
+- **History log** (`.tak/history/{id}.log`) — Append-only timestamped event log, auto-populated by lifecycle commands (`start`, `finish`, `cancel`, `handoff`, `reopen`, `unassign`, `claim`). View via `tak log ID`.
+
+Sidecar files are committed to git alongside task files. They are automatically cleaned up when a task is deleted.
+
+## Verification
+
+Run `tak verify ID` to execute the verification commands from a task's contract. Each command runs via `sh -c` from the repo root. The command exits 0 if all verifications pass, 1 if any fail.
+
+```bash
+# JSON output with per-command results
+tak verify 1
+
+# Pretty output with PASS/FAIL markers
+tak verify 1 --pretty
+```
+
 ## JSON Output Parsing
 
 All commands output single-line JSON by default. Parse with standard JSON tools:
@@ -225,20 +268,29 @@ tak list --available | jq '.[].id'
 
 # Check if a task is blocked (has unfinished deps)
 tak list --blocked | jq '.[].id'
+
+# Read context notes
+tak context 1 | jq '.context'
+
+# Check verification results
+tak verify 1 | jq '.all_passed'
 ```
 
 ## Workflow
 
 1. Check for available work: `tak list --available`
 2. Claim a task: `tak claim --assignee <your-name>`
-3. Do the work
-4. Mark complete: `tak finish <id>`
-5. Check what's unblocked: `tak list --available`
-6. Repeat
+3. Read context: `tak context <id>` (if set)
+4. Do the work
+5. Verify: `tak verify <id>` (if contract has verification commands)
+6. Mark complete: `tak finish <id>`
+7. Check what's unblocked: `tak list --available`
+8. Repeat
 
 ## Important Notes
 
 - Always run `tak reindex` after pulling changes or switching branches
-- The `.tak/tasks/` directory should be committed to git
+- The `.tak/tasks/`, `.tak/context/`, and `.tak/history/` directories should be committed to git
 - The `.tak/index.db` file is gitignored (rebuilt on demand)
 - Use `tak claim` instead of `tak next` + `tak start` to avoid TOCTOU races in multi-agent setups
+- History logging is best-effort — it never fails a lifecycle command
