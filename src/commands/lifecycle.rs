@@ -2,6 +2,7 @@ use crate::error::{Result, TakError};
 use crate::model::Status;
 use crate::output::{self, Format};
 use crate::store::repo::Repo;
+use crate::store::sidecars::HistoryEvent;
 use crate::{git, model};
 use chrono::Utc;
 use std::path::Path;
@@ -33,8 +34,8 @@ pub fn start(repo_root: &Path, id: u64, assignee: Option<String>, format: Format
 
     task.status = Status::InProgress;
     task.execution.attempt_count += 1;
-    if let Some(a) = assignee {
-        task.assignee = Some(a);
+    if let Some(ref a) = assignee {
+        task.assignee = Some(a.clone());
     }
 
     // Capture git HEAD on first start (only if not already set)
@@ -51,6 +52,15 @@ pub fn start(repo_root: &Path, id: u64, assignee: Option<String>, format: Format
     task.updated_at = Utc::now();
     repo.store.write(&task)?;
     repo.index.upsert(&task)?;
+
+    // Best-effort history logging
+    let evt = HistoryEvent {
+        timestamp: Utc::now(),
+        event: "started".into(),
+        agent: task.assignee.clone(),
+        detail: serde_json::Map::new(),
+    };
+    let _ = repo.sidecars.append_history(id, &evt);
 
     output::print_task(&task, format)?;
     Ok(())
@@ -78,6 +88,15 @@ pub fn finish(repo_root: &Path, id: u64, format: Format) -> Result<()> {
     repo.store.write(&task)?;
     repo.index.upsert(&task)?;
 
+    // Best-effort history logging
+    let evt = HistoryEvent {
+        timestamp: Utc::now(),
+        event: "finished".into(),
+        agent: task.assignee.clone(),
+        detail: serde_json::Map::new(),
+    };
+    let _ = repo.sidecars.append_history(id, &evt);
+
     output::print_task(&task, format)?;
     Ok(())
 }
@@ -90,12 +109,25 @@ pub fn cancel(repo_root: &Path, id: u64, reason: Option<String>, format: Format)
         .map_err(|(from, to)| TakError::InvalidTransition(from, to))?;
 
     task.status = Status::Cancelled;
-    if let Some(r) = reason {
-        task.execution.last_error = Some(r);
+    if let Some(ref r) = reason {
+        task.execution.last_error = Some(r.clone());
     }
     task.updated_at = Utc::now();
     repo.store.write(&task)?;
     repo.index.upsert(&task)?;
+
+    // Best-effort history logging
+    let mut detail = serde_json::Map::new();
+    if let Some(ref r) = reason {
+        detail.insert("reason".into(), serde_json::Value::String(r.clone()));
+    }
+    let evt = HistoryEvent {
+        timestamp: Utc::now(),
+        event: "cancelled".into(),
+        agent: task.assignee.clone(),
+        detail,
+    };
+    let _ = repo.sidecars.append_history(id, &evt);
 
     output::print_task(&task, format)?;
     Ok(())
@@ -110,10 +142,21 @@ pub fn handoff(repo_root: &Path, id: u64, summary: String, format: Format) -> Re
 
     task.status = Status::Pending;
     task.assignee = None;
-    task.execution.handoff_summary = Some(summary);
+    task.execution.handoff_summary = Some(summary.clone());
     task.updated_at = Utc::now();
     repo.store.write(&task)?;
     repo.index.upsert(&task)?;
+
+    // Best-effort history logging
+    let mut detail = serde_json::Map::new();
+    detail.insert("summary".into(), serde_json::Value::String(summary));
+    let evt = HistoryEvent {
+        timestamp: Utc::now(),
+        event: "handoff".into(),
+        agent: None,
+        detail,
+    };
+    let _ = repo.sidecars.append_history(id, &evt);
 
     output::print_task(&task, format)?;
     Ok(())
@@ -132,6 +175,15 @@ pub fn reopen(repo_root: &Path, id: u64, format: Format) -> Result<()> {
     repo.store.write(&task)?;
     repo.index.upsert(&task)?;
 
+    // Best-effort history logging
+    let evt = HistoryEvent {
+        timestamp: Utc::now(),
+        event: "reopened".into(),
+        agent: None,
+        detail: serde_json::Map::new(),
+    };
+    let _ = repo.sidecars.append_history(id, &evt);
+
     output::print_task(&task, format)?;
     Ok(())
 }
@@ -144,6 +196,15 @@ pub fn unassign(repo_root: &Path, id: u64, format: Format) -> Result<()> {
     task.updated_at = Utc::now();
     repo.store.write(&task)?;
     repo.index.upsert(&task)?;
+
+    // Best-effort history logging
+    let evt = HistoryEvent {
+        timestamp: Utc::now(),
+        event: "unassigned".into(),
+        agent: None,
+        detail: serde_json::Map::new(),
+    };
+    let _ = repo.sidecars.append_history(id, &evt);
 
     output::print_task(&task, format)?;
     Ok(())

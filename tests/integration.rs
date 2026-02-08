@@ -1673,3 +1673,305 @@ fn test_handoff_records_summary_and_returns_to_pending() {
         "attempt_count should be preserved after handoff"
     );
 }
+
+// === Sidecar / Context tests (Phase 7) ===
+
+#[test]
+fn test_context_set_and_read() {
+    let dir = tempdir().unwrap();
+    let store = FileStore::init(dir.path()).unwrap();
+    fs::create_dir_all(dir.path().join(".tak/context")).unwrap();
+    fs::create_dir_all(dir.path().join(".tak/history")).unwrap();
+
+    store
+        .create(
+            "Context task".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![],
+            vec![],
+            Contract::default(),
+            Planning::default(),
+        )
+        .unwrap();
+
+    let idx = Index::open(&store.root().join("index.db")).unwrap();
+    idx.rebuild(&store.list_all().unwrap()).unwrap();
+    drop(idx);
+
+    // Set context
+    tak::commands::context::run(
+        dir.path(),
+        1,
+        Some("Important notes here".into()),
+        false,
+        Format::Json,
+    )
+    .unwrap();
+
+    // Verify context file was created
+    assert!(dir.path().join(".tak/context/1.md").exists());
+
+    // Read context back via sidecar store
+    let repo = tak::store::repo::Repo::open(dir.path()).unwrap();
+    let ctx = repo.sidecars.read_context(1).unwrap();
+    assert_eq!(ctx.as_deref(), Some("Important notes here"));
+}
+
+#[test]
+fn test_context_clear() {
+    let dir = tempdir().unwrap();
+    let store = FileStore::init(dir.path()).unwrap();
+    fs::create_dir_all(dir.path().join(".tak/context")).unwrap();
+    fs::create_dir_all(dir.path().join(".tak/history")).unwrap();
+
+    store
+        .create(
+            "Clearable".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![],
+            vec![],
+            Contract::default(),
+            Planning::default(),
+        )
+        .unwrap();
+
+    let idx = Index::open(&store.root().join("index.db")).unwrap();
+    idx.rebuild(&store.list_all().unwrap()).unwrap();
+    drop(idx);
+
+    // Set then clear
+    tak::commands::context::run(dir.path(), 1, Some("notes".into()), false, Format::Json).unwrap();
+    assert!(dir.path().join(".tak/context/1.md").exists());
+
+    tak::commands::context::run(dir.path(), 1, None, true, Format::Json).unwrap();
+    assert!(!dir.path().join(".tak/context/1.md").exists());
+}
+
+#[test]
+fn test_log_shows_lifecycle_history() {
+    let dir = tempdir().unwrap();
+    let store = FileStore::init(dir.path()).unwrap();
+    fs::create_dir_all(dir.path().join(".tak/context")).unwrap();
+    fs::create_dir_all(dir.path().join(".tak/history")).unwrap();
+
+    store
+        .create(
+            "Log task".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![],
+            vec![],
+            Contract::default(),
+            Planning::default(),
+        )
+        .unwrap();
+
+    let idx = Index::open(&store.root().join("index.db")).unwrap();
+    idx.rebuild(&store.list_all().unwrap()).unwrap();
+    drop(idx);
+
+    // Run lifecycle commands to generate history
+    tak::commands::lifecycle::start(dir.path(), 1, Some("agent-1".into()), Format::Json).unwrap();
+    tak::commands::lifecycle::finish(dir.path(), 1, Format::Json).unwrap();
+
+    // Verify history file was created with structured events
+    let repo = tak::store::repo::Repo::open(dir.path()).unwrap();
+    let events = repo.sidecars.read_history(1).unwrap();
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0].event, "started");
+    assert_eq!(events[0].agent.as_deref(), Some("agent-1"));
+    assert_eq!(events[1].event, "finished");
+}
+
+#[test]
+fn test_log_empty_returns_empty_json() {
+    let dir = tempdir().unwrap();
+    let store = FileStore::init(dir.path()).unwrap();
+    fs::create_dir_all(dir.path().join(".tak/context")).unwrap();
+    fs::create_dir_all(dir.path().join(".tak/history")).unwrap();
+
+    store
+        .create(
+            "No history".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![],
+            vec![],
+            Contract::default(),
+            Planning::default(),
+        )
+        .unwrap();
+
+    let idx = Index::open(&store.root().join("index.db")).unwrap();
+    idx.rebuild(&store.list_all().unwrap()).unwrap();
+    drop(idx);
+
+    // JSON mode returns empty array, no error
+    tak::commands::log::run(dir.path(), 1, Format::Json).unwrap();
+}
+
+#[test]
+fn test_verify_no_commands() {
+    let dir = tempdir().unwrap();
+    let store = FileStore::init(dir.path()).unwrap();
+    fs::create_dir_all(dir.path().join(".tak/context")).unwrap();
+    fs::create_dir_all(dir.path().join(".tak/history")).unwrap();
+
+    store
+        .create(
+            "No verify".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![],
+            vec![],
+            Contract::default(),
+            Planning::default(),
+        )
+        .unwrap();
+
+    let idx = Index::open(&store.root().join("index.db")).unwrap();
+    idx.rebuild(&store.list_all().unwrap()).unwrap();
+    drop(idx);
+
+    // Should succeed with no commands
+    tak::commands::verify::run(dir.path(), 1, Format::Json).unwrap();
+}
+
+#[test]
+fn test_verify_passing_commands() {
+    let dir = tempdir().unwrap();
+    let store = FileStore::init(dir.path()).unwrap();
+    fs::create_dir_all(dir.path().join(".tak/context")).unwrap();
+    fs::create_dir_all(dir.path().join(".tak/history")).unwrap();
+
+    store
+        .create(
+            "Verifiable".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![],
+            vec![],
+            Contract {
+                objective: None,
+                acceptance_criteria: vec![],
+                verification: vec!["true".into(), "echo ok".into()],
+                constraints: vec![],
+            },
+            Planning::default(),
+        )
+        .unwrap();
+
+    let idx = Index::open(&store.root().join("index.db")).unwrap();
+    idx.rebuild(&store.list_all().unwrap()).unwrap();
+    drop(idx);
+
+    // All commands pass, should succeed
+    tak::commands::verify::run(dir.path(), 1, Format::Json).unwrap();
+}
+
+#[test]
+fn test_delete_cleans_up_sidecars() {
+    let dir = tempdir().unwrap();
+    let store = FileStore::init(dir.path()).unwrap();
+    fs::create_dir_all(dir.path().join(".tak/context")).unwrap();
+    fs::create_dir_all(dir.path().join(".tak/history")).unwrap();
+
+    store
+        .create(
+            "Doomed".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![],
+            vec![],
+            Contract::default(),
+            Planning::default(),
+        )
+        .unwrap();
+
+    let idx = Index::open(&store.root().join("index.db")).unwrap();
+    idx.rebuild(&store.list_all().unwrap()).unwrap();
+    drop(idx);
+
+    // Create sidecar files
+    tak::commands::context::run(dir.path(), 1, Some("ctx notes".into()), false, Format::Json)
+        .unwrap();
+    tak::commands::lifecycle::start(dir.path(), 1, None, Format::Json).unwrap();
+    tak::commands::lifecycle::finish(dir.path(), 1, Format::Json).unwrap();
+
+    assert!(dir.path().join(".tak/context/1.md").exists());
+    assert!(dir.path().join(".tak/history/1.jsonl").exists());
+
+    // Delete task — should also clean up sidecars
+    tak::commands::delete::run(dir.path(), 1, false, Format::Json).unwrap();
+
+    assert!(!dir.path().join(".tak/context/1.md").exists());
+    assert!(!dir.path().join(".tak/history/1.jsonl").exists());
+}
+
+#[test]
+fn test_context_nonexistent_task_fails() {
+    let dir = tempdir().unwrap();
+    FileStore::init(dir.path()).unwrap();
+    fs::create_dir_all(dir.path().join(".tak/context")).unwrap();
+    fs::create_dir_all(dir.path().join(".tak/history")).unwrap();
+
+    let idx = Index::open(&dir.path().join(".tak/index.db")).unwrap();
+    idx.rebuild(&[]).unwrap();
+    drop(idx);
+
+    let result = tak::commands::context::run(dir.path(), 999, None, false, Format::Json);
+    assert!(matches!(result.unwrap_err(), TakError::TaskNotFound(999)));
+}
+
+#[test]
+fn test_verify_stores_result() {
+    let dir = tempdir().unwrap();
+    let store = FileStore::init(dir.path()).unwrap();
+    fs::create_dir_all(dir.path().join(".tak/context")).unwrap();
+    fs::create_dir_all(dir.path().join(".tak/history")).unwrap();
+    fs::create_dir_all(dir.path().join(".tak/verification_results")).unwrap();
+
+    store
+        .create(
+            "Verifiable".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![],
+            vec![],
+            Contract {
+                objective: None,
+                acceptance_criteria: vec![],
+                verification: vec!["true".into(), "echo ok".into()],
+                constraints: vec![],
+            },
+            Planning::default(),
+        )
+        .unwrap();
+
+    let idx = Index::open(&store.root().join("index.db")).unwrap();
+    idx.rebuild(&store.list_all().unwrap()).unwrap();
+    drop(idx);
+
+    // Run verify — should store results
+    tak::commands::verify::run(dir.path(), 1, Format::Json).unwrap();
+
+    // Read back the verification result
+    let repo = tak::store::repo::Repo::open(dir.path()).unwrap();
+    let vr = repo.sidecars.read_verification(1).unwrap().unwrap();
+    assert!(vr.passed);
+    assert_eq!(vr.results.len(), 2);
+    assert!(vr.results[0].passed);
+    assert_eq!(vr.results[0].command, "true");
+    assert!(vr.results[1].passed);
+    assert_eq!(vr.results[1].command, "echo ok");
+}

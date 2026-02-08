@@ -37,6 +37,9 @@ pub fn run(repo_root: &Path, id: u64, force: bool, format: Format) -> Result<()>
     repo.index.remove(id)?;
     repo.store.delete(id)?;
 
+    // Best-effort sidecar cleanup
+    let _ = repo.sidecars.delete(id);
+
     output::print_task(&task, format)?;
     Ok(())
 }

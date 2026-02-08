@@ -1,4 +1,5 @@
 pub mod claim;
+pub mod context;
 pub mod create;
 pub mod delete;
 pub mod deps;
@@ -7,8 +8,10 @@ pub mod edit;
 pub mod init;
 pub mod lifecycle;
 pub mod list;
+pub mod log;
 pub mod next;
 pub mod reindex;
 pub mod setup;
 pub mod show;
 pub mod tree;
+pub mod verify;

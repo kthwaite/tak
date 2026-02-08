@@ -3,10 +3,12 @@ use std::path::{Path, PathBuf};
 use crate::error::{Result, TakError};
 use crate::store::files::FileStore;
 use crate::store::index::Index;
+use crate::store::sidecars::SidecarStore;
 
 pub struct Repo {
     pub store: FileStore,
     pub index: Index,
+    pub sidecars: SidecarStore,
 }
 
 impl Repo {
@@ -32,7 +34,14 @@ impl Repo {
         }
 
         index.set_fingerprint(&current_fp)?;
-        Ok(Self { store, index })
+
+        let sidecars = SidecarStore::open(store.root());
+
+        Ok(Self {
+            store,
+            index,
+            sidecars,
+        })
     }
 }
 

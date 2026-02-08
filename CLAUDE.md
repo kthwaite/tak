@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 cargo build                    # Build debug
 cargo build --release          # Build release
-cargo test                     # Run all 78 tests (47 unit + 31 integration)
+cargo test                     # Run all 95 tests (53 unit + 42 integration)
 cargo test model::tests        # Run unit tests in a specific module
 cargo test integration         # Run only integration tests (tests/integration.rs)
 cargo test test_name           # Run a single test by name
@@ -38,35 +38,39 @@ Tasks are JSON files in `.tak/tasks/` (the git-committed source of truth). A git
 - **`src/output.rs`** — `Format` enum (Json/Pretty/Minimal); `print_task(s)` functions
 - **`src/store/files.rs`** — `FileStore`: CRUD on `.tak/tasks/*.json`, atomic ID allocation via counter.json + fs2 lock
 - **`src/store/index.rs`** — `Index`: SQLite with WAL mode, FK-enabled. Cycle detection via recursive CTEs. Two-pass rebuild to handle forward references.
-- **`src/store/repo.rs`** — `Repo`: wraps FileStore + Index. Walks up from CWD to find `.tak/`. Auto-rebuilds index on open if missing or stale (file fingerprint mismatch).
+- **`src/store/sidecars.rs`** — `SidecarStore`: manages per-task context notes (`.tak/context/{id}.md`), structured history logs (`.tak/history/{id}.jsonl`), verification results (`.tak/verification_results/{id}.json`), and artifact directories (`.tak/artifacts/{id}/`); defines `HistoryEvent` (timestamp/event/agent/detail), `VerificationResult` (timestamp/results/passed), `CommandResult` (command/exit_code/stdout/stderr/passed)
+- **`src/store/repo.rs`** — `Repo`: wraps FileStore + Index + SidecarStore. Walks up from CWD to find `.tak/`. Auto-rebuilds index on open if missing or stale (file fingerprint mismatch).
 - **`src/commands/`** — One file per command group. Most take `&Path` (repo root) and return `Result<()>`. `setup` and `doctor` don't require a repo.
-- **`src/main.rs`** — Clap derive CLI with 22 subcommands and global `--format`/`--pretty` flags. Uses `ValueEnum` for `Format`, `Kind`, `Status`; `conflicts_with` for `--available`/`--blocked`.
+- **`src/main.rs`** — Clap derive CLI with 25 subcommands and global `--format`/`--pretty` flags. Uses `ValueEnum` for `Format`, `Kind`, `Status`; `conflicts_with` for `--available`/`--blocked`.
 
 ### CLI Commands
 
-22 subcommands. `--format json` (default), `--format pretty`, `--format minimal`.
+25 subcommands. `--format json` (default), `--format pretty`, `--format minimal`.
 
 | Command | Purpose |
 |---------|---------|
-| `init` | Initialize `.tak/` directory |
+| `init` | Initialize `.tak/` directory (including `context/`, `history/`, `artifacts/`, `verification_results/` sidecar dirs + `.gitignore`) |
 | `create TITLE` | Create task (`--kind`, `--parent`, `--depends-on`, `-d`, `--tag`, `--objective`, `--verify`, `--constraint`, `--criterion`, `--priority`, `--estimate`, `--skill`, `--risk`) |
-| `delete ID` | Delete a task (`--force` to cascade: orphans children, removes deps) |
+| `delete ID` | Delete a task (`--force` to cascade: orphans children, removes deps); also cleans up sidecar files |
 | `show ID` | Display a single task |
 | `list` | Query tasks (`--status`, `--kind`, `--tag`, `--assignee`, `--available`, `--blocked`, `--children-of`, `--priority`) |
 | `edit ID` | Update fields (`--title`, `-d`, `--kind`, `--tag`, `--objective`, `--verify`, `--constraint`, `--criterion`, `--priority`, `--estimate`, `--skill`, `--risk`, `--pr`) |
-| `start ID` | Pending → in_progress (`--assignee`); auto-captures git branch + HEAD SHA on first start |
-| `finish ID` | In_progress → done; auto-captures end commit SHA + commit range since start |
-| `cancel ID` | Pending/in_progress → cancelled (`--reason`) |
-| `handoff ID` | In_progress → pending, record summary (`--summary`, required) |
-| `claim` | Atomic next+start with file lock (`--assignee`, `--tag`) |
-| `reopen ID` | Done/cancelled → pending (clears assignee) |
-| `unassign ID` | Clear assignee without changing status |
+| `start ID` | Pending -> in_progress (`--assignee`); auto-captures git branch + HEAD SHA; appends history log |
+| `finish ID` | In_progress -> done; auto-captures end commit SHA + commit range; appends history log |
+| `cancel ID` | Pending/in_progress -> cancelled (`--reason`); appends history log |
+| `handoff ID` | In_progress -> pending, record summary (`--summary`, required); appends history log |
+| `claim` | Atomic next+start with file lock (`--assignee`, `--tag`); appends history log |
+| `reopen ID` | Done/cancelled -> pending (clears assignee); appends history log |
+| `unassign ID` | Clear assignee without changing status; appends history log |
 | `depend ID --on IDS` | Add dependency edges (`--dep-type hard\|soft`, `--reason`) |
 | `undepend ID --on IDS` | Remove dependency edges |
 | `reparent ID --to ID` | Change parent |
 | `orphan ID` | Remove parent |
 | `tree [ID]` | Display parent-child hierarchy |
 | `next` | Show next available task (`--assignee`) |
+| `context ID` | Read/write context notes (`--set TEXT`, `--clear`) |
+| `log ID` | Display structured JSONL task history log |
+| `verify ID` | Run contract verification commands; stores result; exits 1 if any fail |
 | `reindex` | Rebuild SQLite index from files |
 | `setup` | Install Claude Code integration (`--global`, `--check`, `--remove`, `--plugin`) |
 | `doctor` | Validate installation health (`--fix`) |
@@ -83,7 +87,7 @@ Errors are structured JSON on stderr when `--format json`: `{"error":"<code>","m
 - `claim` serializes concurrent access via an exclusive file lock (`claim.lock`); lock acquisition retries with exponential backoff
 - `Index::upsert()` is transactional (delete old deps/tags, insert new); uses `INSERT OR IGNORE` for resilience against duplicates
 - `Index::rebuild()` uses two-pass insertion: first insert tasks without parent_id, then update parent_id (handles forward references and FK constraints); uses `INSERT OR IGNORE` for deps/tags
-- `delete` validates referential integrity (children + dependents); `--force` cascades (orphans children, removes incoming deps)
+- `delete` validates referential integrity (children + dependents); `--force` cascades (orphans children, removes incoming deps); cleans up sidecar files
 - Sequential integer IDs via `counter.json` with OS-level file locking (fs2); lock file kept permanently
 - Stale index detection via file fingerprint: `Repo::open()` compares task ID + size + nanosecond mtime against stored metadata, auto-rebuilds on mismatch
 - Tree command pre-loads all tasks into a HashMap — no per-node file I/O or SQL queries
@@ -102,19 +106,31 @@ Errors are structured JSON on stderr when `--format json`: `{"error":"<code>","m
 - `src/git.rs` uses git2 to discover the repo, read HEAD, and walk revisions; all functions degrade gracefully outside a git repo
 - `Task.execution: Execution` — runtime metadata with `attempt_count` (incremented on start/claim), `last_error` (set by cancel --reason), `handoff_summary` (set by handoff), `blocked_reason` (human context); omitted from JSON when empty
 - `start` and `claim` both increment `execution.attempt_count` to track retry attempts
-- `handoff` transitions in_progress → pending, clears assignee, records `execution.handoff_summary`
+- `handoff` transitions in_progress -> pending, clears assignee, records `execution.handoff_summary`
 - `cancel --reason` stores the reason in `execution.last_error`
+- Sidecar files: `SidecarStore` manages per-task `context/{id}.md` (free-form notes, git-committed), `history/{id}.jsonl` (structured JSONL event log, git-committed), `verification_results/{id}.json` (gitignored), and `artifacts/{id}/` (gitignored)
+- Lifecycle commands (start, finish, cancel, handoff, reopen, unassign, claim) auto-append structured `HistoryEvent` entries to JSONL history logs; failures are best-effort (never fail the main command)
+- `verify` command stores `VerificationResult` to `.tak/verification_results/{id}.json` after running contract verification commands
+- `context` command reads/writes free-form context notes; `--set` overwrites, `--clear` deletes
+- `log` command displays history log; JSON mode returns array of lines, pretty mode prints raw
+- `verify` command runs `contract.verification` commands via `sh -c` from repo root; reports pass/fail per command; exits 1 if any fail
+- `delete` cleans up all sidecar files (context + history + verification results + artifacts) after removing the task file and index entry
 
 ### On-Disk Layout
 
 ```
 .tak/
-  config.json          # {"version": 2}
-  counter.json         # {"next_id": N}  (fs2-locked during allocation)
-  counter.lock         # Persistent lock file for ID allocation (gitignored)
-  claim.lock           # Persistent lock file for atomic claim (gitignored)
-  tasks/*.json         # One file per task (committed to git)
-  index.db             # SQLite index (gitignored, rebuilt on demand)
+  .gitignore                     # Ignores index.db, *.lock, artifacts/, verification_results/
+  config.json                    # {"version": 2}
+  counter.json                   # {"next_id": N}  (fs2-locked during allocation)
+  counter.lock                   # Persistent lock file for ID allocation (gitignored)
+  claim.lock                     # Persistent lock file for atomic claim (gitignored)
+  tasks/*.json                   # One file per task (committed to git)
+  context/*.md                   # Per-task context notes (committed to git)
+  history/*.jsonl                # Per-task structured JSONL history logs (committed to git)
+  verification_results/*.json    # Per-task verification results (gitignored)
+  artifacts/{id}/                # Per-task artifact directories (gitignored)
+  index.db                       # SQLite index (gitignored, rebuilt on demand)
 ```
 
 ## Claude Code Plugin
