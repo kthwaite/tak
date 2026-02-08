@@ -6,6 +6,7 @@ pub mod deps;
 pub mod doctor;
 pub mod edit;
 pub mod init;
+pub mod learn;
 pub mod lifecycle;
 pub mod list;
 pub mod log;
