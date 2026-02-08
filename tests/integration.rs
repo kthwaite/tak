@@ -1673,3 +1673,95 @@ fn test_handoff_records_summary_and_returns_to_pending() {
         "attempt_count should be preserved after handoff"
     );
 }
+
+// === Sidecar / Context tests (Phase 7) ===
+
+#[test]
+fn test_context_set_and_read() {
+    let dir = tempdir().unwrap();
+    let store = FileStore::init(dir.path()).unwrap();
+    fs::create_dir_all(dir.path().join(".tak/context")).unwrap();
+    fs::create_dir_all(dir.path().join(".tak/history")).unwrap();
+
+    store
+        .create(
+            "Context task".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![],
+            vec![],
+            Contract::default(),
+            Planning::default(),
+        )
+        .unwrap();
+
+    let idx = Index::open(&store.root().join("index.db")).unwrap();
+    idx.rebuild(&store.list_all().unwrap()).unwrap();
+    drop(idx);
+
+    // Set context
+    tak::commands::context::run(
+        dir.path(),
+        1,
+        Some("Important notes here".into()),
+        false,
+        Format::Json,
+    )
+    .unwrap();
+
+    // Verify context file was created
+    assert!(dir.path().join(".tak/context/1.md").exists());
+
+    // Read context back via sidecar store
+    let repo = tak::store::repo::Repo::open(dir.path()).unwrap();
+    let ctx = repo.sidecars.read_context(1).unwrap();
+    assert_eq!(ctx.as_deref(), Some("Important notes here"));
+}
+
+#[test]
+fn test_context_clear() {
+    let dir = tempdir().unwrap();
+    let store = FileStore::init(dir.path()).unwrap();
+    fs::create_dir_all(dir.path().join(".tak/context")).unwrap();
+    fs::create_dir_all(dir.path().join(".tak/history")).unwrap();
+
+    store
+        .create(
+            "Clearable".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![],
+            vec![],
+            Contract::default(),
+            Planning::default(),
+        )
+        .unwrap();
+
+    let idx = Index::open(&store.root().join("index.db")).unwrap();
+    idx.rebuild(&store.list_all().unwrap()).unwrap();
+    drop(idx);
+
+    // Set then clear
+    tak::commands::context::run(dir.path(), 1, Some("notes".into()), false, Format::Json).unwrap();
+    assert!(dir.path().join(".tak/context/1.md").exists());
+
+    tak::commands::context::run(dir.path(), 1, None, true, Format::Json).unwrap();
+    assert!(!dir.path().join(".tak/context/1.md").exists());
+}
+
+#[test]
+fn test_context_nonexistent_task_fails() {
+    let dir = tempdir().unwrap();
+    FileStore::init(dir.path()).unwrap();
+    fs::create_dir_all(dir.path().join(".tak/context")).unwrap();
+    fs::create_dir_all(dir.path().join(".tak/history")).unwrap();
+
+    let idx = Index::open(&dir.path().join(".tak/index.db")).unwrap();
+    idx.rebuild(&[]).unwrap();
+    drop(idx);
+
+    let result = tak::commands::context::run(dir.path(), 999, None, false, Format::Json);
+    assert!(matches!(result.unwrap_err(), TakError::TaskNotFound(999)));
+}

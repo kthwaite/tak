@@ -28,6 +28,9 @@ pub enum TakError {
     )]
     TaskInUse(u64),
 
+    #[error("no context notes for task {0}")]
+    NoContext(u64),
+
     #[error("locked by another process: {0}")]
     Locked(String),
 
@@ -52,6 +55,7 @@ impl TakError {
             Self::NoAvailableTask => "no_available_task",
             Self::TaskBlocked(_) => "task_blocked",
             Self::TaskInUse(_) => "task_in_use",
+            Self::NoContext(_) => "no_context",
             Self::Locked(_) => "locked",
             Self::Io(_) => "io_error",
             Self::Json(_) => "json_error",
