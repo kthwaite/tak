@@ -20,30 +20,6 @@ fn transition(current: Status, target: Status) -> std::result::Result<(), (Strin
     }
 }
 
-fn set_status(
-    repo_root: &Path,
-    id: u64,
-    target: Status,
-    assignee: Option<String>,
-    format: Format,
-) -> Result<()> {
-    let repo = Repo::open(repo_root)?;
-    let mut task = repo.store.read(id)?;
-
-    transition(task.status, target).map_err(|(from, to)| TakError::InvalidTransition(from, to))?;
-
-    task.status = target;
-    if let Some(a) = assignee {
-        task.assignee = Some(a);
-    }
-    task.updated_at = Utc::now();
-    repo.store.write(&task)?;
-    repo.index.upsert(&task)?;
-
-    output::print_task(&task, format)?;
-    Ok(())
-}
-
 pub fn start(repo_root: &Path, id: u64, assignee: Option<String>, format: Format) -> Result<()> {
     let repo = Repo::open(repo_root)?;
     let mut task = repo.store.read(id)?;
