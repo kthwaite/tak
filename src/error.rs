@@ -49,6 +49,9 @@ pub enum TakError {
     #[error("mesh: reservation conflict — path '{0}' is held by agent '{1}'")]
     MeshReservationConflict(String, String),
 
+    #[error("mesh: corrupt file '{0}': {1}")]
+    MeshCorruptFile(String, String),
+
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 
@@ -77,6 +80,7 @@ impl TakError {
             Self::MeshNameConflict(_) => "mesh_name_conflict",
             Self::MeshInvalidName => "mesh_invalid_name",
             Self::MeshReservationConflict(_, _) => "mesh_reservation_conflict",
+            Self::MeshCorruptFile(_, _) => "mesh_corrupt_file",
             Self::Io(_) => "io_error",
             Self::Json(_) => "json_error",
             Self::Db(_) => "db_error",

@@ -253,26 +253,32 @@ impl MeshStore {
     /// Unregister an agent. Removes registry entry, inbox, and reservations.
     pub fn leave(&self, name: &str) -> crate::error::Result<()> {
         Self::validate_name(name)?;
-        let lock = lock::acquire_lock(&self.registry_lock_path())?;
+        let reg_lock = lock::acquire_lock(&self.registry_lock_path())?;
 
         let path = self.registration_path(name);
         if !path.exists() {
-            lock::release_lock(lock)?;
+            lock::release_lock(reg_lock)?;
             return Err(crate::error::TakError::MeshAgentNotFound(name.into()));
         }
 
-        fs::remove_file(&path)?;
-
-        // Remove inbox directory
-        let inbox = self.agent_inbox_dir(name);
-        if inbox.exists() {
-            fs::remove_dir_all(&inbox)?;
-        }
-
-        // Remove agent's reservations
+        // Clean reservations first — this is the fallible step that can encounter
+        // corrupt state. If it fails, no destructive changes have been made yet,
+        // so the caller can retry after fixing the issue.
         self.remove_agent_reservations_locked(name)?;
 
-        lock::release_lock(lock)?;
+        // Remove inbox under inbox lock to avoid races with concurrent send/inbox
+        {
+            let _inbox_lock = lock::acquire_lock(&self.inbox_lock_path())?;
+            let inbox = self.agent_inbox_dir(name);
+            if inbox.exists() {
+                fs::remove_dir_all(&inbox)?;
+            }
+        }
+
+        // Remove registration last (point of no return)
+        fs::remove_file(&path)?;
+
+        lock::release_lock(reg_lock)?;
 
         let _ = self.append_feed(&FeedEvent {
             ts: Utc::now(),
@@ -307,9 +313,10 @@ impl MeshStore {
                 continue;
             }
             let content = fs::read_to_string(&path)?;
-            if let Ok(reg) = serde_json::from_str::<Registration>(&content) {
-                agents.push(reg);
-            }
+            let reg: Registration = serde_json::from_str(&content).map_err(|e| {
+                crate::error::TakError::MeshCorruptFile(path.display().to_string(), e.to_string())
+            })?;
+            agents.push(reg);
         }
         agents.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(agents)
@@ -439,10 +446,11 @@ impl MeshStore {
                 continue;
             }
             let content = fs::read_to_string(&path)?;
-            if let Ok(msg) = serde_json::from_str::<Message>(&content) {
-                files.push(path.clone());
-                messages.push(msg);
-            }
+            let msg: Message = serde_json::from_str(&content).map_err(|e| {
+                crate::error::TakError::MeshCorruptFile(path.display().to_string(), e.to_string())
+            })?;
+            files.push(path.clone());
+            messages.push(msg);
         }
 
         // Sort by timestamp
@@ -469,6 +477,10 @@ impl MeshStore {
         reason: Option<&str>,
     ) -> crate::error::Result<Reservation> {
         Self::validate_name(agent)?;
+        // Require registry membership to prevent invisible locks from unregistered names
+        if !self.registration_path(agent).exists() {
+            return Err(crate::error::TakError::MeshAgentNotFound(agent.into()));
+        }
         let lock = lock::acquire_lock(&self.reservations_lock_path())?;
 
         let content = fs::read_to_string(self.reservations_path())?;
@@ -523,6 +535,10 @@ impl MeshStore {
     /// Release reservations. If `paths` is empty, release all for the agent.
     pub fn release(&self, agent: &str, paths: Vec<String>) -> crate::error::Result<()> {
         Self::validate_name(agent)?;
+        // Require registry membership
+        if !self.registration_path(agent).exists() {
+            return Err(crate::error::TakError::MeshAgentNotFound(agent.into()));
+        }
         let lock = lock::acquire_lock(&self.reservations_lock_path())?;
 
         let content = fs::read_to_string(self.reservations_path())?;
@@ -1004,5 +1020,68 @@ mod tests {
 
         let all = store.list_reservations().unwrap();
         assert!(all.is_empty());
+    }
+
+    // -- Fix 1: reserve/release require registered agent --------------------
+
+    #[test]
+    fn reserve_rejects_unregistered_agent() {
+        let (_dir, store) = setup_mesh();
+        let err = store
+            .reserve("ghost", vec!["src/a.rs".into()], None)
+            .unwrap_err();
+        assert!(matches!(err, crate::error::TakError::MeshAgentNotFound(_)));
+    }
+
+    #[test]
+    fn release_rejects_unregistered_agent() {
+        let (_dir, store) = setup_mesh();
+        let err = store.release("ghost", vec![]).unwrap_err();
+        assert!(matches!(err, crate::error::TakError::MeshAgentNotFound(_)));
+    }
+
+    // -- Fix 2: leave with corrupt reservations preserves registration ------
+
+    #[test]
+    fn leave_with_corrupt_reservations_preserves_registration() {
+        let (_dir, store) = setup_mesh();
+        store.join("A", None).unwrap();
+        fs::write(store.reservations_path(), "NOT VALID JSON").unwrap();
+        // leave should fail due to corrupt reservations
+        assert!(store.leave("A").is_err());
+        // Registration must still exist — no partial deletion
+        assert!(store.registration_path("A").exists());
+        assert!(store.agent_inbox_dir("A").exists());
+        let agents = store.list_agents().unwrap();
+        assert_eq!(agents.len(), 1);
+    }
+
+    // -- Fix 4: corrupt JSON surfaced as errors -----------------------------
+
+    #[test]
+    fn list_agents_errors_on_corrupt_registry() {
+        let (_dir, store) = setup_mesh();
+        store.join("good", None).unwrap();
+        // Write corrupt registry entry
+        fs::write(store.registration_path("bad"), "NOT VALID JSON").unwrap();
+        let err = store.list_agents().unwrap_err();
+        assert!(matches!(
+            err,
+            crate::error::TakError::MeshCorruptFile(_, _)
+        ));
+    }
+
+    #[test]
+    fn inbox_errors_on_corrupt_message() {
+        let (_dir, store) = setup_mesh();
+        store.join("A", None).unwrap();
+        // Write corrupt message to inbox
+        let inbox = store.agent_inbox_dir("A");
+        fs::write(inbox.join("corrupt.json"), "NOT VALID JSON").unwrap();
+        let err = store.inbox("A", false).unwrap_err();
+        assert!(matches!(
+            err,
+            crate::error::TakError::MeshCorruptFile(_, _)
+        ));
     }
 }
