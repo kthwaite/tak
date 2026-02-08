@@ -21,6 +21,7 @@ pub fn run(
     estimate: Option<Estimate>,
     skill: Option<Vec<String>>,
     risk: Option<Risk>,
+    pr: Option<String>,
     format: Format,
 ) -> Result<()> {
     let repo = Repo::open(repo_root)?;
@@ -72,6 +73,14 @@ pub fn run(
     }
     if let Some(r) = risk {
         task.planning.risk = Some(r);
+    }
+
+    if let Some(url) = pr {
+        if url.is_empty() {
+            task.git.pr = None;
+        } else {
+            task.git.pr = Some(url);
+        }
     }
 
     task.normalize();

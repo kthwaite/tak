@@ -1164,6 +1164,7 @@ fn test_edit_adds_contract_fields() {
         None,
         None,
         None,
+        None,
         Format::Json,
     )
     .unwrap();
@@ -1311,6 +1312,7 @@ fn test_edit_sets_planning_fields() {
         Some(tak::model::Estimate::Xl),
         Some(vec!["python".into()]),
         Some(tak::model::Risk::High),
+        None,
         Format::Json,
     )
     .unwrap();

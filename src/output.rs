@@ -54,6 +54,26 @@ pub fn print_task(task: &Task, format: Format) -> Result<()> {
                     println!("  skills: {}", task.planning.required_skills.join(", "));
                 }
             }
+            if !task.git.is_empty() {
+                if let Some(ref branch) = task.git.branch {
+                    println!("  branch: {}", branch);
+                }
+                if let Some(ref sha) = task.git.start_commit {
+                    println!("  start: {}", &sha[..7.min(sha.len())]);
+                }
+                if let Some(ref sha) = task.git.end_commit {
+                    println!("  end: {}", &sha[..7.min(sha.len())]);
+                }
+                if !task.git.commits.is_empty() {
+                    println!("  commits:");
+                    for c in &task.git.commits {
+                        println!("    {}", c);
+                    }
+                }
+                if let Some(ref pr) = task.git.pr {
+                    println!("  pr: {}", pr);
+                }
+            }
             if !task.contract.is_empty() {
                 if let Some(ref obj) = task.contract.objective {
                     println!("  objective: {}", obj);
