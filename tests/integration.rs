@@ -1517,9 +1517,7 @@ fn test_finish_captures_commit_range() {
     // Write a file to get a different tree for commit 2
     fs::write(dir.path().join("file1.txt"), "content1").unwrap();
     let mut index = repo.index().unwrap();
-    index
-        .add_path(std::path::Path::new("file1.txt"))
-        .unwrap();
+    index.add_path(std::path::Path::new("file1.txt")).unwrap();
     index.write().unwrap();
     let tree2_id = index.write_tree().unwrap();
     let tree2 = repo.find_tree(tree2_id).unwrap();
@@ -1537,9 +1535,7 @@ fn test_finish_captures_commit_range() {
     let c2 = repo.find_commit(c2_oid).unwrap();
     fs::write(dir.path().join("file2.txt"), "content2").unwrap();
     let mut index = repo.index().unwrap();
-    index
-        .add_path(std::path::Path::new("file2.txt"))
-        .unwrap();
+    index.add_path(std::path::Path::new("file2.txt")).unwrap();
     index.write().unwrap();
     let tree3_id = index.write_tree().unwrap();
     let tree3 = repo.find_tree(tree3_id).unwrap();

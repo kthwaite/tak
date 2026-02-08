@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 cargo build                    # Build debug
 cargo build --release          # Build release
-cargo test                     # Run all 76 tests (47 unit + 29 integration)
+cargo test                     # Run all 78 tests (47 unit + 31 integration)
 cargo test model::tests        # Run unit tests in a specific module
 cargo test integration         # Run only integration tests (tests/integration.rs)
 cargo test test_name           # Run a single test by name
@@ -32,7 +32,8 @@ Tasks are JSON files in `.tak/tasks/` (the git-committed source of truth). A git
 
 ### Source Layout
 
-- **`src/model.rs`** — `Task`, `Status` (pending/in_progress/done/cancelled), `Kind` (epic/task/bug), `Dependency` (id/dep_type/reason), `DepType` (hard/soft), `Contract` (objective/acceptance_criteria/verification/constraints), `Planning` (priority/estimate/required_skills/risk), `Priority` (critical/high/medium/low), `Estimate` (xs/s/m/l/xl), `Risk` (low/medium/high)
+- **`src/model.rs`** — `Task`, `Status` (pending/in_progress/done/cancelled), `Kind` (epic/task/bug), `Dependency` (id/dep_type/reason), `DepType` (hard/soft), `Contract` (objective/acceptance_criteria/verification/constraints), `Planning` (priority/estimate/required_skills/risk), `Priority` (critical/high/medium/low), `Estimate` (xs/s/m/l/xl), `Risk` (low/medium/high), `GitInfo` (branch/start_commit/end_commit/commits/pr)
+- **`src/git.rs`** — `current_head_info()` returns branch + SHA; `commits_since()` returns one-line summaries between two SHAs via git2 revwalk
 - **`src/error.rs`** — `TakError` enum via thiserror; `Result<T>` alias used everywhere
 - **`src/output.rs`** — `Format` enum (Json/Pretty/Minimal); `print_task(s)` functions
 - **`src/store/files.rs`** — `FileStore`: CRUD on `.tak/tasks/*.json`, atomic ID allocation via counter.json + fs2 lock
@@ -52,9 +53,9 @@ Tasks are JSON files in `.tak/tasks/` (the git-committed source of truth). A git
 | `delete ID` | Delete a task (`--force` to cascade: orphans children, removes deps) |
 | `show ID` | Display a single task |
 | `list` | Query tasks (`--status`, `--kind`, `--tag`, `--assignee`, `--available`, `--blocked`, `--children-of`, `--priority`) |
-| `edit ID` | Update fields (`--title`, `-d`, `--kind`, `--tag`, `--objective`, `--verify`, `--constraint`, `--criterion`, `--priority`, `--estimate`, `--skill`, `--risk`) |
-| `start ID` | Pending → in_progress (`--assignee`) |
-| `finish ID` | In_progress → done |
+| `edit ID` | Update fields (`--title`, `-d`, `--kind`, `--tag`, `--objective`, `--verify`, `--constraint`, `--criterion`, `--priority`, `--estimate`, `--skill`, `--risk`, `--pr`) |
+| `start ID` | Pending → in_progress (`--assignee`); auto-captures git branch + HEAD SHA on first start |
+| `finish ID` | In_progress → done; auto-captures end commit SHA + commit range since start |
 | `cancel ID` | Pending/in_progress → cancelled |
 | `claim` | Atomic next+start with file lock (`--assignee`, `--tag`) |
 | `reopen ID` | Done/cancelled → pending (clears assignee) |
@@ -95,6 +96,9 @@ Errors are structured JSON on stderr when `--format json`: `{"error":"<code>","m
 - `Task.planning: Planning` — optional triage metadata with `priority` (critical/high/medium/low), `estimate` (xs-xl), `risk` (low/medium/high), `required_skills`; omitted from JSON when empty
 - Priority-ordered claiming: `available()`, `next`, and `claim` sort by `COALESCE(priority_rank, 4), id` — critical first, unprioritized last
 - SQLite `tasks` table carries `priority INTEGER` (rank 0-3) and `estimate TEXT` columns; `skills` junction table for required_skills
+- `Task.git: GitInfo` — auto-populated provenance: `branch` + `start_commit` on `start`, `end_commit` + `commits` on `finish`, `pr` via `edit --pr`; omitted from JSON when empty
+- `start` captures git info only on first start (idempotent on restart after reopen); `finish` collects commit summaries via `git::commits_since()` revwalk
+- `src/git.rs` uses git2 to discover the repo, read HEAD, and walk revisions; all functions degrade gracefully outside a git repo
 
 ### On-Disk Layout
 
