@@ -1,11 +1,18 @@
 use crate::error::{Result, TakError};
-use crate::model::Dependency;
+use crate::model::{DepType, Dependency};
 use crate::output::{self, Format};
 use crate::store::repo::Repo;
 use chrono::Utc;
 use std::path::Path;
 
-pub fn depend(repo_root: &Path, id: u64, on: Vec<u64>, format: Format) -> Result<()> {
+pub fn depend(
+    repo_root: &Path,
+    id: u64,
+    on: Vec<u64>,
+    dep_type: Option<DepType>,
+    reason: Option<String>,
+    format: Format,
+) -> Result<()> {
     let repo = Repo::open(repo_root)?;
     let mut task = repo.store.read(id)?;
 
@@ -20,7 +27,11 @@ pub fn depend(repo_root: &Path, id: u64, on: Vec<u64>, format: Format) -> Result
     // Phase 2: mutate task in memory
     for &dep_id in &on {
         if !task.depends_on.iter().any(|d| d.id == dep_id) {
-            task.depends_on.push(Dependency::simple(dep_id));
+            task.depends_on.push(Dependency {
+                id: dep_id,
+                dep_type,
+                reason: reason.clone(),
+            });
         }
     }
     task.normalize();

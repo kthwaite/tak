@@ -413,7 +413,7 @@ fn test_depend_rolls_back_on_partial_failure() {
     drop(idx);
 
     // Try to depend 1 on [2, 999]. 999 doesn't exist, so this should fail entirely.
-    let result = tak::commands::deps::depend(dir.path(), 1, vec![2, 999], Format::Json);
+    let result = tak::commands::deps::depend(dir.path(), 1, vec![2, 999], None, None, Format::Json);
     assert!(result.is_err());
 
     // Task 1's file should still have no dependencies
@@ -714,7 +714,7 @@ fn test_doctor_healthy_repo_structure() {
     let config: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(dir.path().join(".tak/config.json")).unwrap())
             .unwrap();
-    assert_eq!(config["version"], 1);
+    assert_eq!(config["version"], 2);
     assert!(dir.path().join(".tak/counter.json").exists());
     assert!(dir.path().join(".tak/tasks").is_dir());
     assert!(dir.path().join(".tak/tasks/1.json").exists());
@@ -761,7 +761,10 @@ fn test_doctor_detects_dangling_dep() {
     let task: tak::model::Task =
         serde_json::from_str(&fs::read_to_string(dir.path().join(".tak/tasks/2.json")).unwrap())
             .unwrap();
-    assert!(task.depends_on.contains(&1), "dep on deleted task remains");
+    assert!(
+        task.depends_on.iter().any(|d| d.id == 1),
+        "dep on deleted task remains"
+    );
 }
 
 #[test]

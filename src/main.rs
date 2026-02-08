@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use tak::model::{Kind, Status};
+use tak::model::{DepType, Kind, Status};
 use tak::output::Format;
 
 #[derive(Parser)]
@@ -141,6 +141,12 @@ enum Commands {
         /// IDs of tasks it depends on (comma-separated)
         #[arg(long, required = true, value_delimiter = ',')]
         on: Vec<u64>,
+        /// Dependency type (hard or soft)
+        #[arg(long, value_enum)]
+        dep_type: Option<DepType>,
+        /// Reason for the dependency
+        #[arg(long)]
+        reason: Option<String>,
     },
     /// Remove dependency edges
     Undepend {
@@ -279,7 +285,12 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
         }
         Commands::Reopen { id } => tak::commands::lifecycle::reopen(&root, id, format),
         Commands::Unassign { id } => tak::commands::lifecycle::unassign(&root, id, format),
-        Commands::Depend { id, on } => tak::commands::deps::depend(&root, id, on, format),
+        Commands::Depend {
+            id,
+            on,
+            dep_type,
+            reason,
+        } => tak::commands::deps::depend(&root, id, on, dep_type, reason, format),
         Commands::Undepend { id, on } => tak::commands::deps::undepend(&root, id, on, format),
         Commands::Reparent { id, to } => tak::commands::deps::reparent(&root, id, to, format),
         Commands::Orphan { id } => tak::commands::deps::orphan(&root, id, format),
