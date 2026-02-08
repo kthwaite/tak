@@ -9,7 +9,7 @@
 	"plugins": [
 		{
 			"name": "tak",
-			"source": ".",
+			"source": "./claude-plugin",
 			"description": "Git-native task management for agentic workflows. Provides skills for task tracking, epic planning, and multi-agent coordination via the tak CLI.",
 			"version": "0.1.0",
 			"keywords": ["task-management", "agentic", "git-native", "multi-agent"]
