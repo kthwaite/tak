@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 cargo build                    # Build debug
 cargo build --release          # Build release
-cargo test                     # Run all 113 tests (60 unit + 53 integration)
+cargo test                     # Run all 144 tests (86 unit + 58 integration)
 cargo test model::tests        # Run unit tests in a specific module
 cargo test integration         # Run only integration tests (tests/integration.rs)
 cargo test test_name           # Run a single test by name
@@ -40,13 +40,15 @@ Tasks are JSON files in `.tak/tasks/` (the git-committed source of truth). A git
 - **`src/store/index.rs`** — `Index`: SQLite with WAL mode, FK-enabled. Cycle detection via recursive CTEs. Two-pass rebuild to handle forward references. FTS5 full-text search for learnings.
 - **`src/store/learnings.rs`** — `LearningStore`: CRUD on `.tak/learnings/*.json`, atomic ID allocation via counter.json + fs2 lock; separate from task ID sequence
 - **`src/store/sidecars.rs`** — `SidecarStore`: manages per-task context notes (`.tak/context/{id}.md`), structured history logs (`.tak/history/{id}.jsonl`), verification results (`.tak/verification_results/{id}.json`), and artifact directories (`.tak/artifacts/{id}/`); defines `HistoryEvent` (timestamp/event/agent/detail), `VerificationResult` (timestamp/results/passed), `CommandResult` (command/exit_code/stdout/stderr/passed)
+- **`src/store/mesh.rs`** — `MeshStore`: manages `.tak/runtime/mesh/` — agent registry (join/leave/list), messaging (send/broadcast/inbox), file reservations (reserve/release), activity feed (append/read). Per-domain file locks via `lock.rs`. PID-based stale detection with opportunistic cleanup.
 - **`src/store/repo.rs`** — `Repo`: wraps FileStore + Index + SidecarStore + LearningStore. Walks up from CWD to find `.tak/`. Auto-rebuilds index on open if missing or stale (file fingerprint mismatch). Also auto-rebuilds learnings index via separate fingerprint.
 - **`src/commands/`** — One file per command group. Most take `&Path` (repo root) and return `Result<()>`. `setup` and `doctor` don't require a repo.
-- **`src/main.rs`** — Clap derive CLI with 26 subcommands and global `--format`/`--pretty` flags. Uses `ValueEnum` for `Format`, `Kind`, `Status`; `conflicts_with` for `--available`/`--blocked`.
+- **`src/commands/mesh.rs`** — 9 mesh subcommand handlers: join, leave, list, send, broadcast, inbox, reserve, release, feed
+- **`src/main.rs`** — Clap derive CLI with 35 subcommands and global `--format`/`--pretty` flags. Uses `ValueEnum` for `Format`, `Kind`, `Status`; `conflicts_with` for `--available`/`--blocked`.
 
 ### CLI Commands
 
-26 subcommands. `--format json` (default), `--format pretty`, `--format minimal`.
+35 subcommands. `--format json` (default), `--format pretty`, `--format minimal`.
 
 | Command | Purpose |
 |---------|---------|
@@ -78,6 +80,15 @@ Tasks are JSON files in `.tak/tasks/` (the git-committed source of truth). A git
 | `learn edit ID` | Update learning fields (`--title`, `-d`, `--category`, `--tag`, `--add-task`, `--remove-task`) |
 | `learn remove ID` | Delete a learning (unlinks from tasks) |
 | `learn suggest TASK_ID` | Suggest relevant learnings via FTS5 search on task title |
+| `mesh join` | Register agent in coordination mesh (`--name`, `--session-id`) |
+| `mesh leave` | Unregister from mesh (`--name`) |
+| `mesh list` | List registered mesh agents |
+| `mesh send` | Send direct message (`--from`, `--to`, `--message`) |
+| `mesh broadcast` | Broadcast message to all agents (`--from`, `--message`) |
+| `mesh inbox` | Read inbox messages (`--name`, `--ack`) |
+| `mesh reserve` | Reserve file paths (`--name`, `--path`, `--reason`) |
+| `mesh release` | Release reservations (`--name`, `--path`/`--all`) |
+| `mesh feed` | Show activity feed (`--limit`) |
 | `reindex` | Rebuild SQLite index from files |
 | `setup` | Install Claude Code integration (`--global`, `--check`, `--remove`, `--plugin`) |
 | `doctor` | Validate installation health (`--fix`) |
@@ -130,12 +141,18 @@ Errors are structured JSON on stderr when `--format json`: `{"error":"<code>","m
 - `suggest_learnings` sanitizes task title to alphanumeric tokens, joins with OR for FTS5 MATCH; returns results by rank
 - Learning index has separate fingerprint (`learning_fingerprint` in metadata table); auto-rebuilt by `Repo::open()` when stale
 - `learn remove` unlinks learning from all referenced tasks before deleting
+- `MeshStore`: manages `.tak/runtime/mesh/` — agent registry, messaging, reservations, activity feed
+- Mesh uses per-domain file locks (registry, inbox, reservations, feed) via existing `lock.rs`
+- Registration includes PID for stale detection; `list_agents()` cleans dead PIDs opportunistically
+- Reservation conflict is prefix-based: `src/store/` conflicts with `src/store/mesh.rs`
+- Feed events are best-effort: failures never break primary operations
+- All mesh runtime state is gitignored (ephemeral per-session data)
 
 ### On-Disk Layout
 
 ```
 .tak/
-  .gitignore                     # Ignores index.db, *.lock, artifacts/, verification_results/
+  .gitignore                     # Ignores index.db, *.lock, artifacts/, verification_results/, runtime/
   config.json                    # {"version": 2}
   counter.json                   # {"next_id": N}  (fs2-locked during allocation)
   counter.lock                   # Persistent lock file for ID allocation (gitignored)
@@ -148,6 +165,12 @@ Errors are structured JSON on stderr when `--format json`: `{"error":"<code>","m
   learnings/*.json               # One file per learning (committed to git)
   learnings/counter.json         # {"next_id": N}  (fs2-locked during allocation)
   learning_counter.lock          # Persistent lock file for learning ID allocation (gitignored)
+  runtime/mesh/                  # Coordination runtime (gitignored)
+    registry/*.json              # Per-agent presence records
+    inbox/<agent>/*.json         # Queued messages per agent
+    reservations.json            # File path reservations
+    feed.jsonl                   # Append-only activity timeline
+    locks/                       # Per-domain lock files
   index.db                       # SQLite index (gitignored, rebuilt on demand)
 ```
 
