@@ -182,9 +182,9 @@ enum Commands {
     },
     /// Atomically find and start the next available task
     Claim {
-        /// Who is claiming the task
-        #[arg(long, required = true)]
-        assignee: String,
+        /// Who is claiming the task (default: $TAK_AGENT, then pid-{PID})
+        #[arg(long)]
+        assignee: Option<String>,
         /// Only claim tasks with this tag
         #[arg(long)]
         tag: Option<String>,
@@ -576,6 +576,7 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
             format,
         ),
         Commands::Start { id, assignee } => {
+            let assignee = assignee.or_else(tak::agent::resolve_agent);
             tak::commands::lifecycle::start(&root, id, assignee, format)
         }
         Commands::Finish { id } => tak::commands::lifecycle::finish(&root, id, format),
@@ -586,6 +587,9 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
             tak::commands::lifecycle::handoff(&root, id, summary, format)
         }
         Commands::Claim { assignee, tag } => {
+            let assignee = assignee
+                .or_else(tak::agent::resolve_agent)
+                .unwrap_or_else(tak::agent::pid_fallback);
             tak::commands::claim::run(&root, assignee, tag, format)
         }
         Commands::Reopen { id } => tak::commands::lifecycle::reopen(&root, id, format),
