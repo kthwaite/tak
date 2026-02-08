@@ -119,6 +119,15 @@ Tak ships as a Claude Code plugin. Enable it to get:
 - **Task execution skill**: Agent workflow for claiming, executing, and completing tasks
 - **Session start hook**: Auto-reindex on session start
 
+```bash
+# Run from your git repo root
+# Install SessionStart hook into .claude/settings.local.json
+tak setup
+
+# Also write plugin files under .claude/plugins/tak
+tak setup --plugin
+```
+
 ## License
 
 MIT

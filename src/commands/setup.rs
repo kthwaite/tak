@@ -25,14 +25,26 @@ fn tak_hook_entry() -> Value {
     })
 }
 
-/// Plugin files to write, relative to CWD.
+/// Plugin files to write inside the project-local `.claude/` directory.
 fn plugin_files() -> Vec<(&'static str, &'static str)> {
     vec![
-        (".claude-plugin/plugin.json", PLUGIN_JSON),
-        ("skills/task-management/SKILL.md", SKILL_TASK_MGMT),
-        ("skills/epic-planning/SKILL.md", SKILL_EPIC_PLAN),
-        ("skills/task-execution/SKILL.md", SKILL_TASK_EXEC),
-        ("hooks/hooks.json", HOOKS_JSON),
+        (
+            ".claude/plugins/tak/.claude-plugin/plugin.json",
+            PLUGIN_JSON,
+        ),
+        (
+            ".claude/plugins/tak/skills/task-management/SKILL.md",
+            SKILL_TASK_MGMT,
+        ),
+        (
+            ".claude/plugins/tak/skills/epic-planning/SKILL.md",
+            SKILL_EPIC_PLAN,
+        ),
+        (
+            ".claude/plugins/tak/skills/task-execution/SKILL.md",
+            SKILL_TASK_EXEC,
+        ),
+        (".claude/plugins/tak/hooks/hooks.json", HOOKS_JSON),
     ]
 }
 
@@ -48,6 +60,19 @@ fn settings_path(global: bool) -> Result<PathBuf> {
         Ok(PathBuf::from(home).join(".claude").join("settings.json"))
     } else {
         Ok(PathBuf::from(".claude").join("settings.local.json"))
+    }
+}
+
+fn is_git_repo_root(path: &Path) -> bool {
+    path.join(".git").exists()
+}
+
+fn ensure_git_repo_root() -> Result<()> {
+    let cwd = std::env::current_dir()?;
+    if is_git_repo_root(&cwd) {
+        Ok(())
+    } else {
+        Err(TakError::NotGitRepository)
     }
 }
 
@@ -206,7 +231,7 @@ pub fn check_plugin_installed() -> &'static str {
     }
 }
 
-/// Write plugin files to CWD.
+/// Write plugin files to `.claude/plugins/tak`.
 fn write_plugin_files(format: Format) -> Result<()> {
     for (rel_path, content) in plugin_files() {
         let path = Path::new(rel_path);
@@ -234,7 +259,7 @@ fn write_plugin_files(format: Format) -> Result<()> {
     Ok(())
 }
 
-/// Remove plugin files from CWD.
+/// Remove plugin files from `.claude/plugins/tak`.
 fn remove_plugin_files(format: Format) -> Result<()> {
     for (rel_path, _) in plugin_files() {
         let path = Path::new(rel_path);
@@ -249,6 +274,11 @@ fn remove_plugin_files(format: Format) -> Result<()> {
 }
 
 pub fn run(global: bool, check: bool, remove: bool, plugin: bool, format: Format) -> Result<()> {
+    // Project-scoped setup writes into `.claude/` and must run from a git repo root.
+    if !global || plugin {
+        ensure_git_repo_root()?;
+    }
+
     if check {
         return run_check(plugin, format);
     }
@@ -338,7 +368,7 @@ fn run_install(global: bool, plugin: bool, format: Format) -> Result<()> {
     if plugin {
         write_plugin_files(format)?;
         if !matches!(format, Format::Json) {
-            eprintln!("Plugin files written to current directory");
+            eprintln!("Plugin files written to .claude/plugins/tak");
         }
     }
 
@@ -376,7 +406,7 @@ fn run_remove(global: bool, plugin: bool, format: Format) -> Result<()> {
     if plugin {
         remove_plugin_files(format)?;
         if !matches!(format, Format::Json) {
-            eprintln!("Plugin files removed");
+            eprintln!("Plugin files removed from .claude/plugins/tak");
         }
     }
 
@@ -470,5 +500,24 @@ mod tests {
 
         let arr = settings["hooks"]["SessionStart"].as_array().unwrap();
         assert_eq!(arr.len(), 2, "should have both the existing and new hook");
+    }
+
+    #[test]
+    fn plugin_files_are_under_claude_plugins_tak() {
+        for (path, _) in plugin_files() {
+            assert!(
+                path.starts_with(".claude/plugins/tak/"),
+                "plugin path should live under .claude/plugins/tak: {path}"
+            );
+        }
+    }
+
+    #[test]
+    fn git_repo_root_detection_checks_for_dot_git() {
+        let dir = tempdir().unwrap();
+        assert!(!is_git_repo_root(dir.path()));
+
+        std::fs::create_dir(dir.path().join(".git")).unwrap();
+        assert!(is_git_repo_root(dir.path()));
     }
 }

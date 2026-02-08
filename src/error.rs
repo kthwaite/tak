@@ -8,6 +8,9 @@ pub enum TakError {
     #[error("tak already initialized in this repository")]
     AlreadyInitialized,
 
+    #[error("current directory is not a git repository (run from the repository root)")]
+    NotGitRepository,
+
     #[error("task {0} not found")]
     TaskNotFound(u64),
 
@@ -61,6 +64,7 @@ impl TakError {
         match self {
             Self::NotInitialized => "not_initialized",
             Self::AlreadyInitialized => "already_initialized",
+            Self::NotGitRepository => "not_git_repository",
             Self::TaskNotFound(_) => "task_not_found",
             Self::LearningNotFound(_) => "learning_not_found",
             Self::CycleDetected(_) => "cycle_detected",

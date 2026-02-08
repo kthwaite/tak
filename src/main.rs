@@ -289,7 +289,7 @@ enum Commands {
         /// Remove tak hooks from settings
         #[arg(long)]
         remove: bool,
-        /// Also write the full plugin directory to CWD
+        /// Also write the full plugin directory to .claude/plugins/tak
         #[arg(long)]
         plugin: bool,
     },
@@ -454,7 +454,7 @@ enum MeshAction {
 }
 
 fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
-    // Commands that don't require a repo
+    // Commands dispatched before `.tak` repo discovery
     match &cli.command {
         Commands::Init => {
             let cwd = std::env::current_dir()?;
