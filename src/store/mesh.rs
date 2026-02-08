@@ -284,7 +284,12 @@ impl MeshStore {
         Ok(())
     }
 
-    /// List all registered agents. Performs opportunistic stale-PID cleanup.
+    /// List all registered agents.
+    ///
+    /// Note: PID-based stale cleanup is intentionally NOT done here because
+    /// `tak` is a CLI tool where each invocation is a separate process.
+    /// The PID stored at `join` time is always dead by the next command.
+    /// Use a future `mesh cleanup --stale` for explicit stale detection.
     pub fn list_agents(&self) -> crate::error::Result<Vec<Registration>> {
         if !self.exists() {
             return Ok(vec![]);
@@ -294,7 +299,6 @@ impl MeshStore {
             return Ok(vec![]);
         }
         let mut agents = Vec::new();
-        let mut stale = Vec::new();
         for entry in fs::read_dir(&dir)? {
             let entry = entry?;
             let path = entry.path();
@@ -303,22 +307,16 @@ impl MeshStore {
             }
             let content = fs::read_to_string(&path)?;
             if let Ok(reg) = serde_json::from_str::<Registration>(&content) {
-                if is_pid_alive(reg.pid) {
-                    agents.push(reg);
-                } else {
-                    stale.push(reg.name.clone());
-                }
+                agents.push(reg);
             }
-        }
-        // Opportunistic stale cleanup
-        for name in &stale {
-            let _ = self.cleanup_stale_agent(name);
         }
         agents.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(agents)
     }
 
     /// Clean up a stale agent entry (best-effort).
+    /// Reserved for future `mesh cleanup --stale` command.
+    #[allow(dead_code)]
     fn cleanup_stale_agent(&self, name: &str) -> crate::error::Result<()> {
         let path = self.registration_path(name);
         if path.exists() {
@@ -573,8 +571,9 @@ impl MeshStore {
 // ---------------------------------------------------------------------------
 
 /// Check if a PID is alive using `kill -0` (signal 0 checks existence without
-/// actually sending a signal). Only used during stale cleanup, not hot path.
+/// actually sending a signal). Reserved for future `mesh cleanup --stale`.
 #[cfg(unix)]
+#[allow(dead_code)]
 fn is_pid_alive(pid: u32) -> bool {
     std::process::Command::new("kill")
         .args(["-0", &pid.to_string()])
@@ -586,6 +585,7 @@ fn is_pid_alive(pid: u32) -> bool {
 }
 
 #[cfg(not(unix))]
+#[allow(dead_code)]
 fn is_pid_alive(_pid: u32) -> bool {
     true // Conservative: assume alive on non-Unix
 }
