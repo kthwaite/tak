@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 cargo build                    # Build debug
 cargo build --release          # Build release
-cargo test                     # Run all 95 tests (53 unit + 42 integration)
+cargo test                     # Run all 113 tests (60 unit + 53 integration)
 cargo test model::tests        # Run unit tests in a specific module
 cargo test integration         # Run only integration tests (tests/integration.rs)
 cargo test test_name           # Run a single test by name
@@ -32,24 +32,25 @@ Tasks are JSON files in `.tak/tasks/` (the git-committed source of truth). A git
 
 ### Source Layout
 
-- **`src/model.rs`** — `Task`, `Status` (pending/in_progress/done/cancelled), `Kind` (epic/task/bug), `Dependency` (id/dep_type/reason), `DepType` (hard/soft), `Contract` (objective/acceptance_criteria/verification/constraints), `Planning` (priority/estimate/required_skills/risk), `Execution` (attempt_count/last_error/handoff_summary/blocked_reason), `Priority` (critical/high/medium/low), `Estimate` (xs/s/m/l/xl), `Risk` (low/medium/high), `GitInfo` (branch/start_commit/end_commit/commits/pr)
+- **`src/model.rs`** — `Task`, `Status` (pending/in_progress/done/cancelled), `Kind` (epic/task/bug), `Dependency` (id/dep_type/reason), `DepType` (hard/soft), `Contract` (objective/acceptance_criteria/verification/constraints), `Planning` (priority/estimate/required_skills/risk), `Execution` (attempt_count/last_error/handoff_summary/blocked_reason), `Priority` (critical/high/medium/low), `Estimate` (xs/s/m/l/xl), `Risk` (low/medium/high), `GitInfo` (branch/start_commit/end_commit/commits/pr), `Learning` (id/title/description/category/tags/task_ids/timestamps), `LearningCategory` (insight/pitfall/pattern/tool/process)
 - **`src/git.rs`** — `current_head_info()` returns branch + SHA; `commits_since()` returns one-line summaries between two SHAs via git2 revwalk
 - **`src/error.rs`** — `TakError` enum via thiserror; `Result<T>` alias used everywhere
 - **`src/output.rs`** — `Format` enum (Json/Pretty/Minimal); `print_task(s)` functions
 - **`src/store/files.rs`** — `FileStore`: CRUD on `.tak/tasks/*.json`, atomic ID allocation via counter.json + fs2 lock
-- **`src/store/index.rs`** — `Index`: SQLite with WAL mode, FK-enabled. Cycle detection via recursive CTEs. Two-pass rebuild to handle forward references.
+- **`src/store/index.rs`** — `Index`: SQLite with WAL mode, FK-enabled. Cycle detection via recursive CTEs. Two-pass rebuild to handle forward references. FTS5 full-text search for learnings.
+- **`src/store/learnings.rs`** — `LearningStore`: CRUD on `.tak/learnings/*.json`, atomic ID allocation via counter.json + fs2 lock; separate from task ID sequence
 - **`src/store/sidecars.rs`** — `SidecarStore`: manages per-task context notes (`.tak/context/{id}.md`), structured history logs (`.tak/history/{id}.jsonl`), verification results (`.tak/verification_results/{id}.json`), and artifact directories (`.tak/artifacts/{id}/`); defines `HistoryEvent` (timestamp/event/agent/detail), `VerificationResult` (timestamp/results/passed), `CommandResult` (command/exit_code/stdout/stderr/passed)
-- **`src/store/repo.rs`** — `Repo`: wraps FileStore + Index + SidecarStore. Walks up from CWD to find `.tak/`. Auto-rebuilds index on open if missing or stale (file fingerprint mismatch).
+- **`src/store/repo.rs`** — `Repo`: wraps FileStore + Index + SidecarStore + LearningStore. Walks up from CWD to find `.tak/`. Auto-rebuilds index on open if missing or stale (file fingerprint mismatch). Also auto-rebuilds learnings index via separate fingerprint.
 - **`src/commands/`** — One file per command group. Most take `&Path` (repo root) and return `Result<()>`. `setup` and `doctor` don't require a repo.
-- **`src/main.rs`** — Clap derive CLI with 25 subcommands and global `--format`/`--pretty` flags. Uses `ValueEnum` for `Format`, `Kind`, `Status`; `conflicts_with` for `--available`/`--blocked`.
+- **`src/main.rs`** — Clap derive CLI with 26 subcommands and global `--format`/`--pretty` flags. Uses `ValueEnum` for `Format`, `Kind`, `Status`; `conflicts_with` for `--available`/`--blocked`.
 
 ### CLI Commands
 
-25 subcommands. `--format json` (default), `--format pretty`, `--format minimal`.
+26 subcommands. `--format json` (default), `--format pretty`, `--format minimal`.
 
 | Command | Purpose |
 |---------|---------|
-| `init` | Initialize `.tak/` directory (including `context/`, `history/`, `artifacts/`, `verification_results/` sidecar dirs + `.gitignore`) |
+| `init` | Initialize `.tak/` directory (including `context/`, `history/`, `artifacts/`, `verification_results/`, `learnings/` dirs + `.gitignore`) |
 | `create TITLE` | Create task (`--kind`, `--parent`, `--depends-on`, `-d`, `--tag`, `--objective`, `--verify`, `--constraint`, `--criterion`, `--priority`, `--estimate`, `--skill`, `--risk`) |
 | `delete ID` | Delete a task (`--force` to cascade: orphans children, removes deps); also cleans up sidecar files |
 | `show ID` | Display a single task |
@@ -71,6 +72,12 @@ Tasks are JSON files in `.tak/tasks/` (the git-committed source of truth). A git
 | `context ID` | Read/write context notes (`--set TEXT`, `--clear`) |
 | `log ID` | Display structured JSONL task history log |
 | `verify ID` | Run contract verification commands; stores result; exits 1 if any fail |
+| `learn add TITLE` | Record a learning (`--category`, `-d`, `--tag`, `--task`) |
+| `learn list` | List learnings (`--category`, `--tag`, `--task`) |
+| `learn show ID` | Display a single learning |
+| `learn edit ID` | Update learning fields (`--title`, `-d`, `--category`, `--tag`, `--add-task`, `--remove-task`) |
+| `learn remove ID` | Delete a learning (unlinks from tasks) |
+| `learn suggest TASK_ID` | Suggest relevant learnings via FTS5 search on task title |
 | `reindex` | Rebuild SQLite index from files |
 | `setup` | Install Claude Code integration (`--global`, `--check`, `--remove`, `--plugin`) |
 | `doctor` | Validate installation health (`--fix`) |
@@ -115,6 +122,14 @@ Errors are structured JSON on stderr when `--format json`: `{"error":"<code>","m
 - `log` command displays history log; JSON mode returns array of lines, pretty mode prints raw
 - `verify` command runs `contract.verification` commands via `sh -c` from repo root; reports pass/fail per command; exits 1 if any fail
 - `delete` cleans up all sidecar files (context + history + verification results + artifacts) after removing the task file and index entry
+- `Learning` struct: id/title/description/category/tags/task_ids/timestamps; stored as `.tak/learnings/{id}.json` with separate counter.json ID sequence
+- `LearningCategory` enum: insight/pitfall/pattern/tool/process (default: insight)
+- `Task.learnings: Vec<u64>` — bidirectional link; `learn add --task` and `learn edit --add-task/--remove-task` maintain both sides
+- SQLite `learnings` table + `learning_tags`/`learning_tasks` junction tables; `learnings_fts` FTS5 virtual table (content-synced via `content=learnings, content_rowid=numeric_id`)
+- FTS5 content-sync requires reading old data before delete, then inserting delete command with actual values; `upsert_learning` handles this
+- `suggest_learnings` sanitizes task title to alphanumeric tokens, joins with OR for FTS5 MATCH; returns results by rank
+- Learning index has separate fingerprint (`learning_fingerprint` in metadata table); auto-rebuilt by `Repo::open()` when stale
+- `learn remove` unlinks learning from all referenced tasks before deleting
 
 ### On-Disk Layout
 
@@ -130,6 +145,9 @@ Errors are structured JSON on stderr when `--format json`: `{"error":"<code>","m
   history/*.jsonl                # Per-task structured JSONL history logs (committed to git)
   verification_results/*.json    # Per-task verification results (gitignored)
   artifacts/{id}/                # Per-task artifact directories (gitignored)
+  learnings/*.json               # One file per learning (committed to git)
+  learnings/counter.json         # {"next_id": N}  (fs2-locked during allocation)
+  learning_counter.lock          # Persistent lock file for learning ID allocation (gitignored)
   index.db                       # SQLite index (gitignored, rebuilt on demand)
 ```
 
