@@ -1879,6 +1879,52 @@ fn test_verify_passing_commands() {
 }
 
 #[test]
+fn test_delete_cleans_up_sidecars() {
+    let dir = tempdir().unwrap();
+    let store = FileStore::init(dir.path()).unwrap();
+    fs::create_dir_all(dir.path().join(".tak/context")).unwrap();
+    fs::create_dir_all(dir.path().join(".tak/history")).unwrap();
+
+    store
+        .create(
+            "Doomed".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![],
+            vec![],
+            Contract::default(),
+            Planning::default(),
+        )
+        .unwrap();
+
+    let idx = Index::open(&store.root().join("index.db")).unwrap();
+    idx.rebuild(&store.list_all().unwrap()).unwrap();
+    drop(idx);
+
+    // Create sidecar files
+    tak::commands::context::run(
+        dir.path(),
+        1,
+        Some("ctx notes".into()),
+        false,
+        Format::Json,
+    )
+    .unwrap();
+    tak::commands::lifecycle::start(dir.path(), 1, None, Format::Json).unwrap();
+    tak::commands::lifecycle::finish(dir.path(), 1, Format::Json).unwrap();
+
+    assert!(dir.path().join(".tak/context/1.md").exists());
+    assert!(dir.path().join(".tak/history/1.log").exists());
+
+    // Delete task — should also clean up sidecars
+    tak::commands::delete::run(dir.path(), 1, false, Format::Json).unwrap();
+
+    assert!(!dir.path().join(".tak/context/1.md").exists());
+    assert!(!dir.path().join(".tak/history/1.log").exists());
+}
+
+#[test]
 fn test_context_nonexistent_task_fails() {
     let dir = tempdir().unwrap();
     FileStore::init(dir.path()).unwrap();
