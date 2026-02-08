@@ -33,8 +33,8 @@ pub fn start(repo_root: &Path, id: u64, assignee: Option<String>, format: Format
 
     task.status = Status::InProgress;
     task.execution.attempt_count += 1;
-    if let Some(a) = assignee {
-        task.assignee = Some(a);
+    if let Some(ref a) = assignee {
+        task.assignee = Some(a.clone());
     }
 
     // Capture git HEAD on first start (only if not already set)
@@ -51,6 +51,13 @@ pub fn start(repo_root: &Path, id: u64, assignee: Option<String>, format: Format
     task.updated_at = Utc::now();
     repo.store.write(&task)?;
     repo.index.upsert(&task)?;
+
+    // Best-effort history logging
+    let msg = match &assignee {
+        Some(a) => format!("started (assignee: {a}, attempt #{})", task.execution.attempt_count),
+        None => format!("started (attempt #{})", task.execution.attempt_count),
+    };
+    let _ = repo.sidecars.append_history(id, &msg);
 
     output::print_task(&task, format)?;
     Ok(())
@@ -78,6 +85,9 @@ pub fn finish(repo_root: &Path, id: u64, format: Format) -> Result<()> {
     repo.store.write(&task)?;
     repo.index.upsert(&task)?;
 
+    // Best-effort history logging
+    let _ = repo.sidecars.append_history(id, "finished");
+
     output::print_task(&task, format)?;
     Ok(())
 }
@@ -90,12 +100,19 @@ pub fn cancel(repo_root: &Path, id: u64, reason: Option<String>, format: Format)
         .map_err(|(from, to)| TakError::InvalidTransition(from, to))?;
 
     task.status = Status::Cancelled;
-    if let Some(r) = reason {
-        task.execution.last_error = Some(r);
+    if let Some(ref r) = reason {
+        task.execution.last_error = Some(r.clone());
     }
     task.updated_at = Utc::now();
     repo.store.write(&task)?;
     repo.index.upsert(&task)?;
+
+    // Best-effort history logging
+    let msg = match &reason {
+        Some(r) => format!("cancelled: {r}"),
+        None => "cancelled".to_string(),
+    };
+    let _ = repo.sidecars.append_history(id, &msg);
 
     output::print_task(&task, format)?;
     Ok(())
@@ -110,10 +127,13 @@ pub fn handoff(repo_root: &Path, id: u64, summary: String, format: Format) -> Re
 
     task.status = Status::Pending;
     task.assignee = None;
-    task.execution.handoff_summary = Some(summary);
+    task.execution.handoff_summary = Some(summary.clone());
     task.updated_at = Utc::now();
     repo.store.write(&task)?;
     repo.index.upsert(&task)?;
+
+    // Best-effort history logging
+    let _ = repo.sidecars.append_history(id, &format!("handed off: {summary}"));
 
     output::print_task(&task, format)?;
     Ok(())
@@ -132,6 +152,9 @@ pub fn reopen(repo_root: &Path, id: u64, format: Format) -> Result<()> {
     repo.store.write(&task)?;
     repo.index.upsert(&task)?;
 
+    // Best-effort history logging
+    let _ = repo.sidecars.append_history(id, "reopened");
+
     output::print_task(&task, format)?;
     Ok(())
 }
@@ -144,6 +167,9 @@ pub fn unassign(repo_root: &Path, id: u64, format: Format) -> Result<()> {
     task.updated_at = Utc::now();
     repo.store.write(&task)?;
     repo.index.upsert(&task)?;
+
+    // Best-effort history logging
+    let _ = repo.sidecars.append_history(id, "unassigned");
 
     output::print_task(&task, format)?;
     Ok(())

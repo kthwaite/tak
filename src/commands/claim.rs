@@ -64,6 +64,16 @@ pub fn run(repo_root: &Path, assignee: String, tag: Option<String>, format: Form
     repo.store.write(&task)?;
     repo.index.upsert(&task)?;
 
+    // Best-effort history logging
+    let _ = repo.sidecars.append_history(
+        id,
+        &format!(
+            "claimed (assignee: {}, attempt #{})",
+            task.assignee.as_deref().unwrap_or("?"),
+            task.execution.attempt_count,
+        ),
+    );
+
     lock::release_lock(lock_file)?;
 
     output::print_task(&task, format)?;
