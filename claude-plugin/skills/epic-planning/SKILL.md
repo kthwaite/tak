@@ -1,11 +1,14 @@
 ---
 name: tak-epic-planning
 description: Use when the user wants to plan a feature, create an epic, break down a large task into subtasks, or design a work breakdown structure. Activates when the user says things like "plan this feature", "break this down", "create an epic", or "decompose this into tasks".
+allowed-tools: "Read,Bash(tak:*)"
 ---
 
 # Epic Planning with Tak
 
 Guide the user through structured decomposition of a large feature or initiative into an epic with child tasks and dependency relationships.
+
+**Critical:** create and update all tasks via `tak` CLI commands only. Never manually edit or append `.tak/tasks/*.json` (or other `.tak/*` data files).
 
 ## Planning Workflow
 

@@ -1,11 +1,50 @@
 ---
 name: tak-task-management
 description: Use when managing tasks, tracking work items, querying task status, or coordinating work in a git repository that uses tak for task management. Activates when the user mentions tasks, issues, bugs, or work tracking, or when a .tak/ directory exists in the repository.
+allowed-tools: "Read,Bash(tak:*)"
 ---
 
 # Tak Task Management
 
 You have access to `tak`, a git-native task manager CLI. Tasks are stored as JSON files in `.tak/tasks/` and indexed in SQLite for fast queries. Use `tak` to create, query, update, and track tasks.
+
+## Critical Rule: Use the CLI, never manual file edits
+
+When managing tak tasks, **always** use `tak` commands.
+
+- Do **not** manually append or edit files in `.tak/tasks/`, `.tak/learnings/`, `.tak/context/`, `.tak/history/`, or `.tak/*.json`.
+- Do **not** hand-edit `.tak/counter.json` or `.tak/index.db`.
+- For creating or updating issues/tasks, use `tak create`, `tak edit`, `tak delete`, `tak depend`, etc.
+- If task files were edited manually and state looks wrong, run `tak reindex` and then fix data using CLI commands.
+
+## tak vs TodoWrite
+
+| Use tak | Use TodoWrite |
+|---|---|
+| Project tasks/issues that must persist across sessions | Ephemeral checklist for this one conversation |
+| Work with dependencies, blockers, assignees, history | Quick local execution steps |
+| Anything teammates/other agents need to see | Personal scratch tracking |
+
+**Decision test:** if it should exist as a real task/issue in the repo, use `tak` (not TodoWrite).
+
+## Default behavior for task/issue requests
+
+When the user asks to create, update, prioritize, block, or close an issue/task:
+
+1. Use the `tak` CLI command that represents that action
+2. Show the resulting task ID/status from CLI output
+3. Never mutate `.tak/*` files directly
+
+If `.tak/` is missing, initialize first with `tak init` (or ask before doing so).
+
+## Session protocol (task-aware default)
+
+When `tak` is available in a repository:
+
+1. `tak list --available` (or `tak next`) to establish current ready work
+2. Use `tak show <id>` before making task decisions
+3. Use lifecycle commands (`start`, `claim`, `handoff`, `finish`, `cancel`, `reopen`) instead of editing status fields manually
+4. After `git pull`/merge/branch switch, run `tak reindex`
 
 ## Quick Reference
 
@@ -289,6 +328,7 @@ tak verify 1 | jq '.all_passed'
 
 ## Important Notes
 
+- Never manually edit or append `.tak/*` data files for task changes; always use the `tak` CLI
 - Always run `tak reindex` after pulling changes or switching branches
 - The `.tak/tasks/`, `.tak/context/`, and `.tak/history/` directories should be committed to git
 - The `.tak/index.db` file is gitignored (rebuilt on demand)

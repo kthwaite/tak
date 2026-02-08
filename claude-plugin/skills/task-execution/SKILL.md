@@ -7,6 +7,8 @@ description: Use when an agent needs to find, claim, execute, and complete tasks
 
 Systematic workflow for agents to find available work, claim it, execute it, and report completion. Designed for both single-agent and multi-agent scenarios.
 
+**Critical:** update task state via `tak` commands only (`claim`, `start`, `edit`, `finish`, etc.). Never manually edit or append `.tak/tasks/*.json` (or other `.tak/*` data files).
+
 ## Single-Agent Workflow
 
 ### 1. Claim available work
@@ -40,13 +42,29 @@ tak show <parent-id>
 
 Do whatever the task requires — write code, fix bugs, create files, run tests.
 
-### 4. Mark completion
+### 4. Track discovered work immediately
+
+If you discover a bug, follow-up, or side quest while executing:
+
+```bash
+# Create a new task/bug issue
+# (use --kind bug when appropriate)
+tak create "<title>" --kind task -d "<context discovered during execution>"
+
+# Link the current task to the discovered work when there is a scheduling dependency
+# (example: current task depends on discovered prerequisite)
+tak depend <current-id> --on <new-id>
+```
+
+Capture discovered work in `tak` right away; do not leave it only in narrative text or TodoWrite.
+
+### 5. Mark completion
 
 ```bash
 tak finish <id>
 ```
 
-### 5. Check for newly unblocked work
+### 6. Check for newly unblocked work
 
 ```bash
 tak list --available
@@ -54,7 +72,7 @@ tak list --available
 
 Finishing a task may unblock dependent tasks. Check what's now available and continue.
 
-### 6. Repeat
+### 7. Repeat
 
 Go back to step 1.
 
