@@ -27,7 +27,7 @@ pub fn run(repo_root: &Path, id: u64, force: bool, format: Format) -> Result<()>
     }
     for &dep_id in &dependents {
         let mut dep_task = repo.store.read(dep_id)?;
-        dep_task.depends_on.retain(|&d| d != id);
+        dep_task.depends_on.retain(|d| d.id != id);
         dep_task.updated_at = Utc::now();
         repo.store.write(&dep_task)?;
         repo.index.upsert(&dep_task)?;

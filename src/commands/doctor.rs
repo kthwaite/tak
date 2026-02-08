@@ -342,8 +342,8 @@ fn run_integrity_checks(checks: &mut Vec<Check>, tak: &Path) {
     let mut dep_issues = Vec::new();
     for (id, task) in &tasks {
         for dep in &task.depends_on {
-            if !tasks.contains_key(dep) {
-                dep_issues.push(format!("task {id}: depends on {dep}, not found"));
+            if !tasks.contains_key(&dep.id) {
+                dep_issues.push(format!("task {id}: depends on {}, not found", dep.id));
             }
         }
     }
@@ -488,18 +488,17 @@ fn detect_dep_cycle(tasks: &HashMap<u64, Task>) -> Option<u64> {
 fn dfs_dep(id: u64, tasks: &HashMap<u64, Task>, visited: &mut HashMap<u64, u8>) -> Option<u64> {
     visited.insert(id, 1); // in-stack
     if let Some(task) = tasks.get(&id) {
-        for &dep in &task.depends_on {
-            match visited.get(&dep).copied() {
-                Some(1) => return Some(dep), // back edge = cycle
+        for dep in &task.depends_on {
+            match visited.get(&dep.id).copied() {
+                Some(1) => return Some(dep.id),
                 Some(0) | None => {
-                    // unvisited or unknown (dangling ref, skip)
-                    if tasks.contains_key(&dep)
-                        && let Some(c) = dfs_dep(dep, tasks, visited)
+                    if tasks.contains_key(&dep.id)
+                        && let Some(c) = dfs_dep(dep.id, tasks, visited)
                     {
                         return Some(c);
                     }
                 }
-                _ => {} // already done
+                _ => {}
             }
         }
     }
@@ -529,7 +528,7 @@ fn detect_parent_cycle(tasks: &HashMap<u64, Task>) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Kind, Status};
+    use crate::model::{Dependency, Kind, Status};
     use chrono::Utc;
 
     fn make_task(id: u64, parent: Option<u64>, deps: Vec<u64>) -> Task {
@@ -541,11 +540,12 @@ mod tests {
             status: Status::Pending,
             kind: Kind::Task,
             parent,
-            depends_on: deps,
+            depends_on: deps.into_iter().map(Dependency::simple).collect(),
             assignee: None,
             tags: vec![],
             created_at: now,
             updated_at: now,
+            extensions: serde_json::Map::new(),
         }
     }
 

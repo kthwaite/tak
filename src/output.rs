@@ -22,7 +22,17 @@ pub fn print_task(task: &Task, format: Format) -> Result<()> {
                 println!("  parent: {}", parent);
             }
             if !task.depends_on.is_empty() {
-                println!("  depends on: {:?}", task.depends_on);
+                let dep_strs: Vec<String> = task
+                    .depends_on
+                    .iter()
+                    .map(|d| match (&d.dep_type, &d.reason) {
+                        (None, None) => format!("{}", d.id),
+                        (Some(t), None) => format!("{} ({})", d.id, t),
+                        (None, Some(r)) => format!("{} [{}]", d.id, r),
+                        (Some(t), Some(r)) => format!("{} ({}) [{}]", d.id, t, r),
+                    })
+                    .collect();
+                println!("  depends on: {}", dep_strs.join(", "));
             }
             if let Some(ref assignee) = task.assignee {
                 println!("  assignee: {}", assignee);

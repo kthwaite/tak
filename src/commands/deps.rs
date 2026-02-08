@@ -1,4 +1,5 @@
 use crate::error::{Result, TakError};
+use crate::model::Dependency;
 use crate::output::{self, Format};
 use crate::store::repo::Repo;
 use chrono::Utc;
@@ -18,8 +19,8 @@ pub fn depend(repo_root: &Path, id: u64, on: Vec<u64>, format: Format) -> Result
 
     // Phase 2: mutate task in memory
     for &dep_id in &on {
-        if !task.depends_on.contains(&dep_id) {
-            task.depends_on.push(dep_id);
+        if !task.depends_on.iter().any(|d| d.id == dep_id) {
+            task.depends_on.push(Dependency::simple(dep_id));
         }
     }
     task.normalize();
@@ -37,7 +38,7 @@ pub fn undepend(repo_root: &Path, id: u64, on: Vec<u64>, format: Format) -> Resu
     let repo = Repo::open(repo_root)?;
     let mut task = repo.store.read(id)?;
 
-    task.depends_on.retain(|d| !on.contains(d));
+    task.depends_on.retain(|d| !on.contains(&d.id));
     task.updated_at = Utc::now();
     repo.store.write(&task)?;
     repo.index.upsert(&task)?;
