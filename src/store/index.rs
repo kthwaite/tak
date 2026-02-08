@@ -42,6 +42,8 @@ impl Index {
             CREATE TABLE IF NOT EXISTS dependencies (
                 task_id INTEGER NOT NULL REFERENCES tasks(id),
                 depends_on_id INTEGER NOT NULL REFERENCES tasks(id),
+                dep_type TEXT,
+                reason TEXT,
                 PRIMARY KEY (task_id, depends_on_id)
             );
             CREATE TABLE IF NOT EXISTS tags (
@@ -88,8 +90,8 @@ impl Index {
             }
             for dep in &task.depends_on {
                 tx.execute(
-                    "INSERT OR IGNORE INTO dependencies (task_id, depends_on_id) VALUES (?1, ?2)",
-                    params![task.id, dep],
+                    "INSERT OR IGNORE INTO dependencies (task_id, depends_on_id, dep_type, reason) VALUES (?1, ?2, ?3, ?4)",
+                    params![task.id, dep.id, dep.dep_type.as_ref().map(|t| t.to_string()), dep.reason],
                 )?;
             }
             for tag in &task.tags {
@@ -123,8 +125,8 @@ impl Index {
         )?;
         for dep in &task.depends_on {
             tx.execute(
-                "INSERT OR IGNORE INTO dependencies (task_id, depends_on_id) VALUES (?1, ?2)",
-                params![task.id, dep],
+                "INSERT OR IGNORE INTO dependencies (task_id, depends_on_id, dep_type, reason) VALUES (?1, ?2, ?3, ?4)",
+                params![task.id, dep.id, dep.dep_type.as_ref().map(|t| t.to_string()), dep.reason],
             )?;
         }
         tx.execute("DELETE FROM tags WHERE task_id = ?1", params![task.id])?;
@@ -320,7 +322,7 @@ impl Index {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Kind, Status, Task};
+    use crate::model::{Dependency, Kind, Status, Task};
     use chrono::Utc;
 
     fn make_task(id: u64, status: Status, depends_on: Vec<u64>, parent: Option<u64>) -> Task {
@@ -332,11 +334,12 @@ mod tests {
             status,
             kind: Kind::Task,
             parent,
-            depends_on,
+            depends_on: depends_on.into_iter().map(Dependency::simple).collect(),
             assignee: None,
             tags: vec![],
             created_at: now,
             updated_at: now,
+            extensions: serde_json::Map::new(),
         }
     }
 
@@ -509,6 +512,7 @@ mod tests {
                 tags: vec!["x".into(), "x".into()],
                 created_at: now,
                 updated_at: now,
+                extensions: serde_json::Map::new(),
             },
             Task {
                 id: 2,
@@ -517,11 +521,12 @@ mod tests {
                 status: Status::Pending,
                 kind: Kind::Task,
                 parent: None,
-                depends_on: vec![1, 1],
+                depends_on: vec![Dependency::simple(1), Dependency::simple(1)],
                 assignee: None,
                 tags: vec![],
                 created_at: now,
                 updated_at: now,
+                extensions: serde_json::Map::new(),
             },
         ];
         idx.rebuild(&tasks).unwrap();
@@ -547,6 +552,7 @@ mod tests {
             tags: vec!["x".into(), "x".into()],
             created_at: now,
             updated_at: now,
+            extensions: serde_json::Map::new(),
         };
         idx.upsert(&t_duped).unwrap();
     }
