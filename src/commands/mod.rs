@@ -10,6 +10,7 @@ pub mod learn;
 pub mod lifecycle;
 pub mod list;
 pub mod log;
+pub mod mesh;
 pub mod next;
 pub mod reindex;
 pub mod setup;

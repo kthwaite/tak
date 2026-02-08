@@ -271,6 +271,11 @@ enum Commands {
         #[command(subcommand)]
         action: LearnAction,
     },
+    /// Multi-agent coordination mesh
+    Mesh {
+        #[command(subcommand)]
+        action: MeshAction,
+    },
     /// Rebuild the SQLite index from task files
     Reindex,
     /// Install Claude Code integration (hooks + optional plugin)
@@ -367,6 +372,87 @@ enum LearnAction {
     },
 }
 
+#[derive(Subcommand)]
+enum MeshAction {
+    /// Register this agent in the mesh
+    Join {
+        /// Agent name
+        #[arg(long)]
+        name: String,
+        /// Session ID (auto-generated if omitted)
+        #[arg(long)]
+        session_id: Option<String>,
+    },
+    /// Unregister from the mesh
+    Leave {
+        /// Agent name
+        #[arg(long)]
+        name: String,
+    },
+    /// List registered agents
+    List,
+    /// Send a direct message to an agent
+    Send {
+        /// Sender name
+        #[arg(long)]
+        from: String,
+        /// Recipient name
+        #[arg(long)]
+        to: String,
+        /// Message text
+        #[arg(long)]
+        message: String,
+    },
+    /// Broadcast a message to all agents
+    Broadcast {
+        /// Sender name
+        #[arg(long)]
+        from: String,
+        /// Message text
+        #[arg(long)]
+        message: String,
+    },
+    /// Read inbox messages
+    Inbox {
+        /// Agent name
+        #[arg(long)]
+        name: String,
+        /// Acknowledge (delete) messages after reading
+        #[arg(long)]
+        ack: bool,
+    },
+    /// Reserve file paths for exclusive editing
+    Reserve {
+        /// Agent name
+        #[arg(long)]
+        name: String,
+        /// Paths to reserve (repeatable)
+        #[arg(long = "path", required = true)]
+        paths: Vec<String>,
+        /// Reason for reservation
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    /// Release file path reservations
+    Release {
+        /// Agent name
+        #[arg(long)]
+        name: String,
+        /// Specific paths to release (omit for all)
+        #[arg(long = "path")]
+        paths: Vec<String>,
+        /// Release all reservations for this agent
+        #[arg(long, conflicts_with = "paths")]
+        all: bool,
+    },
+    /// Show the activity feed
+    Feed {
+        /// Show only the last N events
+        #[arg(long)]
+        limit: Option<usize>,
+    },
+}
+
 fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
     // Commands that don't require a repo
     match &cli.command {
@@ -391,9 +477,7 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
     let root = tak::store::repo::find_repo_root()?;
 
     match cli.command {
-        Commands::Init | Commands::Setup { .. } | Commands::Doctor { .. } => {
-            unreachable!()
-        }
+        Commands::Init | Commands::Setup { .. } | Commands::Doctor { .. } => unreachable!(),
         Commands::Create {
             title,
             kind,
@@ -567,6 +651,31 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
             LearnAction::Suggest { task_id } => {
                 tak::commands::learn::suggest(&root, task_id, format)
             }
+        },
+        Commands::Mesh { action } => match action {
+            MeshAction::Join { name, session_id } => {
+                tak::commands::mesh::join(&root, &name, session_id.as_deref(), format)
+            }
+            MeshAction::Leave { name } => tak::commands::mesh::leave(&root, &name, format),
+            MeshAction::List => tak::commands::mesh::list(&root, format),
+            MeshAction::Send { from, to, message } => {
+                tak::commands::mesh::send(&root, &from, &to, &message, format)
+            }
+            MeshAction::Broadcast { from, message } => {
+                tak::commands::mesh::broadcast(&root, &from, &message, format)
+            }
+            MeshAction::Inbox { name, ack } => {
+                tak::commands::mesh::inbox(&root, &name, ack, format)
+            }
+            MeshAction::Reserve {
+                name,
+                paths,
+                reason,
+            } => tak::commands::mesh::reserve(&root, &name, paths, reason.as_deref(), format),
+            MeshAction::Release { name, paths, all } => {
+                tak::commands::mesh::release(&root, &name, paths, all, format)
+            }
+            MeshAction::Feed { limit } => tak::commands::mesh::feed(&root, limit, format),
         },
         Commands::Reindex => tak::commands::reindex::run(&root),
     }
