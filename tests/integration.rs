@@ -1903,14 +1903,8 @@ fn test_delete_cleans_up_sidecars() {
     drop(idx);
 
     // Create sidecar files
-    tak::commands::context::run(
-        dir.path(),
-        1,
-        Some("ctx notes".into()),
-        false,
-        Format::Json,
-    )
-    .unwrap();
+    tak::commands::context::run(dir.path(), 1, Some("ctx notes".into()), false, Format::Json)
+        .unwrap();
     tak::commands::lifecycle::start(dir.path(), 1, None, Format::Json).unwrap();
     tak::commands::lifecycle::finish(dir.path(), 1, Format::Json).unwrap();
 

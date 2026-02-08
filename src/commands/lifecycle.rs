@@ -54,7 +54,10 @@ pub fn start(repo_root: &Path, id: u64, assignee: Option<String>, format: Format
 
     // Best-effort history logging
     let msg = match &assignee {
-        Some(a) => format!("started (assignee: {a}, attempt #{})", task.execution.attempt_count),
+        Some(a) => format!(
+            "started (assignee: {a}, attempt #{})",
+            task.execution.attempt_count
+        ),
         None => format!("started (attempt #{})", task.execution.attempt_count),
     };
     let _ = repo.sidecars.append_history(id, &msg);
@@ -133,7 +136,9 @@ pub fn handoff(repo_root: &Path, id: u64, summary: String, format: Format) -> Re
     repo.index.upsert(&task)?;
 
     // Best-effort history logging
-    let _ = repo.sidecars.append_history(id, &format!("handed off: {summary}"));
+    let _ = repo
+        .sidecars
+        .append_history(id, &format!("handed off: {summary}"));
 
     output::print_task(&task, format)?;
     Ok(())

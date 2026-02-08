@@ -134,7 +134,10 @@ mod tests {
         let (_dir, store) = setup();
         assert!(store.read_context(1).unwrap().is_none());
         store.write_context(1, "some notes").unwrap();
-        assert_eq!(store.read_context(1).unwrap().as_deref(), Some("some notes"));
+        assert_eq!(
+            store.read_context(1).unwrap().as_deref(),
+            Some("some notes")
+        );
     }
 
     #[test]
