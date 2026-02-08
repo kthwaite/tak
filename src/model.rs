@@ -18,6 +18,7 @@ pub enum Status {
 #[clap(rename_all = "snake_case")]
 pub enum Kind {
     Epic,
+    Feature,
     #[default]
     Task,
     Bug,
@@ -345,6 +346,7 @@ impl std::fmt::Display for Kind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Epic => write!(f, "epic"),
+            Self::Feature => write!(f, "feature"),
             Self::Task => write!(f, "task"),
             Self::Bug => write!(f, "bug"),
         }
@@ -405,6 +407,12 @@ mod tests {
     fn status_serializes_snake_case() {
         let json = serde_json::to_string(&Status::InProgress).unwrap();
         assert_eq!(json, r#""in_progress""#);
+    }
+
+    #[test]
+    fn kind_feature_serializes_snake_case() {
+        let json = serde_json::to_string(&Kind::Feature).unwrap();
+        assert_eq!(json, r#""feature""#);
     }
 
     #[test]

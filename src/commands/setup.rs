@@ -8,12 +8,9 @@ use crate::output::Format;
 
 // Embedded plugin assets — compiled into the binary.
 const PLUGIN_JSON: &str = include_str!("../../claude-plugin/.claude-plugin/plugin.json");
-const SKILL_TASK_MGMT: &str =
-    include_str!("../../claude-plugin/skills/task-management/SKILL.md");
-const SKILL_EPIC_PLAN: &str =
-    include_str!("../../claude-plugin/skills/epic-planning/SKILL.md");
-const SKILL_TASK_EXEC: &str =
-    include_str!("../../claude-plugin/skills/task-execution/SKILL.md");
+const SKILL_TASK_MGMT: &str = include_str!("../../claude-plugin/skills/task-management/SKILL.md");
+const SKILL_EPIC_PLAN: &str = include_str!("../../claude-plugin/skills/epic-planning/SKILL.md");
+const SKILL_TASK_EXEC: &str = include_str!("../../claude-plugin/skills/task-execution/SKILL.md");
 
 /// The hook entry tak injects into Claude Code settings.
 fn tak_hook_entry() -> Value {
