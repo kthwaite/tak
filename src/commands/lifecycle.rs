@@ -56,6 +56,7 @@ pub fn start(repo_root: &Path, id: u64, assignee: Option<String>, format: Format
     }
 
     task.status = Status::InProgress;
+    task.execution.attempt_count += 1;
     if let Some(a) = assignee {
         task.assignee = Some(a);
     }

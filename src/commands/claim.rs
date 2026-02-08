@@ -46,6 +46,7 @@ pub fn run(repo_root: &Path, assignee: String, tag: Option<String>, format: Form
 
     let mut task = repo.store.read(id)?;
     task.status = Status::InProgress;
+    task.execution.attempt_count += 1;
     task.assignee = Some(assignee);
 
     // Capture git HEAD on first start (only if not already set)
