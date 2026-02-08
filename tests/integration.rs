@@ -1408,3 +1408,60 @@ fn test_show_planning_in_pretty_output() {
     assert!(json.contains("\"medium\""));
     assert!(json.contains("rust"));
 }
+
+#[test]
+fn test_start_captures_git_info() {
+    let dir = tempdir().unwrap();
+
+    // Initialize a git repo with one commit so HEAD exists
+    let repo = git2::Repository::init(dir.path()).unwrap();
+    {
+        let mut config = repo.config().unwrap();
+        config.set_str("user.name", "Test").unwrap();
+        config.set_str("user.email", "test@test.com").unwrap();
+    }
+    let sig = repo.signature().unwrap();
+    let tree_id = {
+        let mut idx = repo.index().unwrap();
+        idx.write_tree().unwrap()
+    };
+    let tree = repo.find_tree(tree_id).unwrap();
+    repo.commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+        .unwrap();
+    // Create a branch name we can verify
+    repo.set_head("refs/heads/main").unwrap();
+
+    // Initialize tak
+    let store = FileStore::init(dir.path()).unwrap();
+    store
+        .create(
+            "Test".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![],
+            vec![],
+            Contract::default(),
+            Planning::default(),
+        )
+        .unwrap();
+
+    let idx = Index::open(&store.root().join("index.db")).unwrap();
+    idx.rebuild(&store.list_all().unwrap()).unwrap();
+    drop(idx);
+
+    // Start the task
+    tak::commands::lifecycle::start(dir.path(), 1, None, Format::Json).unwrap();
+
+    let task = store.read(1).unwrap();
+    assert_eq!(task.git.branch.as_deref(), Some("main"));
+    assert!(
+        task.git.start_commit.is_some(),
+        "start_commit should be populated"
+    );
+    assert_eq!(
+        task.git.start_commit.as_ref().unwrap().len(),
+        40,
+        "should be a full SHA"
+    );
+}
