@@ -1818,6 +1818,67 @@ fn test_log_empty_returns_empty_json() {
 }
 
 #[test]
+fn test_verify_no_commands() {
+    let dir = tempdir().unwrap();
+    let store = FileStore::init(dir.path()).unwrap();
+    fs::create_dir_all(dir.path().join(".tak/context")).unwrap();
+    fs::create_dir_all(dir.path().join(".tak/history")).unwrap();
+
+    store
+        .create(
+            "No verify".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![],
+            vec![],
+            Contract::default(),
+            Planning::default(),
+        )
+        .unwrap();
+
+    let idx = Index::open(&store.root().join("index.db")).unwrap();
+    idx.rebuild(&store.list_all().unwrap()).unwrap();
+    drop(idx);
+
+    // Should succeed with no commands
+    tak::commands::verify::run(dir.path(), 1, Format::Json).unwrap();
+}
+
+#[test]
+fn test_verify_passing_commands() {
+    let dir = tempdir().unwrap();
+    let store = FileStore::init(dir.path()).unwrap();
+    fs::create_dir_all(dir.path().join(".tak/context")).unwrap();
+    fs::create_dir_all(dir.path().join(".tak/history")).unwrap();
+
+    store
+        .create(
+            "Verifiable".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![],
+            vec![],
+            Contract {
+                objective: None,
+                acceptance_criteria: vec![],
+                verification: vec!["true".into(), "echo ok".into()],
+                constraints: vec![],
+            },
+            Planning::default(),
+        )
+        .unwrap();
+
+    let idx = Index::open(&store.root().join("index.db")).unwrap();
+    idx.rebuild(&store.list_all().unwrap()).unwrap();
+    drop(idx);
+
+    // All commands pass, should succeed
+    tak::commands::verify::run(dir.path(), 1, Format::Json).unwrap();
+}
+
+#[test]
 fn test_context_nonexistent_task_fails() {
     let dir = tempdir().unwrap();
     FileStore::init(dir.path()).unwrap();

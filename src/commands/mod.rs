@@ -14,3 +14,4 @@ pub mod reindex;
 pub mod setup;
 pub mod show;
 pub mod tree;
+pub mod verify;

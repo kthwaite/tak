@@ -245,6 +245,11 @@ enum Commands {
         #[arg(long)]
         assignee: Option<String>,
     },
+    /// Run verification commands from task contract
+    Verify {
+        /// Task ID
+        id: u64,
+    },
     /// Display history log for a task
     Log {
         /// Task ID
@@ -434,6 +439,7 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
         Commands::Orphan { id } => tak::commands::deps::orphan(&root, id, format),
         Commands::Tree { id } => tak::commands::tree::run(&root, id, format),
         Commands::Next { assignee } => tak::commands::next::run(&root, assignee, format),
+        Commands::Verify { id } => tak::commands::verify::run(&root, id, format),
         Commands::Log { id } => tak::commands::log::run(&root, id, format),
         Commands::Context { id, set, clear } => {
             tak::commands::context::run(&root, id, set, clear, format)
