@@ -245,6 +245,11 @@ enum Commands {
         #[arg(long)]
         assignee: Option<String>,
     },
+    /// Display history log for a task
+    Log {
+        /// Task ID
+        id: u64,
+    },
     /// Read or write context notes for a task
     Context {
         /// Task ID
@@ -429,6 +434,7 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
         Commands::Orphan { id } => tak::commands::deps::orphan(&root, id, format),
         Commands::Tree { id } => tak::commands::tree::run(&root, id, format),
         Commands::Next { assignee } => tak::commands::next::run(&root, assignee, format),
+        Commands::Log { id } => tak::commands::log::run(&root, id, format),
         Commands::Context { id, set, clear } => {
             tak::commands::context::run(&root, id, set, clear, format)
         }

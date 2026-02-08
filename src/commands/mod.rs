@@ -8,6 +8,7 @@ pub mod edit;
 pub mod init;
 pub mod lifecycle;
 pub mod list;
+pub mod log;
 pub mod next;
 pub mod reindex;
 pub mod setup;

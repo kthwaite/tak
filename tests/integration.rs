@@ -1752,6 +1752,72 @@ fn test_context_clear() {
 }
 
 #[test]
+fn test_log_shows_lifecycle_history() {
+    let dir = tempdir().unwrap();
+    let store = FileStore::init(dir.path()).unwrap();
+    fs::create_dir_all(dir.path().join(".tak/context")).unwrap();
+    fs::create_dir_all(dir.path().join(".tak/history")).unwrap();
+
+    store
+        .create(
+            "Log task".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![],
+            vec![],
+            Contract::default(),
+            Planning::default(),
+        )
+        .unwrap();
+
+    let idx = Index::open(&store.root().join("index.db")).unwrap();
+    idx.rebuild(&store.list_all().unwrap()).unwrap();
+    drop(idx);
+
+    // Run lifecycle commands to generate history
+    tak::commands::lifecycle::start(dir.path(), 1, Some("agent-1".into()), Format::Json).unwrap();
+    tak::commands::lifecycle::finish(dir.path(), 1, Format::Json).unwrap();
+
+    // Verify history file was created with entries
+    let repo = tak::store::repo::Repo::open(dir.path()).unwrap();
+    let history = repo.sidecars.read_history(1).unwrap().unwrap();
+    let lines: Vec<&str> = history.lines().collect();
+    assert_eq!(lines.len(), 2);
+    assert!(lines[0].contains("started"));
+    assert!(lines[0].contains("agent-1"));
+    assert!(lines[1].contains("finished"));
+}
+
+#[test]
+fn test_log_empty_returns_empty_json() {
+    let dir = tempdir().unwrap();
+    let store = FileStore::init(dir.path()).unwrap();
+    fs::create_dir_all(dir.path().join(".tak/context")).unwrap();
+    fs::create_dir_all(dir.path().join(".tak/history")).unwrap();
+
+    store
+        .create(
+            "No history".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![],
+            vec![],
+            Contract::default(),
+            Planning::default(),
+        )
+        .unwrap();
+
+    let idx = Index::open(&store.root().join("index.db")).unwrap();
+    idx.rebuild(&store.list_all().unwrap()).unwrap();
+    drop(idx);
+
+    // JSON mode returns empty array, no error
+    tak::commands::log::run(dir.path(), 1, Format::Json).unwrap();
+}
+
+#[test]
 fn test_context_nonexistent_task_fails() {
     let dir = tempdir().unwrap();
     FileStore::init(dir.path()).unwrap();
