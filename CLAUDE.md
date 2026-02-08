@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 cargo build                    # Build debug
 cargo build --release          # Build release
-cargo test                     # Run all 68 tests (43 unit + 25 integration)
+cargo test                     # Run all 76 tests (47 unit + 29 integration)
 cargo test model::tests        # Run unit tests in a specific module
 cargo test integration         # Run only integration tests (tests/integration.rs)
 cargo test test_name           # Run a single test by name
@@ -32,7 +32,7 @@ Tasks are JSON files in `.tak/tasks/` (the git-committed source of truth). A git
 
 ### Source Layout
 
-- **`src/model.rs`** — `Task`, `Status` (pending/in_progress/done/cancelled), `Kind` (epic/task/bug), `Dependency` (id/dep_type/reason), `DepType` (hard/soft), `Contract` (objective/acceptance_criteria/verification/constraints)
+- **`src/model.rs`** — `Task`, `Status` (pending/in_progress/done/cancelled), `Kind` (epic/task/bug), `Dependency` (id/dep_type/reason), `DepType` (hard/soft), `Contract` (objective/acceptance_criteria/verification/constraints), `Planning` (priority/estimate/required_skills/risk), `Priority` (critical/high/medium/low), `Estimate` (xs/s/m/l/xl), `Risk` (low/medium/high)
 - **`src/error.rs`** — `TakError` enum via thiserror; `Result<T>` alias used everywhere
 - **`src/output.rs`** — `Format` enum (Json/Pretty/Minimal); `print_task(s)` functions
 - **`src/store/files.rs`** — `FileStore`: CRUD on `.tak/tasks/*.json`, atomic ID allocation via counter.json + fs2 lock
@@ -48,11 +48,11 @@ Tasks are JSON files in `.tak/tasks/` (the git-committed source of truth). A git
 | Command | Purpose |
 |---------|---------|
 | `init` | Initialize `.tak/` directory |
-| `create TITLE` | Create task (`--kind`, `--parent`, `--depends-on`, `-d`, `--tag`, `--objective`, `--verify`, `--constraint`, `--criterion`) |
+| `create TITLE` | Create task (`--kind`, `--parent`, `--depends-on`, `-d`, `--tag`, `--objective`, `--verify`, `--constraint`, `--criterion`, `--priority`, `--estimate`, `--skill`, `--risk`) |
 | `delete ID` | Delete a task (`--force` to cascade: orphans children, removes deps) |
 | `show ID` | Display a single task |
-| `list` | Query tasks (`--status`, `--kind`, `--tag`, `--assignee`, `--available`, `--blocked`, `--children-of`) |
-| `edit ID` | Update fields (`--title`, `-d`, `--kind`, `--tag`, `--objective`, `--verify`, `--constraint`, `--criterion`) |
+| `list` | Query tasks (`--status`, `--kind`, `--tag`, `--assignee`, `--available`, `--blocked`, `--children-of`, `--priority`) |
+| `edit ID` | Update fields (`--title`, `-d`, `--kind`, `--tag`, `--objective`, `--verify`, `--constraint`, `--criterion`, `--priority`, `--estimate`, `--skill`, `--risk`) |
 | `start ID` | Pending → in_progress (`--assignee`) |
 | `finish ID` | In_progress → done |
 | `cancel ID` | Pending/in_progress → cancelled |
@@ -92,6 +92,9 @@ Errors are structured JSON on stderr when `--format json`: `{"error":"<code>","m
 - `depends_on: Vec<Dependency>` — each dep has `id`, optional `dep_type` (hard/soft), optional `reason`; `depend` updates metadata on existing deps
 - `dependencies` SQLite table carries `dep_type TEXT` and `reason TEXT` columns
 - `Task.contract: Contract` — optional executable spec with `objective`, `acceptance_criteria`, `verification` commands, `constraints`; omitted from JSON when empty
+- `Task.planning: Planning` — optional triage metadata with `priority` (critical/high/medium/low), `estimate` (xs-xl), `risk` (low/medium/high), `required_skills`; omitted from JSON when empty
+- Priority-ordered claiming: `available()`, `next`, and `claim` sort by `COALESCE(priority_rank, 4), id` — critical first, unprioritized last
+- SQLite `tasks` table carries `priority INTEGER` (rank 0-3) and `estimate TEXT` columns; `skills` junction table for required_skills
 
 ### On-Disk Layout
 

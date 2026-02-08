@@ -31,6 +31,12 @@ tak create "Refactor auth module" --objective "Consolidate auth into single modu
   --verify "cargo test" --verify "cargo clippy" \
   --constraint "No unsafe code" --constraint "Backwards compatible" \
   --criterion "All auth logic in src/auth/" --criterion "No public API changes"
+
+# Create with planning fields
+tak create "Fix auth bug" --kind bug --priority critical --estimate s --risk high
+
+# Create with required skills
+tak create "ML pipeline" --skill python --skill pytorch --estimate xl
 ```
 
 ### Viewing tasks
@@ -53,6 +59,7 @@ tak list --status pending
 tak list --kind bug
 tak list --tag backend
 tak list --assignee agent-1
+tak list --priority critical
 
 # Show children of a task
 tak list --children-of 1
@@ -72,6 +79,10 @@ tak edit 1 --title "New title" -d "Updated description" --kind epic --tag new-ta
 # Edit contract fields
 tak edit 1 --objective "New objective" --verify "cargo test" --constraint "No panics"
 tak edit 1 --objective ""   # Clear objective
+
+# Edit planning fields
+tak edit 1 --priority high --estimate m --risk low
+tak edit 1 --skill rust --skill sql
 
 # Claim the next available task (atomic find+start, preferred for multi-agent)
 tak claim --assignee agent-1
@@ -141,6 +152,17 @@ Tasks can carry an executable spec via the `contract` field:
 - **constraints** — Rules the implementer must follow (`--constraint`, repeatable)
 
 Contract fields are optional. Empty contracts are omitted from JSON output. In pretty output, verification commands are prefixed with `$` to distinguish them from prose.
+
+## Task Planning
+
+Tasks can carry planning metadata via the `planning` field:
+
+- **priority** — `critical`, `high`, `medium`, `low` (`--priority`)
+- **estimate** — T-shirt size: `xs`, `s`, `m`, `l`, `xl` (`--estimate`)
+- **risk** — `low`, `medium`, `high` (`--risk`)
+- **required_skills** — Advisory skill tags (`--skill`, repeatable)
+
+Planning fields are optional. Empty planning is omitted from JSON output. Available tasks (`tak list --available`, `tak claim`, `tak next`) are ordered by priority: critical first, unprioritized last. Tasks with the same priority are ordered by ID.
 
 ## Task Kinds
 
