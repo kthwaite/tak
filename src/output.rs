@@ -74,6 +74,20 @@ pub fn print_task(task: &Task, format: Format) -> Result<()> {
                     println!("  pr: {}", pr);
                 }
             }
+            if !task.execution.is_empty() {
+                if task.execution.attempt_count > 0 {
+                    println!("  attempts: {}", task.execution.attempt_count);
+                }
+                if let Some(ref err) = task.execution.last_error {
+                    println!("  last error: {}", err);
+                }
+                if let Some(ref summary) = task.execution.handoff_summary {
+                    println!("  handoff: {}", summary);
+                }
+                if let Some(ref reason) = task.execution.blocked_reason {
+                    println!("  blocked reason: {}", reason);
+                }
+            }
             if !task.contract.is_empty() {
                 if let Some(ref obj) = task.contract.objective {
                     println!("  objective: {}", obj);

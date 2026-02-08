@@ -168,6 +168,17 @@ enum Commands {
     Cancel {
         /// Task ID to cancel
         id: u64,
+        /// Reason for cancellation (recorded as last_error)
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    /// Hand off an in-progress task back to pending for another agent
+    Handoff {
+        /// Task ID to hand off
+        id: u64,
+        /// Summary of progress so far (required)
+        #[arg(long, required = true)]
+        summary: String,
     },
     /// Atomically find and start the next available task
     Claim {
@@ -385,7 +396,12 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
             tak::commands::lifecycle::start(&root, id, assignee, format)
         }
         Commands::Finish { id } => tak::commands::lifecycle::finish(&root, id, format),
-        Commands::Cancel { id } => tak::commands::lifecycle::cancel(&root, id, format),
+        Commands::Cancel { id, reason } => {
+            tak::commands::lifecycle::cancel(&root, id, reason, format)
+        }
+        Commands::Handoff { id, summary } => {
+            tak::commands::lifecycle::handoff(&root, id, summary, format)
+        }
         Commands::Claim { assignee, tag } => {
             tak::commands::claim::run(&root, assignee, tag, format)
         }

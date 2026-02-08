@@ -1560,3 +1560,116 @@ fn test_finish_captures_commit_range() {
     assert!(task.git.commits[0].contains("add file2"));
     assert!(task.git.commits[1].contains("add file1"));
 }
+
+// === Execution metadata tests (Phase 6) ===
+
+#[test]
+fn test_start_increments_attempt_count() {
+    let dir = tempdir().unwrap();
+    let store = FileStore::init(dir.path()).unwrap();
+    store
+        .create(
+            "Retriable".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![],
+            vec![],
+            Contract::default(),
+            Planning::default(),
+        )
+        .unwrap();
+
+    let idx = Index::open(&store.root().join("index.db")).unwrap();
+    idx.rebuild(&store.list_all().unwrap()).unwrap();
+    drop(idx);
+
+    // First start -> attempt_count == 1
+    tak::commands::lifecycle::start(dir.path(), 1, None, Format::Json).unwrap();
+    let t = store.read(1).unwrap();
+    assert_eq!(t.status, Status::InProgress);
+    assert_eq!(t.execution.attempt_count, 1);
+
+    // Cancel (no reason), reopen, start again -> attempt_count == 2
+    tak::commands::lifecycle::cancel(dir.path(), 1, None, Format::Json).unwrap();
+    tak::commands::lifecycle::reopen(dir.path(), 1, Format::Json).unwrap();
+    tak::commands::lifecycle::start(dir.path(), 1, None, Format::Json).unwrap();
+    let t = store.read(1).unwrap();
+    assert_eq!(t.status, Status::InProgress);
+    assert_eq!(t.execution.attempt_count, 2);
+}
+
+#[test]
+fn test_cancel_with_reason_sets_last_error() {
+    let dir = tempdir().unwrap();
+    let store = FileStore::init(dir.path()).unwrap();
+    store
+        .create(
+            "Fragile".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![],
+            vec![],
+            Contract::default(),
+            Planning::default(),
+        )
+        .unwrap();
+
+    let idx = Index::open(&store.root().join("index.db")).unwrap();
+    idx.rebuild(&store.list_all().unwrap()).unwrap();
+    drop(idx);
+
+    // Start, then cancel with a reason
+    tak::commands::lifecycle::start(dir.path(), 1, None, Format::Json).unwrap();
+    tak::commands::lifecycle::cancel(dir.path(), 1, Some("CI timeout".into()), Format::Json)
+        .unwrap();
+
+    let t = store.read(1).unwrap();
+    assert_eq!(t.status, Status::Cancelled);
+    assert_eq!(t.execution.last_error.as_deref(), Some("CI timeout"));
+}
+
+#[test]
+fn test_handoff_records_summary_and_returns_to_pending() {
+    let dir = tempdir().unwrap();
+    let store = FileStore::init(dir.path()).unwrap();
+    store
+        .create(
+            "Handoffable".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![],
+            vec![],
+            Contract::default(),
+            Planning::default(),
+        )
+        .unwrap();
+
+    let idx = Index::open(&store.root().join("index.db")).unwrap();
+    idx.rebuild(&store.list_all().unwrap()).unwrap();
+    drop(idx);
+
+    // Start with assignee, then handoff
+    tak::commands::lifecycle::start(dir.path(), 1, Some("agent-1".into()), Format::Json).unwrap();
+    tak::commands::lifecycle::handoff(
+        dir.path(),
+        1,
+        "Completed setup, needs testing".into(),
+        Format::Json,
+    )
+    .unwrap();
+
+    let t = store.read(1).unwrap();
+    assert_eq!(t.status, Status::Pending);
+    assert!(t.assignee.is_none(), "handoff should clear assignee");
+    assert_eq!(
+        t.execution.handoff_summary.as_deref(),
+        Some("Completed setup, needs testing")
+    );
+    assert_eq!(
+        t.execution.attempt_count, 1,
+        "attempt_count should be preserved after handoff"
+    );
+}

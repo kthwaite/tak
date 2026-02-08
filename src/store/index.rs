@@ -38,6 +38,7 @@ impl Index {
                 assignee TEXT,
                 priority INTEGER,
                 estimate TEXT,
+                attempt_count INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
@@ -78,14 +79,15 @@ impl Index {
         // Pass 1: insert all task rows with parent_id deferred (avoids FK failures)
         for task in tasks {
             tx.execute(
-                "INSERT INTO tasks (id, title, description, status, kind, parent_id, assignee, priority, estimate, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, ?7, ?8, ?9, ?10)",
+                "INSERT INTO tasks (id, title, description, status, kind, parent_id, assignee, priority, estimate, attempt_count, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, ?7, ?8, ?9, ?10, ?11)",
                 params![
                     task.id, task.title, task.description,
                     task.status.to_string(), task.kind.to_string(),
                     task.assignee,
                     task.planning.priority.map(|p| p.rank() as i64),
                     task.planning.estimate.map(|e| e.to_string()),
+                    task.execution.attempt_count,
                     task.created_at.to_rfc3339(), task.updated_at.to_rfc3339(),
                 ],
             )?;
@@ -127,14 +129,15 @@ impl Index {
         let tx = self.conn.unchecked_transaction()?;
 
         tx.execute(
-            "INSERT OR REPLACE INTO tasks (id, title, description, status, kind, parent_id, assignee, priority, estimate, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            "INSERT OR REPLACE INTO tasks (id, title, description, status, kind, parent_id, assignee, priority, estimate, attempt_count, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             params![
                 task.id, task.title, task.description,
                 task.status.to_string(), task.kind.to_string(),
                 task.parent, task.assignee,
                 task.planning.priority.map(|p| p.rank() as i64),
                 task.planning.estimate.map(|e| e.to_string()),
+                task.execution.attempt_count,
                 task.created_at.to_rfc3339(), task.updated_at.to_rfc3339(),
             ],
         )?;
@@ -349,7 +352,7 @@ impl Index {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Contract, Dependency, GitInfo, Kind, Planning, Status, Task};
+    use crate::model::{Contract, Dependency, Execution, GitInfo, Kind, Planning, Status, Task};
     use chrono::Utc;
 
     fn make_task(id: u64, status: Status, depends_on: Vec<u64>, parent: Option<u64>) -> Task {
@@ -367,6 +370,7 @@ mod tests {
             contract: Contract::default(),
             planning: Planning::default(),
             git: GitInfo::default(),
+            execution: Execution::default(),
             created_at: now,
             updated_at: now,
             extensions: serde_json::Map::new(),
@@ -570,6 +574,7 @@ mod tests {
                 contract: Contract::default(),
                 planning: Planning::default(),
                 git: GitInfo::default(),
+                execution: Execution::default(),
                 created_at: now,
                 updated_at: now,
                 extensions: serde_json::Map::new(),
@@ -587,6 +592,7 @@ mod tests {
                 contract: Contract::default(),
                 planning: Planning::default(),
                 git: GitInfo::default(),
+                execution: Execution::default(),
                 created_at: now,
                 updated_at: now,
                 extensions: serde_json::Map::new(),
@@ -616,6 +622,7 @@ mod tests {
             contract: Contract::default(),
             planning: Planning::default(),
             git: GitInfo::default(),
+            execution: Execution::default(),
             created_at: now,
             updated_at: now,
             extensions: serde_json::Map::new(),

@@ -20,30 +20,6 @@ fn transition(current: Status, target: Status) -> std::result::Result<(), (Strin
     }
 }
 
-fn set_status(
-    repo_root: &Path,
-    id: u64,
-    target: Status,
-    assignee: Option<String>,
-    format: Format,
-) -> Result<()> {
-    let repo = Repo::open(repo_root)?;
-    let mut task = repo.store.read(id)?;
-
-    transition(task.status, target).map_err(|(from, to)| TakError::InvalidTransition(from, to))?;
-
-    task.status = target;
-    if let Some(a) = assignee {
-        task.assignee = Some(a);
-    }
-    task.updated_at = Utc::now();
-    repo.store.write(&task)?;
-    repo.index.upsert(&task)?;
-
-    output::print_task(&task, format)?;
-    Ok(())
-}
-
 pub fn start(repo_root: &Path, id: u64, assignee: Option<String>, format: Format) -> Result<()> {
     let repo = Repo::open(repo_root)?;
     let mut task = repo.store.read(id)?;
@@ -56,6 +32,7 @@ pub fn start(repo_root: &Path, id: u64, assignee: Option<String>, format: Format
     }
 
     task.status = Status::InProgress;
+    task.execution.attempt_count += 1;
     if let Some(a) = assignee {
         task.assignee = Some(a);
     }
@@ -105,8 +82,41 @@ pub fn finish(repo_root: &Path, id: u64, format: Format) -> Result<()> {
     Ok(())
 }
 
-pub fn cancel(repo_root: &Path, id: u64, format: Format) -> Result<()> {
-    set_status(repo_root, id, Status::Cancelled, None, format)
+pub fn cancel(repo_root: &Path, id: u64, reason: Option<String>, format: Format) -> Result<()> {
+    let repo = Repo::open(repo_root)?;
+    let mut task = repo.store.read(id)?;
+
+    transition(task.status, Status::Cancelled)
+        .map_err(|(from, to)| TakError::InvalidTransition(from, to))?;
+
+    task.status = Status::Cancelled;
+    if let Some(r) = reason {
+        task.execution.last_error = Some(r);
+    }
+    task.updated_at = Utc::now();
+    repo.store.write(&task)?;
+    repo.index.upsert(&task)?;
+
+    output::print_task(&task, format)?;
+    Ok(())
+}
+
+pub fn handoff(repo_root: &Path, id: u64, summary: String, format: Format) -> Result<()> {
+    let repo = Repo::open(repo_root)?;
+    let mut task = repo.store.read(id)?;
+
+    transition(task.status, Status::Pending)
+        .map_err(|(from, to)| TakError::InvalidTransition(from, to))?;
+
+    task.status = Status::Pending;
+    task.assignee = None;
+    task.execution.handoff_summary = Some(summary);
+    task.updated_at = Utc::now();
+    repo.store.write(&task)?;
+    repo.index.upsert(&task)?;
+
+    output::print_task(&task, format)?;
+    Ok(())
 }
 
 pub fn reopen(repo_root: &Path, id: u64, format: Format) -> Result<()> {
