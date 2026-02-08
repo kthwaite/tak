@@ -1,5 +1,7 @@
 use std::path::Path;
 
+use colored::Colorize;
+
 use crate::error::Result;
 use crate::output::Format;
 use crate::store::repo::Repo;
@@ -35,10 +37,10 @@ pub fn run(repo_root: &Path, id: u64, format: Format) -> Result<()> {
             for evt in &events {
                 let ts = evt.timestamp.format("%Y-%m-%d %H:%M:%S");
                 let agent_part = match &evt.agent {
-                    Some(a) => format!(" ({a})"),
+                    Some(a) => format!(" ({})", a.cyan()),
                     None => String::new(),
                 };
-                println!("  {ts} {}{agent_part}", evt.event);
+                println!("  {} {}{}", ts.to_string().dimmed(), evt.event, agent_part);
             }
         }
     }

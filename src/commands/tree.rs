@@ -1,3 +1,5 @@
+use colored::Colorize;
+
 use crate::error::Result;
 use crate::model::Task;
 use crate::output::{Format, truncate_title};
@@ -48,10 +50,27 @@ fn print_tree_pretty(node: &TreeNode, prefix: &str, is_last: bool, is_root: bool
         "\u{251c}\u{2500}\u{2500} "
     };
 
-    let blocked_marker = if node.blocked { " [BLOCKED]" } else { "" };
+    let blocked_marker = if node.blocked {
+        format!(" {}", "[BLOCKED]".red().bold())
+    } else {
+        String::new()
+    };
+    let status_colored = match node.status.as_str() {
+        "pending" => node.status.yellow().to_string(),
+        "in_progress" => node.status.blue().to_string(),
+        "done" => node.status.green().to_string(),
+        "cancelled" => node.status.red().to_string(),
+        other => other.to_string(),
+    };
     println!(
-        "{}{}[{}] {} ({}, {}){}",
-        prefix, connector, node.id, node.title, node.kind, node.status, blocked_marker
+        "{}{}{} {} ({}, {}){}",
+        prefix,
+        connector.dimmed(),
+        format!("[{}]", node.id).cyan().bold(),
+        node.title.bold(),
+        node.kind,
+        status_colored,
+        blocked_marker,
     );
 
     let child_prefix = if is_root {

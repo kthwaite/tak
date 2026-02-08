@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
+use colored::Colorize;
 use serde_json::{Value, json};
 
 use crate::error::Result;
@@ -45,11 +46,11 @@ impl Check {
         }
     }
 
-    fn prefix(&self) -> &'static str {
+    fn prefix(&self) -> String {
         match self.level {
-            Level::Ok => " ok ",
-            Level::Warn => "warn",
-            Level::Error => " ERR",
+            Level::Ok => " ok ".green().to_string(),
+            Level::Warn => "warn".yellow().to_string(),
+            Level::Error => " ERR".red().bold().to_string(),
         }
     }
 
@@ -113,13 +114,22 @@ pub fn run(fix: bool, format: Format) -> Result<()> {
                     if !current_cat.is_empty() {
                         eprintln!();
                     }
-                    eprintln!("{}", check.category);
+                    eprintln!("{}", check.category.bold());
                     current_cat = check.category;
                 }
                 eprintln!("  {}  {}", check.prefix(), check.message);
             }
             eprintln!();
-            eprintln!("{passed} passed, {warnings} warnings, {errors} errors");
+            eprintln!(
+                "{} passed, {} warnings, {} errors",
+                passed.to_string().green(),
+                warnings.to_string().yellow(),
+                if errors > 0 {
+                    errors.to_string().red().bold().to_string()
+                } else {
+                    errors.to_string()
+                },
+            );
         }
     }
 

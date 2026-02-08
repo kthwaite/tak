@@ -2,6 +2,7 @@ use std::path::Path;
 use std::process::Command;
 
 use chrono::Utc;
+use colored::Colorize;
 
 use crate::error::Result;
 use crate::output::Format;
@@ -62,16 +63,24 @@ pub fn run(repo_root: &Path, id: u64, format: Format) -> Result<()> {
 
         match format {
             Format::Pretty => {
-                let icon = if passed { "PASS" } else { "FAIL" };
-                println!("  [{icon}] $ {cmd}");
+                let icon = if passed {
+                    "PASS".green().bold().to_string()
+                } else {
+                    "FAIL".red().bold().to_string()
+                };
+                println!("  [{}] {} {}", icon, "$".dimmed(), cmd.cyan());
                 if !stderr.is_empty() {
                     for line in stderr.lines() {
-                        println!("         {line}");
+                        println!("         {}", line.red());
                     }
                 }
             }
             Format::Minimal => {
-                let icon = if passed { "ok" } else { "FAIL" };
+                let icon = if passed {
+                    "ok".green().to_string()
+                } else {
+                    "FAIL".red().to_string()
+                };
                 println!("{icon} {cmd}");
             }
             Format::Json => {}
@@ -101,9 +110,9 @@ pub fn run(repo_root: &Path, id: u64, format: Format) -> Result<()> {
         }
         Format::Pretty => {
             if all_passed {
-                println!("  All verification commands passed.");
+                println!("  {}", "All verification commands passed.".green());
             } else {
-                println!("  Some verification commands failed.");
+                println!("  {}", "Some verification commands failed.".red());
             }
         }
         Format::Minimal => {}

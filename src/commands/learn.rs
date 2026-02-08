@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use chrono::Utc;
+use colored::Colorize;
 
 use crate::error::Result;
 use crate::model::{Learning, LearningCategory};
@@ -226,18 +227,22 @@ pub fn print_learning(learning: &Learning, format: Format) -> Result<()> {
         Format::Json => println!("{}", serde_json::to_string(learning)?),
         Format::Pretty => {
             println!(
-                "[L{}] {} ({})",
-                learning.id, learning.title, learning.category
+                "{} {} ({})",
+                format!("[L{}]", learning.id).magenta().bold(),
+                learning.title.bold(),
+                learning.category,
             );
             if let Some(ref desc) = learning.description {
                 println!("  {}", desc);
             }
             if !learning.tags.is_empty() {
-                println!("  tags: {}", learning.tags.join(", "));
+                let colored_tags: Vec<String> =
+                    learning.tags.iter().map(|t| t.cyan().to_string()).collect();
+                println!("  {} {}", "tags:".dimmed(), colored_tags.join(", "));
             }
             if !learning.task_ids.is_empty() {
                 let ids: Vec<String> = learning.task_ids.iter().map(|id| id.to_string()).collect();
-                println!("  tasks: {}", ids.join(", "));
+                println!("  {} {}", "tasks:".dimmed(), ids.join(", "));
             }
         }
         Format::Minimal => {
@@ -258,8 +263,8 @@ fn print_learnings(learnings: &[Learning], format: Format) -> Result<()> {
             }
         }
         Format::Minimal => {
-            println!("{:>4} {:20} CATEGORY", "ID", "TITLE");
-            println!("{}", "-".repeat(40));
+            println!("{:>4} {:20} CATEGORY", "ID".bold(), "TITLE".bold());
+            println!("{}", "-".repeat(40).dimmed());
             for learning in learnings {
                 print_learning(learning, Format::Minimal)?;
             }
