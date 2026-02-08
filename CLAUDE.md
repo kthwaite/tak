@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 cargo build                    # Build debug
 cargo build --release          # Build release
-cargo test                     # Run all 58 tests (37 unit + 21 integration)
+cargo test                     # Run all 63 tests (41 unit + 22 integration)
 cargo test model::tests        # Run unit tests in a specific module
 cargo test integration         # Run only integration tests (tests/integration.rs)
 cargo test test_name           # Run a single test by name
@@ -32,7 +32,7 @@ Tasks are JSON files in `.tak/tasks/` (the git-committed source of truth). A git
 
 ### Source Layout
 
-- **`src/model.rs`** — `Task`, `Status` (pending/in_progress/done/cancelled), `Kind` (epic/task/bug)
+- **`src/model.rs`** — `Task`, `Status` (pending/in_progress/done/cancelled), `Kind` (epic/task/bug), `Dependency` (id/dep_type/reason), `DepType` (hard/soft)
 - **`src/error.rs`** — `TakError` enum via thiserror; `Result<T>` alias used everywhere
 - **`src/output.rs`** — `Format` enum (Json/Pretty/Minimal); `print_task(s)` functions
 - **`src/store/files.rs`** — `FileStore`: CRUD on `.tak/tasks/*.json`, atomic ID allocation via counter.json + fs2 lock
@@ -59,7 +59,7 @@ Tasks are JSON files in `.tak/tasks/` (the git-committed source of truth). A git
 | `claim` | Atomic next+start with file lock (`--assignee`, `--tag`) |
 | `reopen ID` | Done/cancelled → pending (clears assignee) |
 | `unassign ID` | Clear assignee without changing status |
-| `depend ID --on IDS` | Add dependency edges (comma-separated) |
+| `depend ID --on IDS` | Add dependency edges (`--dep-type hard\|soft`, `--reason`) |
 | `undepend ID --on IDS` | Remove dependency edges |
 | `reparent ID --to ID` | Change parent |
 | `orphan ID` | Remove parent |
@@ -88,12 +88,15 @@ Errors are structured JSON on stderr when `--format json`: `{"error":"<code>","m
 - `setup` and `doctor` don't require a repo — they're dispatched before `find_repo_root()`
 - `setup` embeds plugin assets via `include_str!` at compile time; idempotent install/remove
 - `doctor` runs grouped health checks (Core/Index/Data Integrity/Environment) with auto-fix support
+- `Task` uses `#[serde(flatten)]` extensions map for forward-compatible JSON round-trips (unknown fields survive read→write)
+- `depends_on: Vec<Dependency>` — each dep has `id`, optional `dep_type` (hard/soft), optional `reason`; `depend` updates metadata on existing deps
+- `dependencies` SQLite table carries `dep_type TEXT` and `reason TEXT` columns
 
 ### On-Disk Layout
 
 ```
 .tak/
-  config.json          # {"version": 1}
+  config.json          # {"version": 2}
   counter.json         # {"next_id": N}  (fs2-locked during allocation)
   counter.lock         # Persistent lock file for ID allocation (gitignored)
   claim.lock           # Persistent lock file for atomic claim (gitignored)
