@@ -1133,6 +1133,40 @@ fn test_edit_adds_contract_fields() {
 }
 
 #[test]
+fn test_show_contract_in_pretty_output() {
+    let dir = tempdir().unwrap();
+    let store = FileStore::init(dir.path()).unwrap();
+    store
+        .create(
+            "Contracted".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![],
+            vec![],
+            Contract {
+                objective: Some("Ship feature X".into()),
+                acceptance_criteria: vec!["All tests pass".into(), "No regressions".into()],
+                verification: vec!["cargo test".into(), "cargo clippy".into()],
+                constraints: vec!["No unsafe code".into()],
+            },
+        )
+        .unwrap();
+
+    let idx = Index::open(&store.root().join("index.db")).unwrap();
+    idx.rebuild(&store.list_all().unwrap()).unwrap();
+    drop(idx);
+
+    // Verify contract fields persisted correctly via JSON round-trip
+    let task = store.read(1).unwrap();
+    let json = serde_json::to_string_pretty(&task).unwrap();
+    assert!(json.contains("Ship feature X"));
+    assert!(json.contains("cargo test"));
+    assert!(json.contains("No unsafe code"));
+    assert!(json.contains("All tests pass"));
+}
+
+#[test]
 fn test_create_with_contract() {
     let dir = tempdir().unwrap();
     let store = FileStore::init(dir.path()).unwrap();

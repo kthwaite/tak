@@ -40,6 +40,29 @@ pub fn print_task(task: &Task, format: Format) -> Result<()> {
             if !task.tags.is_empty() {
                 println!("  tags: {}", task.tags.join(", "));
             }
+            if !task.contract.is_empty() {
+                if let Some(ref obj) = task.contract.objective {
+                    println!("  objective: {}", obj);
+                }
+                if !task.contract.acceptance_criteria.is_empty() {
+                    println!("  acceptance criteria:");
+                    for ac in &task.contract.acceptance_criteria {
+                        println!("    - {}", ac);
+                    }
+                }
+                if !task.contract.verification.is_empty() {
+                    println!("  verification:");
+                    for v in &task.contract.verification {
+                        println!("    $ {}", v);
+                    }
+                }
+                if !task.contract.constraints.is_empty() {
+                    println!("  constraints:");
+                    for c in &task.contract.constraints {
+                        println!("    - {}", c);
+                    }
+                }
+            }
         }
         Format::Minimal => {
             let assignee = task.assignee.as_deref().unwrap_or("-");
