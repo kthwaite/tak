@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use chrono::Utc;
 
 use crate::error::{Result, TakError};
-use crate::model::{Contract, Dependency, Kind, Status, Task};
+use crate::model::{Contract, Dependency, Kind, Planning, Status, Task};
 use crate::store::lock;
 
 /// Root of the .tak directory for a repository.
@@ -100,6 +100,7 @@ impl FileStore {
             assignee: None,
             tags,
             contract,
+            planning: Planning::default(),
             created_at: now,
             updated_at: now,
             extensions: serde_json::Map::new(),

@@ -89,6 +89,105 @@ impl Contract {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
+#[serde(rename_all = "snake_case")]
+#[clap(rename_all = "snake_case")]
+pub enum Priority {
+    Critical,
+    High,
+    Medium,
+    Low,
+}
+
+impl Priority {
+    /// Numeric rank for SQL ordering. Lower = higher priority.
+    pub fn rank(self) -> u8 {
+        match self {
+            Self::Critical => 0,
+            Self::High => 1,
+            Self::Medium => 2,
+            Self::Low => 3,
+        }
+    }
+}
+
+impl std::fmt::Display for Priority {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Critical => write!(f, "critical"),
+            Self::High => write!(f, "high"),
+            Self::Medium => write!(f, "medium"),
+            Self::Low => write!(f, "low"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
+#[serde(rename_all = "snake_case")]
+#[clap(rename_all = "snake_case")]
+pub enum Estimate {
+    Xs,
+    S,
+    M,
+    L,
+    Xl,
+}
+
+impl std::fmt::Display for Estimate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Xs => write!(f, "xs"),
+            Self::S => write!(f, "s"),
+            Self::M => write!(f, "m"),
+            Self::L => write!(f, "l"),
+            Self::Xl => write!(f, "xl"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
+#[serde(rename_all = "snake_case")]
+#[clap(rename_all = "snake_case")]
+pub enum Risk {
+    Low,
+    Medium,
+    High,
+}
+
+impl std::fmt::Display for Risk {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Low => write!(f, "low"),
+            Self::Medium => write!(f, "medium"),
+            Self::High => write!(f, "high"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct Planning {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority: Option<Priority>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimate: Option<Estimate>,
+
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required_skills: Vec<String>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub risk: Option<Risk>,
+}
+
+impl Planning {
+    pub fn is_empty(&self) -> bool {
+        self.priority.is_none()
+            && self.estimate.is_none()
+            && self.required_skills.is_empty()
+            && self.risk.is_none()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Task {
     pub id: u64,
@@ -107,6 +206,8 @@ pub struct Task {
     pub tags: Vec<String>,
     #[serde(default, skip_serializing_if = "Contract::is_empty")]
     pub contract: Contract,
+    #[serde(default, skip_serializing_if = "Planning::is_empty")]
+    pub planning: Planning,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     /// Preserve unknown fields for forward compatibility.
@@ -171,6 +272,7 @@ mod tests {
             assignee: Some("agent-1".into()),
             tags: vec!["backend".into()],
             contract: Contract::default(),
+            planning: Planning::default(),
             created_at: now,
             updated_at: now,
             extensions: serde_json::Map::new(),
@@ -201,6 +303,7 @@ mod tests {
             assignee: None,
             tags: vec![],
             contract: Contract::default(),
+            planning: Planning::default(),
             created_at: now,
             updated_at: now,
             extensions: serde_json::Map::new(),
@@ -234,6 +337,7 @@ mod tests {
                 "keep".into(),
             ],
             contract: Contract::default(),
+            planning: Planning::default(),
             created_at: now,
             updated_at: now,
             extensions: serde_json::Map::new(),
@@ -321,6 +425,7 @@ mod tests {
                 verification: vec!["cargo test".into(), "cargo clippy".into()],
                 constraints: vec!["No unsafe".into()],
             },
+            planning: Planning::default(),
             created_at: now,
             updated_at: now,
             extensions: serde_json::Map::new(),
@@ -349,6 +454,7 @@ mod tests {
             assignee: None,
             tags: vec![],
             contract: Contract::default(),
+            planning: Planning::default(),
             created_at: now,
             updated_at: now,
             extensions: serde_json::Map::new(),
@@ -362,5 +468,75 @@ mod tests {
         assert!(!json.contains("acceptance_criteria"));
         assert!(!json.contains("verification"));
         assert!(!json.contains("constraints"));
+    }
+
+    #[test]
+    fn planning_round_trips() {
+        let now = Utc::now();
+        let task = Task {
+            id: 1,
+            title: "Planned".into(),
+            description: None,
+            status: Status::Pending,
+            kind: Kind::Task,
+            parent: None,
+            depends_on: vec![],
+            assignee: None,
+            tags: vec![],
+            contract: Contract::default(),
+            planning: Planning {
+                priority: Some(Priority::High),
+                estimate: Some(Estimate::M),
+                required_skills: vec!["rust".into(), "sql".into()],
+                risk: Some(Risk::Low),
+            },
+            created_at: now,
+            updated_at: now,
+            extensions: serde_json::Map::new(),
+        };
+        let json = serde_json::to_string_pretty(&task).unwrap();
+        let parsed: Task = serde_json::from_str(&json).unwrap();
+        assert_eq!(task, parsed);
+        assert_eq!(parsed.planning.priority, Some(Priority::High));
+        assert_eq!(parsed.planning.estimate, Some(Estimate::M));
+        assert_eq!(parsed.planning.risk, Some(Risk::Low));
+        assert_eq!(parsed.planning.required_skills, vec!["rust", "sql"]);
+    }
+
+    #[test]
+    fn empty_planning_omitted_from_json() {
+        let now = Utc::now();
+        let task = Task {
+            id: 1,
+            title: "Bare task".into(),
+            description: None,
+            status: Status::Pending,
+            kind: Kind::Task,
+            parent: None,
+            depends_on: vec![],
+            assignee: None,
+            tags: vec![],
+            contract: Contract::default(),
+            planning: Planning::default(),
+            created_at: now,
+            updated_at: now,
+            extensions: serde_json::Map::new(),
+        };
+        let json = serde_json::to_string(&task).unwrap();
+        assert!(
+            !json.contains("planning"),
+            "empty planning should not appear in JSON"
+        );
+        assert!(!json.contains("\"priority\""));
+        assert!(!json.contains("\"estimate\""));
+        assert!(!json.contains("required_skills"));
+        assert!(!json.contains("\"risk\""));
+    }
+
+    #[test]
+    fn priority_rank_ordering() {
+        assert!(Priority::Critical.rank() < Priority::High.rank());
+        assert!(Priority::High.rank() < Priority::Medium.rank());
+        assert!(Priority::Medium.rank() < Priority::Low.rank());
     }
 }

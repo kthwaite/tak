@@ -322,7 +322,7 @@ impl Index {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Contract, Dependency, Kind, Status, Task};
+    use crate::model::{Contract, Dependency, Kind, Planning, Status, Task};
     use chrono::Utc;
 
     fn make_task(id: u64, status: Status, depends_on: Vec<u64>, parent: Option<u64>) -> Task {
@@ -338,6 +338,7 @@ mod tests {
             assignee: None,
             tags: vec![],
             contract: Contract::default(),
+            planning: Planning::default(),
             created_at: now,
             updated_at: now,
             extensions: serde_json::Map::new(),
@@ -536,6 +537,7 @@ mod tests {
                 assignee: None,
                 tags: vec!["x".into(), "x".into()],
                 contract: Contract::default(),
+                planning: Planning::default(),
                 created_at: now,
                 updated_at: now,
                 extensions: serde_json::Map::new(),
@@ -551,6 +553,7 @@ mod tests {
                 assignee: None,
                 tags: vec![],
                 contract: Contract::default(),
+                planning: Planning::default(),
                 created_at: now,
                 updated_at: now,
                 extensions: serde_json::Map::new(),
@@ -578,6 +581,7 @@ mod tests {
             assignee: None,
             tags: vec!["x".into(), "x".into()],
             contract: Contract::default(),
+            planning: Planning::default(),
             created_at: now,
             updated_at: now,
             extensions: serde_json::Map::new(),
