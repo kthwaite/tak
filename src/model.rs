@@ -188,6 +188,39 @@ impl Planning {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct GitInfo {
+    /// Branch name when the task was started.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+
+    /// Commit SHA at `tak start` time (the baseline).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_commit: Option<String>,
+
+    /// Commit SHA at `tak finish` time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_commit: Option<String>,
+
+    /// Commits between start_commit and end_commit (populated by `tak finish`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub commits: Vec<String>,
+
+    /// Pull request URL (set via `tak edit --pr`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr: Option<String>,
+}
+
+impl GitInfo {
+    pub fn is_empty(&self) -> bool {
+        self.branch.is_none()
+            && self.start_commit.is_none()
+            && self.end_commit.is_none()
+            && self.commits.is_empty()
+            && self.pr.is_none()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Task {
     pub id: u64,
@@ -208,6 +241,8 @@ pub struct Task {
     pub contract: Contract,
     #[serde(default, skip_serializing_if = "Planning::is_empty")]
     pub planning: Planning,
+    #[serde(default, skip_serializing_if = "GitInfo::is_empty")]
+    pub git: GitInfo,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     /// Preserve unknown fields for forward compatibility.
@@ -273,6 +308,7 @@ mod tests {
             tags: vec!["backend".into()],
             contract: Contract::default(),
             planning: Planning::default(),
+            git: GitInfo::default(),
             created_at: now,
             updated_at: now,
             extensions: serde_json::Map::new(),
@@ -304,6 +340,7 @@ mod tests {
             tags: vec![],
             contract: Contract::default(),
             planning: Planning::default(),
+            git: GitInfo::default(),
             created_at: now,
             updated_at: now,
             extensions: serde_json::Map::new(),
@@ -338,6 +375,7 @@ mod tests {
             ],
             contract: Contract::default(),
             planning: Planning::default(),
+            git: GitInfo::default(),
             created_at: now,
             updated_at: now,
             extensions: serde_json::Map::new(),
@@ -426,6 +464,7 @@ mod tests {
                 constraints: vec!["No unsafe".into()],
             },
             planning: Planning::default(),
+            git: GitInfo::default(),
             created_at: now,
             updated_at: now,
             extensions: serde_json::Map::new(),
@@ -455,6 +494,7 @@ mod tests {
             tags: vec![],
             contract: Contract::default(),
             planning: Planning::default(),
+            git: GitInfo::default(),
             created_at: now,
             updated_at: now,
             extensions: serde_json::Map::new(),
@@ -490,6 +530,7 @@ mod tests {
                 required_skills: vec!["rust".into(), "sql".into()],
                 risk: Some(Risk::Low),
             },
+            git: GitInfo::default(),
             created_at: now,
             updated_at: now,
             extensions: serde_json::Map::new(),
@@ -518,6 +559,7 @@ mod tests {
             tags: vec![],
             contract: Contract::default(),
             planning: Planning::default(),
+            git: GitInfo::default(),
             created_at: now,
             updated_at: now,
             extensions: serde_json::Map::new(),
