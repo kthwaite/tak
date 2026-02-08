@@ -202,6 +202,9 @@ pub struct Learning {
     pub task_ids: Vec<u64>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// Preserve unknown fields for forward compatibility.
+    #[serde(flatten)]
+    pub extensions: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -671,5 +674,31 @@ mod tests {
         assert!(Priority::Critical.rank() < Priority::High.rank());
         assert!(Priority::High.rank() < Priority::Medium.rank());
         assert!(Priority::Medium.rank() < Priority::Low.rank());
+    }
+
+    #[test]
+    fn learning_preserves_unknown_fields() {
+        let json = r#"{
+            "id": 1,
+            "title": "Test learning",
+            "category": "insight",
+            "tags": [],
+            "task_ids": [],
+            "created_at": "2024-01-01T00:00:00Z",
+            "updated_at": "2024-01-01T00:00:00Z",
+            "future_field": "preserved",
+            "nested": {"key": "value"}
+        }"#;
+        let learning: Learning = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            learning.extensions.get("future_field").unwrap(),
+            "preserved"
+        );
+
+        // Round-trip: unknown fields survive
+        let serialized = serde_json::to_string(&learning).unwrap();
+        let reparsed: serde_json::Value = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(reparsed["future_field"], "preserved");
+        assert_eq!(reparsed["nested"]["key"], "value");
     }
 }

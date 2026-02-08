@@ -82,6 +82,7 @@ impl LearningStore {
             task_ids,
             created_at: now,
             updated_at: now,
+            extensions: serde_json::Map::new(),
         };
         normalize_learning(&mut learning);
 
@@ -100,7 +101,8 @@ impl LearningStore {
         Ok(learning)
     }
 
-    pub fn write(&self, learning: &Learning) -> Result<()> {
+    pub fn write(&self, learning: &mut Learning) -> Result<()> {
+        normalize_learning(learning);
         let json = serde_json::to_string_pretty(learning)?;
         fs::write(self.learning_path(learning.id), json)?;
         Ok(())
@@ -313,9 +315,31 @@ mod tests {
             .unwrap();
         learning.title = "Updated".into();
         learning.updated_at = Utc::now();
-        store.write(&learning).unwrap();
+        store.write(&mut learning).unwrap();
 
         let read = store.read(1).unwrap();
         assert_eq!(read.title, "Updated");
+    }
+
+    #[test]
+    fn write_normalizes_tags_and_task_ids() {
+        let (_dir, store) = setup();
+        let mut learning = store
+            .create(
+                "Norm test".into(),
+                None,
+                LearningCategory::Insight,
+                vec!["a".into()],
+                vec![1],
+            )
+            .unwrap();
+        // Introduce duplicates and disorder
+        learning.tags = vec!["z".into(), "a".into(), "z".into(), " ".into()];
+        learning.task_ids = vec![3, 1, 2, 1];
+        store.write(&mut learning).unwrap();
+
+        let read = store.read(1).unwrap();
+        assert_eq!(read.tags, vec!["a", "z"]);
+        assert_eq!(read.task_ids, vec![1, 2, 3]);
     }
 }

@@ -142,7 +142,7 @@ pub fn edit(
 
     if changed {
         learning.updated_at = Utc::now();
-        repo.learnings.write(&learning)?;
+        repo.learnings.write(&mut learning)?;
         repo.index.upsert_learning(&learning)?;
 
         let fp = repo.learnings.fingerprint()?;
