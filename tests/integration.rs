@@ -4,7 +4,7 @@ use tempfile::tempdir;
 
 use chrono::Utc;
 use tak::error::TakError;
-use tak::model::{Kind, Status};
+use tak::model::{DepType, Kind, Status};
 use tak::output::Format;
 use tak::store::files::FileStore;
 use tak::store::index::Index;
@@ -429,6 +429,60 @@ fn test_depend_rolls_back_on_partial_failure() {
     assert!(
         avail.contains(&1),
         "task 1 should still be available (not blocked)"
+    );
+}
+
+#[test]
+fn test_depend_with_type_and_reason() {
+    let dir = tempdir().unwrap();
+    let store = FileStore::init(dir.path()).unwrap();
+
+    store
+        .create("A".into(), Kind::Task, None, None, vec![], vec![])
+        .unwrap();
+    store
+        .create("B".into(), Kind::Task, None, None, vec![], vec![])
+        .unwrap();
+
+    let idx = Index::open(&store.root().join("index.db")).unwrap();
+    idx.rebuild(&store.list_all().unwrap()).unwrap();
+    drop(idx);
+
+    // Add dependency with type and reason
+    tak::commands::deps::depend(
+        dir.path(),
+        2,
+        vec![1],
+        Some(DepType::Soft),
+        Some("nice to have".into()),
+        Format::Json,
+    )
+    .unwrap();
+
+    let task = store.read(2).unwrap();
+    assert_eq!(task.depends_on.len(), 1);
+    assert_eq!(task.depends_on[0].id, 1);
+    assert_eq!(task.depends_on[0].dep_type, Some(DepType::Soft));
+    assert_eq!(task.depends_on[0].reason.as_deref(), Some("nice to have"));
+
+    // Update existing dependency metadata
+    tak::commands::deps::depend(
+        dir.path(),
+        2,
+        vec![1],
+        Some(DepType::Hard),
+        None,
+        Format::Json,
+    )
+    .unwrap();
+
+    let task = store.read(2).unwrap();
+    assert_eq!(task.depends_on.len(), 1);
+    assert_eq!(task.depends_on[0].dep_type, Some(DepType::Hard));
+    assert_eq!(
+        task.depends_on[0].reason.as_deref(),
+        Some("nice to have"),
+        "reason should be preserved when only dep_type is updated"
     );
 }
 

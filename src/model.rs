@@ -32,7 +32,7 @@ pub enum DepType {
     Soft,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Dependency {
     pub id: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]

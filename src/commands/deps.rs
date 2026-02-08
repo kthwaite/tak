@@ -24,9 +24,17 @@ pub fn depend(
         }
     }
 
-    // Phase 2: mutate task in memory
+    // Phase 2: mutate task in memory (update existing deps or add new ones)
     for &dep_id in &on {
-        if !task.depends_on.iter().any(|d| d.id == dep_id) {
+        if let Some(existing) = task.depends_on.iter_mut().find(|d| d.id == dep_id) {
+            // Update metadata on existing dependency if new values provided
+            if dep_type.is_some() {
+                existing.dep_type = dep_type;
+            }
+            if reason.is_some() {
+                existing.reason = reason.clone();
+            }
+        } else {
             task.depends_on.push(Dependency {
                 id: dep_id,
                 dep_type,
