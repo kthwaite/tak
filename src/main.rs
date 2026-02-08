@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use tak::model::{DepType, Estimate, Kind, Priority, Risk, Status};
+use tak::model::{DepType, Estimate, Kind, LearningCategory, Priority, Risk, Status};
 use tak::output::Format;
 
 #[derive(Parser)]
@@ -266,6 +266,11 @@ enum Commands {
         #[arg(long, conflicts_with = "set")]
         clear: bool,
     },
+    /// Manage learnings (add, list, show, edit, remove, suggest)
+    Learn {
+        #[command(subcommand)]
+        action: LearnAction,
+    },
     /// Rebuild the SQLite index from task files
     Reindex,
     /// Install Claude Code integration (hooks + optional plugin)
@@ -288,6 +293,77 @@ enum Commands {
         /// Auto-fix what can be fixed (reindex if stale, etc.)
         #[arg(long)]
         fix: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum LearnAction {
+    /// Record a new learning
+    Add {
+        /// Learning title
+        title: String,
+        /// Detailed description
+        #[arg(long, short)]
+        description: Option<String>,
+        /// Category
+        #[arg(long, value_enum, default_value = "insight")]
+        category: LearningCategory,
+        /// Tags (comma-separated)
+        #[arg(long, value_delimiter = ',')]
+        tag: Vec<String>,
+        /// Link to task IDs (comma-separated)
+        #[arg(long = "task", value_delimiter = ',')]
+        task_ids: Vec<u64>,
+    },
+    /// List learnings with optional filters
+    List {
+        /// Filter by category
+        #[arg(long, value_enum)]
+        category: Option<LearningCategory>,
+        /// Filter by tag
+        #[arg(long)]
+        tag: Option<String>,
+        /// Filter by linked task ID
+        #[arg(long = "task")]
+        task_id: Option<u64>,
+    },
+    /// Display a single learning
+    Show {
+        /// Learning ID
+        id: u64,
+    },
+    /// Edit learning fields
+    Edit {
+        /// Learning ID
+        id: u64,
+        /// New title
+        #[arg(long)]
+        title: Option<String>,
+        /// New description
+        #[arg(long, short)]
+        description: Option<String>,
+        /// New category
+        #[arg(long, value_enum)]
+        category: Option<LearningCategory>,
+        /// Replace tags (comma-separated)
+        #[arg(long, value_delimiter = ',')]
+        tag: Option<Vec<String>>,
+        /// Add link to task ID (repeatable)
+        #[arg(long = "add-task", value_delimiter = ',')]
+        add_task: Vec<u64>,
+        /// Remove link to task ID (repeatable)
+        #[arg(long = "remove-task", value_delimiter = ',')]
+        remove_task: Vec<u64>,
+    },
+    /// Remove a learning
+    Remove {
+        /// Learning ID
+        id: u64,
+    },
+    /// Suggest relevant learnings for a task (FTS5 search)
+    Suggest {
+        /// Task ID to suggest learnings for
+        task_id: u64,
     },
 }
 
@@ -315,7 +391,9 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
     let root = tak::store::repo::find_repo_root()?;
 
     match cli.command {
-        Commands::Init | Commands::Setup { .. } | Commands::Doctor { .. } => unreachable!(),
+        Commands::Init | Commands::Setup { .. } | Commands::Doctor { .. } => {
+            unreachable!()
+        }
         Commands::Create {
             title,
             kind,
@@ -444,6 +522,44 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
         Commands::Context { id, set, clear } => {
             tak::commands::context::run(&root, id, set, clear, format)
         }
+        Commands::Learn { action } => match action {
+            LearnAction::Add {
+                title,
+                description,
+                category,
+                tag,
+                task_ids,
+            } => tak::commands::learn::add(&root, title, description, category, tag, task_ids, format),
+            LearnAction::List {
+                category,
+                tag,
+                task_id,
+            } => tak::commands::learn::list(&root, category, tag, task_id, format),
+            LearnAction::Show { id } => tak::commands::learn::show(&root, id, format),
+            LearnAction::Edit {
+                id,
+                title,
+                description,
+                category,
+                tag,
+                add_task,
+                remove_task,
+            } => tak::commands::learn::edit(
+                &root,
+                id,
+                title,
+                description,
+                category,
+                tag,
+                add_task,
+                remove_task,
+                format,
+            ),
+            LearnAction::Remove { id } => tak::commands::learn::remove(&root, id, format),
+            LearnAction::Suggest { task_id } => {
+                tak::commands::learn::suggest(&root, task_id, format)
+            }
+        },
         Commands::Reindex => tak::commands::reindex::run(&root),
     }
 }
