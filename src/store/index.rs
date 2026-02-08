@@ -38,6 +38,7 @@ impl Index {
                 assignee TEXT,
                 priority INTEGER,
                 estimate TEXT,
+                attempt_count INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
@@ -78,14 +79,15 @@ impl Index {
         // Pass 1: insert all task rows with parent_id deferred (avoids FK failures)
         for task in tasks {
             tx.execute(
-                "INSERT INTO tasks (id, title, description, status, kind, parent_id, assignee, priority, estimate, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, ?7, ?8, ?9, ?10)",
+                "INSERT INTO tasks (id, title, description, status, kind, parent_id, assignee, priority, estimate, attempt_count, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, ?7, ?8, ?9, ?10, ?11)",
                 params![
                     task.id, task.title, task.description,
                     task.status.to_string(), task.kind.to_string(),
                     task.assignee,
                     task.planning.priority.map(|p| p.rank() as i64),
                     task.planning.estimate.map(|e| e.to_string()),
+                    task.execution.attempt_count,
                     task.created_at.to_rfc3339(), task.updated_at.to_rfc3339(),
                 ],
             )?;
@@ -127,14 +129,15 @@ impl Index {
         let tx = self.conn.unchecked_transaction()?;
 
         tx.execute(
-            "INSERT OR REPLACE INTO tasks (id, title, description, status, kind, parent_id, assignee, priority, estimate, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            "INSERT OR REPLACE INTO tasks (id, title, description, status, kind, parent_id, assignee, priority, estimate, attempt_count, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             params![
                 task.id, task.title, task.description,
                 task.status.to_string(), task.kind.to_string(),
                 task.parent, task.assignee,
                 task.planning.priority.map(|p| p.rank() as i64),
                 task.planning.estimate.map(|e| e.to_string()),
+                task.execution.attempt_count,
                 task.created_at.to_rfc3339(), task.updated_at.to_rfc3339(),
             ],
         )?;
