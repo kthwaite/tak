@@ -11,6 +11,9 @@ pub enum TakError {
     #[error("task {0} not found")]
     TaskNotFound(u64),
 
+    #[error("learning {0} not found")]
+    LearningNotFound(u64),
+
     #[error("dependency cycle: task {0} would depend on itself (directly or transitively)")]
     CycleDetected(u64),
 
@@ -47,6 +50,7 @@ impl TakError {
             Self::NotInitialized => "not_initialized",
             Self::AlreadyInitialized => "already_initialized",
             Self::TaskNotFound(_) => "task_not_found",
+            Self::LearningNotFound(_) => "learning_not_found",
             Self::CycleDetected(_) => "cycle_detected",
             Self::InvalidTransition(_, _) => "invalid_transition",
             Self::NoAvailableTask => "no_available_task",
