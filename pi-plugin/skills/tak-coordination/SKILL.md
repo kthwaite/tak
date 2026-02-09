@@ -22,7 +22,7 @@ Use tak as the source of truth for task state and multi-agent coordination.
 
 ## Recommended flow
 
-1. `/tak` (default source: ready tasks sorted urgent → oldest)
+1. `/tak` (default source: ready tasks sorted urgent → oldest) or `/tak work` for loop mode
 2. Inspect the selected task (`tak show <id>`)
 3. Claim/start (`tak claim` or `tak start <id> --assignee <agent>`)
 4. Reserve touched files (`tak mesh reserve --name <agent> --path <path> --reason task-<id>`)
@@ -33,4 +33,5 @@ Use tak as the source of truth for task state and multi-agent coordination.
 
 - Do not silently take over work assigned to another agent.
 - If a reservation conflict appears, coordinate first through mesh or blackboard.
+- In `/tak work` mode, reserve paths before edits; the extension may block unreserved writes.
 - Keep inbox and blackboard messages concise and actionable.

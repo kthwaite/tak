@@ -18,8 +18,10 @@ type TaskSource = "ready" | "all" | "blocked" | "in_progress" | "mine" | "blackb
 
 type Priority = "critical" | "high" | "medium" | "low";
 type TaskStatus = "pending" | "in_progress" | "done" | "cancelled";
+type VerifyMode = "isolated" | "local";
+type WorkAction = "start" | "stop" | "status";
 
-type CommandMode = "pick" | "claim" | "mesh" | "show" | "help";
+type CommandMode = "pick" | "claim" | "mesh" | "show" | "help" | "work";
 
 interface TakTask {
 	id: number;
@@ -77,12 +79,24 @@ interface TakFilters {
 	limit?: number;
 	taskId?: number;
 	ackInbox?: boolean;
+	verifyMode?: VerifyMode;
 }
 
 interface ParsedTakCommand {
 	mode: CommandMode;
 	filters: TakFilters;
 	taskId?: number;
+	workAction?: WorkAction;
+}
+
+interface WorkLoopState {
+	active: boolean;
+	tag?: string;
+	remaining?: number;
+	verifyMode: VerifyMode;
+	strictReservations: boolean;
+	currentTaskId?: number;
+	processed: number;
 }
 
 interface TakExecResult {
@@ -113,6 +127,9 @@ Task and coordination protocol:
 const TAK_HELP = `
 /tak [source] [filters]            Pick work from tak (default source: ready)
 /tak claim [tag:<tag>]             Atomically claim next task
+/tak work [tag:<tag>] [limit:<n>] [verify:isolated|local]
+                                   Start/resume autonomous work loop
+/tak work status|stop              Inspect or stop work loop
 /tak mesh                          Insert a mesh + blackboard summary in the editor
 /tak <task-id>                     Open a specific task
 
@@ -134,6 +151,13 @@ Filters (space-separated):
 - limit:<n>
 - task:<id>         (for blackboard source)
 - ack               (for inbox source)
+- verify:<mode>     (for /tak work; mode = isolated | local)
+
+Work mode notes:
+- Automatically claims the next available task for you.
+- When the current task is finished/handed off/cancelled, the next task is auto-claimed.
+- In work mode, edits are blocked unless the path is reserved by your agent.
+- With verify:isolated (default), local build/test/check commands are blocked when peers hold reservations.
 `;
 
 const COMPLETIONS = [
@@ -146,6 +170,9 @@ const COMPLETIONS = [
 	"inbox",
 	"pick",
 	"claim",
+	"work",
+	"work status",
+	"work stop",
 	"mesh",
 	"help",
 	"tag:",
@@ -165,6 +192,8 @@ const COMPLETIONS = [
 	"limit:20",
 	"task:",
 	"ack",
+	"verify:isolated",
+	"verify:local",
 ] as const;
 
 const SOURCE_SET: Set<string> = new Set([
@@ -236,6 +265,18 @@ function parseTakCommandInput(rawArgs: string): ParsedTakCommand {
 		return { mode: "claim", filters };
 	}
 
+	if (first === "work") {
+		let workAction: WorkAction = "start";
+		let filterStart = 1;
+		const second = tokens[1]?.toLowerCase();
+		if (second === "stop" || second === "status" || second === "start") {
+			workAction = second;
+			filterStart = 2;
+		}
+		for (const token of tokens.slice(filterStart)) applyFilterToken(token, filters);
+		return { mode: "work", filters, workAction };
+	}
+
 	const directSource = parseSource(first);
 	const remaining = directSource ? tokens.slice(1) : first === "pick" ? tokens.slice(1) : tokens;
 	if (directSource) {
@@ -299,6 +340,11 @@ function applyFilterToken(token: string, filters: TakFilters): void {
 			if (Number.isFinite(parsed) && parsed > 0) filters.taskId = parsed;
 			break;
 		}
+		case "verify":
+			if (value.toLowerCase() === "isolated" || value.toLowerCase() === "local") {
+				filters.verifyMode = value.toLowerCase() as VerifyMode;
+			}
+			break;
 	}
 }
 
@@ -472,6 +518,41 @@ function loadReservations(cwd: string): MeshReservation[] {
 	}
 }
 
+function reservationsOwnedBy(agentName: string, reservations: MeshReservation[]): MeshReservation[] {
+	return reservations.filter((reservation) => reservation.agent === agentName);
+}
+
+function hasOwnedReservationForPath(agentName: string, targetPath: string, reservations: MeshReservation[]): boolean {
+	return reservationsOwnedBy(agentName, reservations).some((reservation) =>
+		reservation.paths.some((reservedPath) => pathsConflict(targetPath, reservedPath)),
+	);
+}
+
+function hasForeignReservations(agentName: string, reservations: MeshReservation[]): boolean {
+	return reservations.some((reservation) => reservation.agent !== agentName);
+}
+
+function isLikelyBuildOrTestCommand(command: string): boolean {
+	const normalized = command.toLowerCase();
+	return [
+		/\bcargo\s+(build|check|test|clippy|run)\b/,
+		/\b(npm|pnpm|yarn)\s+(test|run\s+test|run\s+lint|run\s+build|lint|build)\b/,
+		/\bpytest\b/,
+		/\b(go\s+test|gradle\s+test|mvn\s+test|ctest|jest|vitest)\b/,
+	].some((pattern) => pattern.test(normalized));
+}
+
+function formatWorkLoopStatus(workLoop: WorkLoopState): string {
+	if (!workLoop.active) return "work: inactive";
+	const parts = ["work: active"];
+	if (workLoop.currentTaskId) parts.push(`task=#${workLoop.currentTaskId}`);
+	if (workLoop.tag) parts.push(`tag=${workLoop.tag}`);
+	if (workLoop.remaining !== undefined) parts.push(`remaining=${workLoop.remaining}`);
+	parts.push(`verify=${workLoop.verifyMode}`);
+	parts.push(`processed=${workLoop.processed}`);
+	return parts.join(" | ");
+}
+
 async function pickFromList(
 	ctx: ExtensionContext,
 	title: string,
@@ -511,13 +592,19 @@ async function pickFromList(
 	});
 }
 
-function buildTaskEditorText(task: TakTask, agentName?: string, openNotes?: BlackboardNote[]): string {
+function buildTaskEditorText(
+	task: TakTask,
+	agentName?: string,
+	openNotes?: BlackboardNote[],
+	options?: { workLoop?: WorkLoopState },
+): string {
 	const priority = task.planning?.priority ?? "unprioritized";
 	const assignee = task.assignee ?? "unassigned";
 	const tags = task.tags?.length ? task.tags.join(", ") : "-";
 	const linkedNotes = (openNotes ?? []).map((n) => `- [B${n.id}] ${n.message}`).join("\n");
+	const workLoop = options?.workLoop;
 
-	return [
+	const lines = [
 		`Selected tak task #${task.id}: ${task.title}`,
 		`status: ${task.status} | priority: ${priority} | assignee: ${assignee}`,
 		`tags: ${tags}`,
@@ -529,9 +616,25 @@ function buildTaskEditorText(task: TakTask, agentName?: string, openNotes?: Blac
 			? `3. Reserve touched paths before major edits: tak mesh reserve --name ${agentName} --path <path> --reason task-${task.id}`
 			: `3. Reserve touched paths before major edits: tak mesh reserve --name <agent-name> --path <path> --reason task-${task.id}`,
 		`4. Use blackboard for coordination notes: tak blackboard post --from ${agentName ?? "<agent-name>"} --message \"...\" --task ${task.id}`,
+	];
+
+	if (workLoop?.active) {
+		lines.push(
+			"",
+			`Work loop active (verify=${workLoop.verifyMode}).`,
+			"- Finish with: tak finish <task-id>",
+			"- Blocked/unable: tak handoff <task-id> --summary \"...\" (or tak cancel --reason)",
+			"- Next task auto-claims on the next turn once this task is no longer in progress.",
+			"- Edit tools are blocked unless the path is reserved by your agent.",
+		);
+	}
+
+	lines.push(
 		"",
 		linkedNotes ? "Open blackboard notes:\n" + linkedNotes : "No open blackboard notes linked to this task.",
-	].join("\n");
+	);
+
+	return lines.join("\n");
 }
 
 function truncationNotice(text: string): string {
@@ -554,6 +657,12 @@ export default function takPiExtension(pi: ExtensionAPI) {
 	let agentName: string | undefined;
 	let peerCount = 0;
 	const seenInboxMessageIds = new Set<string>();
+	let workLoop: WorkLoopState = {
+		active: false,
+		verifyMode: "isolated",
+		strictReservations: true,
+		processed: 0,
+	};
 
 	function integrationEnabled(): boolean {
 		return hasTakRepo && takAvailable;
@@ -562,6 +671,108 @@ export default function takPiExtension(pi: ExtensionAPI) {
 	function clearUi(ctx: ExtensionContext): void {
 		ctx.ui.setStatus("tak", undefined);
 		ctx.ui.setWidget("tak-ready", undefined);
+	}
+
+	function resetWorkLoop(overrides?: Partial<WorkLoopState>): void {
+		workLoop = {
+			active: false,
+			verifyMode: "isolated",
+			strictReservations: true,
+			processed: 0,
+			...overrides,
+		};
+	}
+
+	async function releaseOwnReservations(): Promise<void> {
+		if (!agentName) return;
+		await runTak(pi, ["mesh", "release", "--name", agentName, "--all"]);
+	}
+
+	async function claimNextWorkTask(ctx: ExtensionContext): Promise<boolean> {
+		if (!agentName) {
+			ctx.ui.notify("/tak work requires mesh agent identity", "warning");
+			return false;
+		}
+
+		const claimArgs = ["claim", "--assignee", agentName];
+		if (workLoop.tag) {
+			claimArgs.push("--tag", workLoop.tag);
+		}
+
+		const claimResult = await runTak(pi, claimArgs);
+		if (!claimResult.ok || !claimResult.parsed || typeof claimResult.parsed !== "object") {
+			return false;
+		}
+
+		const task = claimResult.parsed as TakTask;
+		workLoop.currentTaskId = task.id;
+
+		const notesResult = await runTak(pi, ["blackboard", "list", "--status", "open", "--task", String(task.id)]);
+		const notes = Array.isArray(notesResult.parsed) ? (notesResult.parsed as BlackboardNote[]) : [];
+		ctx.ui.setEditorText(buildTaskEditorText(task, agentName, notes, { workLoop }));
+		ctx.ui.notify(`Work loop claimed task #${task.id}: ${task.title}`, "info");
+		return true;
+	}
+
+	async function syncWorkLoop(ctx: ExtensionContext): Promise<void> {
+		if (!integrationEnabled() || !workLoop.active || !agentName) return;
+
+		if (workLoop.currentTaskId !== undefined) {
+			const showResult = await runTak(pi, ["show", String(workLoop.currentTaskId)]);
+			if (!showResult.ok || !showResult.parsed || typeof showResult.parsed !== "object") {
+				ctx.ui.notify(
+					showResult.errorMessage ?? `Could not refresh work-loop task #${workLoop.currentTaskId}`,
+					"warning",
+				);
+				workLoop.currentTaskId = undefined;
+			} else {
+				const task = showResult.parsed as TakTask;
+				const stillMine = task.status === "in_progress" && task.assignee === agentName;
+				if (stillMine) {
+					return;
+				}
+
+				workLoop.currentTaskId = undefined;
+				workLoop.processed += 1;
+				if (workLoop.remaining !== undefined && workLoop.remaining > 0) {
+					workLoop.remaining -= 1;
+				}
+				await releaseOwnReservations();
+			}
+		}
+
+		if (workLoop.remaining !== undefined && workLoop.remaining <= 0) {
+			ctx.ui.notify("Work loop finished requested task limit.", "info");
+			resetWorkLoop();
+			return;
+		}
+
+		if (workLoop.currentTaskId === undefined) {
+			const inProgressResult = await runTak(pi, ["list", "--status", "in_progress", "--assignee", agentName]);
+			if (Array.isArray(inProgressResult.parsed) && inProgressResult.parsed.length > 0) {
+				const mine = sortTasksUrgentThenOldest(inProgressResult.parsed as TakTask[]);
+				const existing = mine[0]!;
+				workLoop.currentTaskId = existing.id;
+				const notesResult = await runTak(pi, [
+					"blackboard",
+					"list",
+					"--status",
+					"open",
+					"--task",
+					String(existing.id),
+				]);
+				const notes = Array.isArray(notesResult.parsed) ? (notesResult.parsed as BlackboardNote[]) : [];
+				ctx.ui.setEditorText(buildTaskEditorText(existing, agentName, notes, { workLoop }));
+				ctx.ui.notify(`Work loop attached to in-progress task #${existing.id}: ${existing.title}`, "info");
+				return;
+			}
+		}
+
+		const claimed = await claimNextWorkTask(ctx);
+		if (!claimed) {
+			ctx.ui.notify("Work loop stopped: no claimable task available.", "info");
+			resetWorkLoop();
+		}
 	}
 
 	async function refreshStatus(ctx: ExtensionContext): Promise<void> {
@@ -600,17 +811,23 @@ export default function takPiExtension(pi: ExtensionAPI) {
 			peerCount = agents.filter((a) => a.name !== agentName).length;
 		}
 
-		ctx.ui.setStatus("tak", `tak ${readyCount} ready · peers ${peerCount} · inbox ${inboxCount} · bb ${openNoteCount}`);
+		const workStatus = workLoop.active
+			? ` · work ${workLoop.currentTaskId ? `#${workLoop.currentTaskId}` : "idle"}`
+			: "";
+		ctx.ui.setStatus(
+			"tak",
+			`tak ${readyCount} ready · peers ${peerCount} · inbox ${inboxCount} · bb ${openNoteCount}${workStatus}`,
+		);
 
-		if (readyTasks.length > 0) {
-			ctx.ui.setWidget(
-				"tak-ready",
-				[
-					"tak ready queue (urgent → oldest):",
-					...readyTasks.slice(0, 3).map((t) => `  #${t.id} ${t.title}`),
-				],
-				{ placement: "belowEditor" },
-			);
+		if (readyTasks.length > 0 || workLoop.active) {
+			const lines = [
+				"tak ready queue (urgent → oldest):",
+				...readyTasks.slice(0, 3).map((t) => `  #${t.id} ${t.title}`),
+			];
+			if (workLoop.active) {
+				lines.push("", formatWorkLoopStatus(workLoop));
+			}
+			ctx.ui.setWidget("tak-ready", lines, { placement: "belowEditor" });
 		} else {
 			ctx.ui.setWidget("tak-ready", undefined);
 		}
@@ -666,6 +883,43 @@ export default function takPiExtension(pi: ExtensionAPI) {
 				return;
 			}
 
+			if (parsed.mode === "work") {
+				if (!agentName) {
+					ctx.ui.notify("/tak work requires mesh agent identity", "warning");
+					return;
+				}
+
+				const action = parsed.workAction ?? "start";
+				if (action === "status") {
+					ctx.ui.setEditorText(formatWorkLoopStatus(workLoop));
+					ctx.ui.notify("Inserted /tak work status", "info");
+					await refreshStatus(ctx);
+					return;
+				}
+
+				if (action === "stop") {
+					const hadBeenActive = workLoop.active;
+					resetWorkLoop();
+					await releaseOwnReservations();
+					ctx.ui.notify(hadBeenActive ? "Stopped /tak work loop" : "Work loop already inactive", "info");
+					await refreshStatus(ctx);
+					return;
+				}
+
+				resetWorkLoop({
+					active: true,
+					tag: parsed.filters.tag,
+					remaining: parsed.filters.limit,
+					verifyMode: parsed.filters.verifyMode ?? "isolated",
+					strictReservations: true,
+					processed: 0,
+				});
+				ctx.ui.notify(`Started /tak work loop (${formatWorkLoopStatus(workLoop)})`, "info");
+				await syncWorkLoop(ctx);
+				await refreshStatus(ctx);
+				return;
+			}
+
 			if (parsed.mode === "show") {
 				if (!parsed.taskId) {
 					ctx.ui.notify("Task id missing", "error");
@@ -679,7 +933,7 @@ export default function takPiExtension(pi: ExtensionAPI) {
 				const task = showResult.parsed as TakTask;
 				const notesResult = await runTak(pi, ["blackboard", "list", "--status", "open", "--task", String(task.id)]);
 				const notes = Array.isArray(notesResult.parsed) ? (notesResult.parsed as BlackboardNote[]) : [];
-				ctx.ui.setEditorText(buildTaskEditorText(task, agentName, notes));
+				ctx.ui.setEditorText(buildTaskEditorText(task, agentName, notes, { workLoop }));
 				ctx.ui.notify(`Loaded task #${task.id}`, "info");
 				await refreshStatus(ctx);
 				return;
@@ -702,7 +956,7 @@ export default function takPiExtension(pi: ExtensionAPI) {
 				}
 
 				const task = claimResult.parsed as TakTask;
-				ctx.ui.setEditorText(buildTaskEditorText(task, agentName));
+				ctx.ui.setEditorText(buildTaskEditorText(task, agentName, undefined, { workLoop }));
 				ctx.ui.notify(`Claimed task #${task.id}: ${task.title}`, "info");
 				await refreshStatus(ctx);
 				return;
@@ -789,7 +1043,7 @@ export default function takPiExtension(pi: ExtensionAPI) {
 					const showResult = await runTak(pi, ["show", String(linkedTask)]);
 					if (showResult.ok && showResult.parsed && typeof showResult.parsed === "object") {
 						ctx.ui.setEditorText(
-							buildTaskEditorText(showResult.parsed as TakTask, agentName, [note]),
+							buildTaskEditorText(showResult.parsed as TakTask, agentName, [note], { workLoop }),
 						);
 						ctx.ui.notify(`Loaded task #${linkedTask} from blackboard note B${note.id}`, "info");
 					} else {
@@ -907,7 +1161,7 @@ export default function takPiExtension(pi: ExtensionAPI) {
 			}
 
 			const linkedNotes = notes.filter((note) => (note.task_ids ?? []).includes(selectedTask.id));
-			ctx.ui.setEditorText(buildTaskEditorText(selectedTask, agentName, linkedNotes));
+			ctx.ui.setEditorText(buildTaskEditorText(selectedTask, agentName, linkedNotes, { workLoop }));
 			ctx.ui.notify(`Picked task #${selectedTask.id}`, "info");
 			await refreshStatus(ctx);
 		},
@@ -920,6 +1174,7 @@ export default function takPiExtension(pi: ExtensionAPI) {
 		agentName = undefined;
 		peerCount = 0;
 		seenInboxMessageIds.clear();
+		resetWorkLoop();
 
 		if (!hasTakRepo) {
 			clearUi(ctx);
@@ -961,6 +1216,7 @@ export default function takPiExtension(pi: ExtensionAPI) {
 	});
 
 	pi.on("turn_end", async (_event, ctx) => {
+		await syncWorkLoop(ctx);
 		await refreshStatus(ctx);
 	});
 
@@ -970,13 +1226,29 @@ export default function takPiExtension(pi: ExtensionAPI) {
 			peerCount > 0
 				? `Mesh currently has ${peerCount} other active agent(s). Coordinate before overlapping work.`
 				: "No other mesh agents are currently visible.";
+		const workLine = workLoop.active
+			? `WORK LOOP ACTIVE (${formatWorkLoopStatus(workLoop)}). Finish or handoff the current task before taking unrelated work; reserve paths before edits.`
+			: "";
 		return {
-			systemPrompt: `${event.systemPrompt}\n\n${SYSTEM_APPEND.trim()}\n\n${meshLine}`,
+			systemPrompt: `${event.systemPrompt}\n\n${SYSTEM_APPEND.trim()}\n\n${meshLine}${workLine ? `\n${workLine}` : ""}`,
 		};
 	});
 
 	pi.on("tool_call", async (event, ctx) => {
 		if (!integrationEnabled() || !agentName) return;
+
+		const reservations = loadReservations(ctx.cwd);
+
+		if (isToolCallEventType("bash", event) && workLoop.active && workLoop.verifyMode === "isolated") {
+			const command = event.input.command ?? "";
+			if (isLikelyBuildOrTestCommand(command) && hasForeignReservations(agentName, reservations)) {
+				return {
+					block: true,
+					reason:
+						"Work loop guard: local build/test/check is blocked while peers hold reservations. Wait for reservations to clear or hand off if blocked.",
+				};
+			}
+		}
 
 		let pathArg: string | undefined;
 		if (isToolCallEventType("write", event)) {
@@ -990,7 +1262,6 @@ export default function takPiExtension(pi: ExtensionAPI) {
 		const targetPath = toRepoRelativePath(ctx.cwd, pathArg);
 		if (!targetPath) return;
 
-		const reservations = loadReservations(ctx.cwd);
 		const conflict = reservations.find((reservation) => {
 			if (reservation.agent === agentName) return false;
 			return reservation.paths.some((reservedPath) => pathsConflict(targetPath, reservedPath));
@@ -1001,6 +1272,16 @@ export default function takPiExtension(pi: ExtensionAPI) {
 				block: true,
 				reason: `Path '${pathArg}' is reserved by '${conflict.agent}'. Coordinate via tak mesh/blackboard before editing.`,
 			};
+		}
+
+		if (workLoop.active && workLoop.strictReservations) {
+			const hasOwnReservation = hasOwnedReservationForPath(agentName, targetPath, reservations);
+			if (!hasOwnReservation) {
+				return {
+					block: true,
+					reason: `Work loop guard: reserve '${pathArg}' before editing (tak mesh reserve --name ${agentName} --path ${targetPath} --reason task-${workLoop.currentTaskId ?? "current"}).`,
+				};
+			}
 		}
 	});
 }
