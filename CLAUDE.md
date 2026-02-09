@@ -32,7 +32,7 @@ Tasks are JSON files in `.tak/tasks/` (the git-committed source of truth). A git
 
 ### Source Layout
 
-- **`src/model.rs`** — `Task`, `Status` (pending/in_progress/done/cancelled), `Kind` (epic/task/bug), `Dependency` (id/dep_type/reason), `DepType` (hard/soft), `Contract` (objective/acceptance_criteria/verification/constraints), `Planning` (priority/estimate/required_skills/risk), `Execution` (attempt_count/last_error/handoff_summary/blocked_reason), `Priority` (critical/high/medium/low), `Estimate` (xs/s/m/l/xl), `Risk` (low/medium/high), `GitInfo` (branch/start_commit/end_commit/commits/pr), `Learning` (id/title/description/category/tags/task_ids/timestamps), `LearningCategory` (insight/pitfall/pattern/tool/process)
+- **`src/model.rs`** — `Task`, `Status` (pending/in_progress/done/cancelled), `Kind` (epic/feature/task/bug), `Dependency` (id/dep_type/reason), `DepType` (hard/soft), `Contract` (objective/acceptance_criteria/verification/constraints), `Planning` (priority/estimate/required_skills/risk), `Execution` (attempt_count/last_error/handoff_summary/blocked_reason), `Priority` (critical/high/medium/low), `Estimate` (xs/s/m/l/xl), `Risk` (low/medium/high), `GitInfo` (branch/start_commit/end_commit/commits/pr), `Learning` (id/title/description/category/tags/task_ids/timestamps), `LearningCategory` (insight/pitfall/pattern/tool/process)
 - **`src/git.rs`** — `current_head_info()` returns branch + SHA; `commits_since()` returns one-line summaries between two SHAs via git2 revwalk
 - **`src/error.rs`** — `TakError` enum via thiserror; `Result<T>` alias used everywhere
 - **`src/output.rs`** — `Format` enum (Json/Pretty/Minimal); `print_task(s)` functions
@@ -40,7 +40,7 @@ Tasks are JSON files in `.tak/tasks/` (the git-committed source of truth). A git
 - **`src/store/index.rs`** — `Index`: SQLite with WAL mode, FK-enabled. Cycle detection via recursive CTEs. Two-pass rebuild to handle forward references. FTS5 full-text search for learnings.
 - **`src/store/learnings.rs`** — `LearningStore`: CRUD on `.tak/learnings/*.json`, atomic ID allocation via counter.json + fs2 lock; separate from task ID sequence
 - **`src/store/sidecars.rs`** — `SidecarStore`: manages per-task context notes (`.tak/context/{id}.md`), structured history logs (`.tak/history/{id}.jsonl`), verification results (`.tak/verification_results/{id}.json`), and artifact directories (`.tak/artifacts/{id}/`); defines `HistoryEvent` (timestamp/event/agent/detail), `VerificationResult` (timestamp/results/passed), `CommandResult` (command/exit_code/stdout/stderr/passed)
-- **`src/store/mesh.rs`** — `MeshStore`: manages `.tak/runtime/mesh/` — agent registry (join/leave/list), messaging (send/broadcast/inbox), file reservations (reserve/release), activity feed (append/read). Per-domain file locks via `lock.rs`. PID-based stale detection with opportunistic cleanup.
+- **`src/store/mesh.rs`** — `MeshStore`: manages `.tak/runtime/mesh/` — agent registry (join/leave/list), messaging (send/broadcast/inbox), file reservations (reserve/release), activity feed (append/read). Per-domain file locks via `lock.rs`. Auto-generates agent names when omitted.
 - **`src/store/repo.rs`** — `Repo`: wraps FileStore + Index + SidecarStore + LearningStore. Walks up from CWD to find `.tak/`. Auto-rebuilds index on open if missing or stale (file fingerprint mismatch). Also auto-rebuilds learnings index via separate fingerprint.
 - **`src/commands/`** — One file per command group. Most take `&Path` (repo root) and return `Result<()>`. `doctor` doesn't require a repo; `setup` supports global mode anywhere but project-scoped setup requires a git repo root.
 - **`src/commands/mesh.rs`** — 9 mesh subcommand handlers: join, leave, list, send, broadcast, inbox, reserve, release, feed
@@ -80,8 +80,8 @@ Tasks are JSON files in `.tak/tasks/` (the git-committed source of truth). A git
 | `learn edit ID` | Update learning fields (`--title`, `-d`, `--category`, `--tag`, `--add-task`, `--remove-task`) |
 | `learn remove ID` | Delete a learning (unlinks from tasks) |
 | `learn suggest TASK_ID` | Suggest relevant learnings via FTS5 search on task title |
-| `mesh join` | Register agent in coordination mesh (`--name`, `--session-id`) |
-| `mesh leave` | Unregister from mesh (`--name`) |
+| `mesh join` | Register agent in coordination mesh (`--name` optional, `--session-id`) |
+| `mesh leave` | Unregister from mesh (`--name` optional) |
 | `mesh list` | List registered mesh agents |
 | `mesh send` | Send direct message (`--from`, `--to`, `--message`) |
 | `mesh broadcast` | Broadcast message to all agents (`--from`, `--message`) |
@@ -90,7 +90,7 @@ Tasks are JSON files in `.tak/tasks/` (the git-committed source of truth). A git
 | `mesh release` | Release reservations (`--name`, `--path`/`--all`) |
 | `mesh feed` | Show activity feed (`--limit`) |
 | `reindex` | Rebuild SQLite index from files |
-| `setup` | Install Claude Code integration (`--global`, `--check`, `--remove`, `--plugin`) |
+| `setup` | Install agent integrations (`--global`, `--check`, `--remove`, `--plugin`, `--pi`) |
 | `doctor` | Validate installation health (`--fix`) |
 
 Errors are structured JSON on stderr when `--format json`: `{"error":"<code>","message":"<text>"}`.
@@ -110,7 +110,7 @@ Errors are structured JSON on stderr when `--format json`: `{"error":"<code>","m
 - Stale index detection via file fingerprint: `Repo::open()` compares task ID + size + nanosecond mtime against stored metadata, auto-rebuilds on mismatch
 - Tree command pre-loads all tasks into a HashMap — no per-node file I/O or SQL queries
 - `setup` and `doctor` are dispatched before `find_repo_root()`; project-scoped `setup` validates that CWD is a git repo root
-- `setup` embeds plugin assets via `include_str!` at compile time; idempotent install/remove
+- `setup` embeds Claude plugin + pi integration assets via `include_str!` at compile time; idempotent install/remove
 - `doctor` runs grouped health checks (Core/Index/Data Integrity/Environment) with auto-fix support
 - `Task` uses `#[serde(flatten)]` extensions map for forward-compatible JSON round-trips (unknown fields survive read→write)
 - `depends_on: Vec<Dependency>` — each dep has `id`, optional `dep_type` (hard/soft), optional `reason`; `depend` updates metadata on existing deps
@@ -143,7 +143,7 @@ Errors are structured JSON on stderr when `--format json`: `{"error":"<code>","m
 - `learn remove` unlinks learning from all referenced tasks before deleting
 - `MeshStore`: manages `.tak/runtime/mesh/` — agent registry, messaging, reservations, activity feed
 - Mesh uses per-domain file locks (registry, inbox, reservations, feed) via existing `lock.rs`
-- Registration includes PID for stale detection; `list_agents()` cleans dead PIDs opportunistically
+- Registration stores session metadata (`session_id`, `cwd`, timestamps); names are auto-generated when omitted
 - Reservation conflict is prefix-based: `src/store/` conflicts with `src/store/mesh.rs`
 - Feed events are best-effort: failures never break primary operations
 - All mesh runtime state is gitignored (ephemeral per-session data)
@@ -176,6 +176,6 @@ Errors are structured JSON on stderr when `--format json`: `{"error":"<code>","m
 
 ## Claude Code Plugin
 
-Three skills in `skills/`: **task-management** (CLI reference), **epic-planning** (structured decomposition), **task-execution** (agent claim-work-finish loop). A `SessionStart` hook in `hooks/` auto-runs `tak reindex` to refresh the index after git operations.
+Three skills in `skills/`: **task-management** (CLI reference), **epic-planning** (structured decomposition), **task-execution** (agent claim-work-finish loop). Lifecycle hooks auto-run `tak reindex` + `tak mesh join` on `SessionStart`, and `tak mesh leave` on `Stop`.
 
-`tak setup` installs the hook into Claude Code settings (project-local or global). Project-scoped setup must run from a git repo root. `tak setup --plugin` writes plugin files to `.claude/plugins/tak`. `tak doctor` validates installation health.
+`tak setup` installs hooks into Claude Code settings (project-local or global). Project-scoped setup must run from a git repo root. `tak setup --plugin` writes Claude plugin files to `.claude/plugins/tak`. `tak setup --pi` installs pi integration files (`extensions/tak.ts`, `skills/tak-coordination/SKILL.md`, and a managed `APPEND_SYSTEM.md` block) under `.pi/` (or `~/.pi/agent/` with `--global`). `tak doctor` validates installation health.
