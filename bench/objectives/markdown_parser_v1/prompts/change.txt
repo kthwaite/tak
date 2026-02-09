@@ -1,0 +1,19 @@
+Requirement update:
+
+Please extend the parser to support ordered lists.
+
+New behavior:
+- Consecutive lines matching `^[0-9]+\.\s+` should render as an ordered list:
+  - `1. one\n2. two` ->
+    <ol>
+    <li>one</li>
+    <li>two</li>
+    </ol>
+- Ordered lists are block-level, similar to unordered lists.
+- Inline formatting still applies inside list items.
+- HTML escaping still applies to text nodes.
+
+Please update your plan/tasks naturally in `tak`, implement the change, verify via tests, and commit your changes.
+
+When fully done, print:
+TAKBENCH_FINAL_DONE

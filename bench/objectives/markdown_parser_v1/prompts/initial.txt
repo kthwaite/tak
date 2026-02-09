@@ -1,0 +1,24 @@
+You are implementing an objective inside a fresh git repository.
+
+Objective:
+- Implement a mini Markdown renderer in Python.
+- Main API: render_markdown(text: str) -> str
+- Add/complete CLI support in src/markdown.py
+- Make tests pass.
+
+Rules:
+- Use Python stdlib only.
+- Prefer natural usage of `tak` for planning/tracking work.
+- Keep task states truthful as you work.
+- Do NOT directly edit `.tak/tasks/*.json`, `.tak/learnings/*.json`, `.tak/history/*.jsonl`, or `.tak/counter*.json` by hand.
+- Use git with frequent atomic commits.
+
+Notes:
+- Hidden tests exist.
+- Additional requirements may arrive mid-run.
+
+When you believe the INITIAL requirement set is complete, print this token on its own line:
+TAKBENCH_PHASE1_DONE
+
+When all requirements (including any mid-run updates) are complete, print this token on its own line:
+TAKBENCH_FINAL_DONE

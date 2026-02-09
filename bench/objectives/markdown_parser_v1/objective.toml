@@ -1,0 +1,40 @@
+id = "markdown_parser_v1"
+name = "Mini Markdown Parser (Python stdlib)"
+description = "Implement a constrained markdown renderer with a small CLI and deterministic HTML output."
+time_budget_minutes = 60
+poll_interval_seconds = 5
+public_probe_interval_seconds = 90
+hidden_tests_required = true
+
+public_test_command = "python -m pytest -q tests/test_public_markdown.py"
+hidden_test_command = ""
+change_probe_command = "python - <<'PY'\nfrom src.markdown import render_markdown\ntext = '1. one\\n2. two\\n'\nout = render_markdown(text).strip()\nexpected = '<ol>\\n<li>one</li>\\n<li>two</li>\\n</ol>'\nraise SystemExit(0 if out == expected else 1)\nPY"
+
+[paths]
+initial_prompt = "prompts/initial.txt"
+change_prompt = "prompts/change.txt"
+template_dir = "template"
+
+[worker]
+ready_strategy = "delay"
+ready_delay_seconds = 4
+ready_timeout_seconds = 120
+ready_token = ""
+prompt_transport = "tmux_buffer_paste"
+phase1_done_token = "TAKBENCH_PHASE1_DONE"
+final_done_token = "TAKBENCH_FINAL_DONE"
+
+[change]
+min_minutes = 10
+target_minutes = 25
+
+[scoring]
+functional_public = 15
+functional_hidden = 30
+tak_workflow = 25
+git_discipline = 20
+change_adaptation = 10
+bonus = 10
+penalty_manual_tak_first = 20
+penalty_manual_tak_additional = 10
+penalty_manual_tak_cap = 40
