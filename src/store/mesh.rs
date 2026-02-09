@@ -477,7 +477,11 @@ impl MeshStore {
         reason: Option<&str>,
     ) -> crate::error::Result<Reservation> {
         Self::validate_name(agent)?;
-        // Require registry membership to prevent invisible locks from unregistered names
+        // Normalize paths to prevent equivalent spellings from bypassing conflict detection
+        let paths: Vec<String> = paths.into_iter().map(|p| normalize_path(&p)).collect();
+        // Hold registry lock to serialize against concurrent leave, preventing TOCTOU
+        // where leave could remove registration between our check and reservation write
+        let _reg_lock = lock::acquire_lock(&self.registry_lock_path())?;
         if !self.registration_path(agent).exists() {
             return Err(crate::error::TakError::MeshAgentNotFound(agent.into()));
         }
@@ -535,7 +539,10 @@ impl MeshStore {
     /// Release reservations. If `paths` is empty, release all for the agent.
     pub fn release(&self, agent: &str, paths: Vec<String>) -> crate::error::Result<()> {
         Self::validate_name(agent)?;
-        // Require registry membership
+        // Normalize paths for consistent comparison with stored (normalized) data
+        let paths: Vec<String> = paths.into_iter().map(|p| normalize_path(&p)).collect();
+        // Hold registry lock to serialize against concurrent leave
+        let _reg_lock = lock::acquire_lock(&self.registry_lock_path())?;
         if !self.registration_path(agent).exists() {
             return Err(crate::error::TakError::MeshAgentNotFound(agent.into()));
         }
@@ -614,20 +621,44 @@ fn is_pid_alive(_pid: u32) -> bool {
     true // Conservative: assume alive on non-Unix
 }
 
+/// Lexically normalize a path: resolve `.`/`..` components, collapse duplicate
+/// separators. Preserves trailing slash (directory indicator).
+fn normalize_path(path: &str) -> String {
+    let mut components: Vec<&str> = Vec::new();
+    for component in path.split('/') {
+        match component {
+            "" | "." => {}
+            ".." => {
+                components.pop();
+            }
+            c => components.push(c),
+        }
+    }
+    let normalized = components.join("/");
+    if path.ends_with('/') && !normalized.is_empty() {
+        format!("{normalized}/")
+    } else {
+        normalized
+    }
+}
+
 /// Two paths conflict if one is a prefix of the other (directory containment)
-/// or they are exactly equal.
+/// or they are exactly equal. Normalizes both paths first to handle equivalent
+/// spellings like `src/./lib.rs` vs `src/lib.rs`.
 fn paths_conflict(a: &str, b: &str) -> bool {
+    let a = normalize_path(a);
+    let b = normalize_path(b);
     if a == b {
         return true;
     }
-    let a_norm = a.trim_end_matches('/');
-    let b_norm = b.trim_end_matches('/');
-    if a_norm == b_norm {
+    let a_trimmed = a.trim_end_matches('/');
+    let b_trimmed = b.trim_end_matches('/');
+    if a_trimmed == b_trimmed {
         return true;
     }
-    let a_dir = format!("{a_norm}/");
-    let b_dir = format!("{b_norm}/");
-    b_norm.starts_with(&a_dir) || a_norm.starts_with(&b_dir)
+    let a_dir = format!("{a_trimmed}/");
+    let b_dir = format!("{b_trimmed}/");
+    b_trimmed.starts_with(&a_dir) || a_trimmed.starts_with(&b_dir)
 }
 
 /// Truncate a string to max_len chars, adding "..." if truncated.
@@ -1009,6 +1040,23 @@ mod tests {
         assert!(paths_conflict("src/store", "src/store/"));
         assert!(!paths_conflict("src/store/", "src/model.rs"));
         assert!(!paths_conflict("src/a.rs", "src/b.rs"));
+        // Equivalent spellings must conflict after normalization
+        assert!(paths_conflict("src/./lib.rs", "src/lib.rs"));
+        assert!(paths_conflict("src/../src/lib.rs", "src/lib.rs"));
+        assert!(paths_conflict("src//lib.rs", "src/lib.rs"));
+        assert!(paths_conflict("./src/store/", "src/store/mesh.rs"));
+    }
+
+    #[test]
+    fn normalize_path_cases() {
+        assert_eq!(normalize_path("src/./lib.rs"), "src/lib.rs");
+        assert_eq!(normalize_path("src/../src/lib.rs"), "src/lib.rs");
+        assert_eq!(normalize_path("src//lib.rs"), "src/lib.rs");
+        assert_eq!(normalize_path("./src/store/"), "src/store/");
+        assert_eq!(normalize_path("src/store"), "src/store");
+        assert_eq!(normalize_path(""), "");
+        assert_eq!(normalize_path("."), "");
+        assert_eq!(normalize_path("a/b/c"), "a/b/c");
     }
 
     #[test]
@@ -1020,6 +1068,49 @@ mod tests {
 
         let all = store.list_reservations().unwrap();
         assert!(all.is_empty());
+    }
+
+    // -- Path normalization -------------------------------------------------
+
+    #[test]
+    fn reserve_normalizes_stored_paths() {
+        let (_dir, store) = setup_mesh();
+        store.join("A", None).unwrap();
+        store
+            .reserve("A", vec!["src/./lib.rs".into()], None)
+            .unwrap();
+        let all = store.list_reservations().unwrap();
+        assert_eq!(all[0].paths, vec!["src/lib.rs"]);
+    }
+
+    #[test]
+    fn reserve_detects_conflict_through_equivalent_spelling() {
+        let (_dir, store) = setup_mesh();
+        store.join("A", None).unwrap();
+        store.join("B", None).unwrap();
+        store
+            .reserve("A", vec!["src/store/".into()], None)
+            .unwrap();
+        let err = store
+            .reserve("B", vec!["./src/store/mesh.rs".into()], None)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            crate::error::TakError::MeshReservationConflict(_, _)
+        ));
+    }
+
+    #[test]
+    fn release_with_equivalent_spelling() {
+        let (_dir, store) = setup_mesh();
+        store.join("A", None).unwrap();
+        store
+            .reserve("A", vec!["src/a.rs".into(), "src/b.rs".into()], None)
+            .unwrap();
+        // Release using un-normalized spelling
+        store.release("A", vec!["./src/a.rs".into()]).unwrap();
+        let all = store.list_reservations().unwrap();
+        assert_eq!(all[0].paths, vec!["src/b.rs"]);
     }
 
     // -- Fix 1: reserve/release require registered agent --------------------
