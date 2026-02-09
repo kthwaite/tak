@@ -18,6 +18,8 @@ pub fn run(repo_root: &Path) -> Result<()> {
     fs::create_dir_all(tak.join("artifacts"))?;
     fs::create_dir_all(tak.join("verification_results"))?;
     fs::create_dir_all(tak.join("learnings"))?;
+    fs::create_dir_all(tak.join("therapist"))?;
+    fs::write(tak.join("therapist").join("observations.jsonl"), "")?;
 
     // Create coordination runtime directories
     MeshStore::open(tak).ensure_dirs()?;

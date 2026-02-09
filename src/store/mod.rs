@@ -6,3 +6,4 @@ pub mod lock;
 pub mod mesh;
 pub mod repo;
 pub mod sidecars;
+pub mod therapist;

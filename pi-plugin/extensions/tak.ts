@@ -20,8 +20,9 @@ type Priority = "critical" | "high" | "medium" | "low";
 type TaskStatus = "pending" | "in_progress" | "done" | "cancelled";
 type VerifyMode = "isolated" | "local";
 type WorkAction = "start" | "stop" | "status";
+type TherapistAction = "offline" | "online" | "log";
 
-type CommandMode = "pick" | "claim" | "mesh" | "show" | "help" | "work";
+type CommandMode = "pick" | "claim" | "mesh" | "show" | "help" | "work" | "therapist";
 
 interface TakTask {
 	id: number;
@@ -69,6 +70,19 @@ interface MeshReservation {
 	since: string;
 }
 
+interface TherapistObservation {
+	id: string;
+	timestamp: string;
+	mode: TherapistAction;
+	summary: string;
+	session?: string;
+	requested_by?: string;
+	findings?: string[];
+	recommendations?: string[];
+	interview?: string;
+	metrics?: Record<string, unknown>;
+}
+
 interface TakFilters {
 	source: TaskSource;
 	tag?: string;
@@ -87,6 +101,9 @@ interface ParsedTakCommand {
 	filters: TakFilters;
 	taskId?: number;
 	workAction?: WorkAction;
+	therapistAction?: TherapistAction;
+	therapistSession?: string;
+	therapistBy?: string;
 }
 
 interface WorkLoopState {
@@ -141,6 +158,8 @@ const TAK_HELP = `
                                    Start/resume autonomous work loop
 /tak work status|stop              Inspect or stop work loop
 /tak mesh                          Insert a mesh + blackboard summary in the editor
+/tak therapist [offline|online|log]
+                                   Run workflow diagnosis/interview and append observations
 /tak <task-id>                     Open a specific task
 
 Sources:
@@ -162,6 +181,8 @@ Filters (space-separated):
 - task:<id>         (for blackboard source)
 - ack               (for inbox source)
 - verify:<mode>     (for /tak work; mode = isolated | local)
+- session:<id|path> (for /tak therapist online)
+- by:<name>         (for /tak therapist offline|online)
 
 Work mode notes:
 - Automatically claims the next available task for you.
@@ -184,6 +205,10 @@ const COMPLETIONS = [
 	"work status",
 	"work stop",
 	"mesh",
+	"therapist",
+	"therapist offline",
+	"therapist online",
+	"therapist log",
 	"help",
 	"tag:",
 	"kind:task",
@@ -201,6 +226,8 @@ const COMPLETIONS = [
 	"assignee:",
 	"limit:20",
 	"task:",
+	"session:",
+	"by:",
 	"ack",
 	"verify:isolated",
 	"verify:local",
@@ -268,6 +295,44 @@ function parseTakCommandInput(rawArgs: string): ParsedTakCommand {
 
 	if (first === "mesh") {
 		return { mode: "mesh", filters };
+	}
+
+	if (first === "therapist") {
+		let therapistAction: TherapistAction = "offline";
+		let tokenStart = 1;
+		const second = tokens[1]?.toLowerCase();
+		if (second === "offline" || second === "online" || second === "log") {
+			therapistAction = second;
+			tokenStart = 2;
+		}
+
+		let therapistSession: string | undefined;
+		let therapistBy: string | undefined;
+
+		for (const token of tokens.slice(tokenStart)) {
+			const [rawKey, ...rawValueParts] = token.split(":");
+			if (rawKey && rawValueParts.length > 0) {
+				const key = rawKey.toLowerCase();
+				const value = rawValueParts.join(":").trim();
+				if (key === "session" && value) {
+					therapistSession = value;
+					continue;
+				}
+				if (key === "by" && value) {
+					therapistBy = value;
+					continue;
+				}
+			}
+			applyFilterToken(token, filters);
+		}
+
+		return {
+			mode: "therapist",
+			filters,
+			therapistAction,
+			therapistSession,
+			therapistBy,
+		};
 	}
 
 	if (first === "claim") {
@@ -567,6 +632,48 @@ function truncateText(text: string, maxChars: number): string {
 	const normalized = text.replace(/\s+/g, " ").trim();
 	if (normalized.length <= maxChars) return normalized;
 	return `${normalized.slice(0, Math.max(1, maxChars - 1))}…`;
+}
+
+function formatTherapistObservation(observation: TherapistObservation): string {
+	const lines: string[] = [];
+	lines.push(`# tak therapist ${observation.mode}`);
+	lines.push(`id: ${observation.id}`);
+	lines.push(`timestamp: ${observation.timestamp}`);
+	if (observation.session) lines.push(`session: ${observation.session}`);
+	if (observation.requested_by) lines.push(`requested_by: ${observation.requested_by}`);
+	lines.push(`summary: ${observation.summary}`);
+
+	if (observation.findings?.length) {
+		lines.push("", "findings:");
+		for (const finding of observation.findings) {
+			lines.push(`- ${finding}`);
+		}
+	}
+
+	if (observation.recommendations?.length) {
+		lines.push("", "recommendations:");
+		for (const recommendation of observation.recommendations) {
+			lines.push(`- ${recommendation}`);
+		}
+	}
+
+	if (observation.interview) {
+		lines.push("", "interview:", observation.interview);
+	}
+
+	return lines.join("\n");
+}
+
+function formatTherapistLog(observations: TherapistObservation[]): string {
+	if (observations.length === 0) {
+		return "No tak therapist observations found.";
+	}
+
+	const lines: string[] = ["# tak therapist log"];
+	for (const observation of observations) {
+		lines.push(`- ${observation.timestamp} [${observation.mode}] ${truncateText(observation.summary, 110)}`);
+	}
+	return lines.join("\n");
 }
 
 function buildStatusChip(
@@ -1013,6 +1120,44 @@ export default function takPiExtension(pi: ExtensionAPI) {
 				});
 				ctx.ui.notify(`Started /tak work loop (${formatWorkLoopStatus(workLoop)})`, "info");
 				await syncWorkLoop(ctx);
+				await refreshStatus(ctx);
+				return;
+			}
+
+			if (parsed.mode === "therapist") {
+				const action = parsed.therapistAction ?? "offline";
+				const therapistArgs = ["therapist", action];
+
+				if ((action === "offline" || action === "log") && parsed.filters.limit) {
+					therapistArgs.push("--limit", String(parsed.filters.limit));
+				}
+
+				if (action === "online" && parsed.therapistSession) {
+					therapistArgs.push("--session", parsed.therapistSession);
+				}
+
+				const requestedBy = parsed.therapistBy ?? agentName;
+				if ((action === "offline" || action === "online") && requestedBy) {
+					therapistArgs.push("--by", requestedBy);
+				}
+
+				const therapistResult = await runTak(pi, therapistArgs, {
+					timeoutMs: action === "online" ? 120000 : 30000,
+				});
+				if (!therapistResult.ok) {
+					ctx.ui.notify(therapistResult.errorMessage ?? "tak therapist failed", "error");
+					return;
+				}
+
+				if (action === "log" && Array.isArray(therapistResult.parsed)) {
+					ctx.ui.setEditorText(formatTherapistLog(therapistResult.parsed as TherapistObservation[]));
+				} else if (therapistResult.parsed && typeof therapistResult.parsed === "object") {
+					ctx.ui.setEditorText(formatTherapistObservation(therapistResult.parsed as TherapistObservation));
+				} else {
+					ctx.ui.setEditorText(therapistResult.stdout || "tak therapist completed");
+				}
+
+				ctx.ui.notify(`tak therapist ${action} completed`, "info");
 				await refreshStatus(ctx);
 				return;
 			}

@@ -16,5 +16,6 @@ pub mod next;
 pub mod reindex;
 pub mod setup;
 pub mod show;
+pub mod therapist;
 pub mod tree;
 pub mod verify;

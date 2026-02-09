@@ -282,6 +282,11 @@ enum Commands {
         #[command(subcommand)]
         action: BlackboardAction,
     },
+    /// Diagnose /tak workflow friction and record therapist observations
+    Therapist {
+        #[command(subcommand)]
+        action: TherapistAction,
+    },
     /// Rebuild the SQLite index from task files
     Reindex,
     /// Install agent integrations (Claude hooks; optional Claude plugin and pi integration)
@@ -517,6 +522,37 @@ enum BlackboardAction {
         /// Agent re-opening the note
         #[arg(long)]
         by: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum TherapistAction {
+    /// Diagnose conflict/churn from mesh history + blackboard and append an observation
+    Offline {
+        /// Agent/requester identity recorded in the observation
+        #[arg(long)]
+        by: Option<String>,
+        /// Number of recent feed/blackboard records to inspect
+        #[arg(long)]
+        limit: Option<usize>,
+    },
+    /// Resume a pi session in RPC mode and run a targeted workflow interview
+    Online {
+        /// Session identifier or path to resume (defaults to latest session with /tak work markers)
+        #[arg(long)]
+        session: Option<String>,
+        /// Session directory root (default: ~/.pi/agent/sessions)
+        #[arg(long)]
+        session_dir: Option<String>,
+        /// Agent/requester identity recorded in the observation
+        #[arg(long)]
+        by: Option<String>,
+    },
+    /// Read therapist observations from the append-only log
+    Log {
+        /// Show only the most recent N observations
+        #[arg(long)]
+        limit: Option<usize>,
     },
 }
 
@@ -771,6 +807,17 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
             BlackboardAction::Reopen { id, by } => {
                 tak::commands::blackboard::reopen(&root, id, &by, format)
             }
+        },
+        Commands::Therapist { action } => match action {
+            TherapistAction::Offline { by, limit } => {
+                tak::commands::therapist::offline(&root, by, limit, format)
+            }
+            TherapistAction::Online {
+                session,
+                session_dir,
+                by,
+            } => tak::commands::therapist::online(&root, session, session_dir, by, format),
+            TherapistAction::Log { limit } => tak::commands::therapist::log(&root, limit, format),
         },
         Commands::Reindex => tak::commands::reindex::run(&root),
     }
