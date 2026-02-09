@@ -11,6 +11,23 @@
             "type": "command",
             "command": "tak reindex 2>/dev/null || true",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "tak mesh join --format minimal >/dev/null 2>/dev/null || true",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "tak mesh leave --format minimal >/dev/null 2>/dev/null || true",
+            "timeout": 10
           }
         ]
       }
