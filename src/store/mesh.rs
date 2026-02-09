@@ -333,8 +333,8 @@ impl MeshStore {
     /// Unregister the current agent using implicit context.
     ///
     /// Resolution order:
-    /// 1) `$TAK_AGENT` name
-    /// 2) `$TAK_SESSION_ID`/`$CLAUDE_SESSION_ID` match (prefer current cwd)
+    /// 1) `$TAK_AGENT` name (if not found, continue fallback resolution)
+    /// 2) `$TAK_SESSION_ID`/`$CLAUDE_SESSION_ID` match (session-first; use cwd only to break ties)
     /// 3) single agent in current cwd
     /// 4) single agent in registry
     pub fn leave_current(&self) -> crate::error::Result<String> {
@@ -343,8 +343,15 @@ impl MeshStore {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
         {
-            self.leave(&name)?;
-            return Ok(name);
+            match self.leave(&name) {
+                Ok(()) => return Ok(name),
+                Err(crate::error::TakError::MeshAgentNotFound(_)) => {
+                    // TAK_AGENT can point at assignment metadata rather than an
+                    // actual mesh registration. Fall through to session/cwd
+                    // based resolution so stop hooks can still clean up.
+                }
+                Err(err) => return Err(err),
+            }
         }
 
         let agents = self.list_agents()?;
@@ -366,17 +373,31 @@ impl MeshStore {
             .filter(|s| !s.is_empty());
 
         if let Some(sid) = session_id {
-            let by_session: Vec<&Registration> = agents
-                .iter()
-                .filter(|a| a.session_id == sid && (cwd.is_empty() || a.cwd == cwd))
-                .collect();
+            let by_session: Vec<&Registration> =
+                agents.iter().filter(|a| a.session_id == sid).collect();
             if by_session.len() == 1 {
                 let name = by_session[0].name.clone();
                 self.leave(&name)?;
                 return Ok(name);
             }
             if by_session.len() > 1 {
-                let names = by_session
+                let by_session_cwd: Vec<&Registration> = by_session
+                    .iter()
+                    .copied()
+                    .filter(|a| !cwd.is_empty() && a.cwd == cwd)
+                    .collect();
+                if by_session_cwd.len() == 1 {
+                    let name = by_session_cwd[0].name.clone();
+                    self.leave(&name)?;
+                    return Ok(name);
+                }
+
+                let ambiguous = if by_session_cwd.len() > 1 {
+                    by_session_cwd
+                } else {
+                    by_session
+                };
+                let names = ambiguous
                     .iter()
                     .map(|a| a.name.as_str())
                     .collect::<Vec<_>>()
@@ -971,11 +992,66 @@ mod tests {
     #[test]
     fn leave_current_prefers_session_id() {
         let _guard = ENV_LOCK.lock().unwrap();
-        unsafe { std::env::set_var("CLAUDE_SESSION_ID", "sess-a") };
+        unsafe {
+            std::env::remove_var("TAK_AGENT");
+            std::env::set_var("CLAUDE_SESSION_ID", "sess-a");
+        }
 
         let (_dir, store) = setup_mesh();
         store.join(Some("agent-a"), Some("sess-a")).unwrap();
         store.join(Some("agent-b"), Some("sess-b")).unwrap();
+
+        let left = store.leave_current().unwrap();
+        assert_eq!(left, "agent-a");
+
+        let agents = store.list_agents().unwrap();
+        assert_eq!(agents.len(), 1);
+        assert_eq!(agents[0].name, "agent-b");
+
+        unsafe { std::env::remove_var("CLAUDE_SESSION_ID") };
+    }
+
+    #[test]
+    fn leave_current_falls_back_when_tak_agent_is_not_registered() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        unsafe {
+            std::env::set_var("TAK_AGENT", "assigned-agent");
+            std::env::set_var("CLAUDE_SESSION_ID", "sess-auto");
+        }
+
+        let (_dir, store) = setup_mesh();
+        let reg = store.join(None, Some("sess-auto")).unwrap();
+
+        let left = store.leave_current().unwrap();
+        assert_eq!(left, reg.name);
+
+        let agents = store.list_agents().unwrap();
+        assert!(agents.is_empty());
+
+        unsafe {
+            std::env::remove_var("TAK_AGENT");
+            std::env::remove_var("CLAUDE_SESSION_ID");
+        }
+    }
+
+    #[test]
+    fn leave_current_matches_session_even_if_cwd_changed() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        unsafe {
+            std::env::remove_var("TAK_AGENT");
+            std::env::set_var("CLAUDE_SESSION_ID", "sess-target");
+        }
+
+        let (_dir, store) = setup_mesh();
+        store.join(Some("agent-a"), Some("sess-target")).unwrap();
+        store.join(Some("agent-b"), Some("sess-other")).unwrap();
+
+        // Simulate running `mesh leave` from a different cwd than `mesh join`.
+        let reg_path = store.registration_path("agent-a");
+        let mut reg: Registration =
+            serde_json::from_str(&fs::read_to_string(&reg_path).unwrap()).unwrap();
+        reg.cwd = "/different/cwd".into();
+        fs::write(&reg_path, serde_json::to_string_pretty(&reg).unwrap()).unwrap();
 
         let left = store.leave_current().unwrap();
         assert_eq!(left, "agent-a");
