@@ -6,11 +6,20 @@ use serde_json::{Map, Value, json};
 use crate::error::{Result, TakError};
 use crate::output::Format;
 
-// Embedded plugin assets — compiled into the binary.
+// Embedded Claude Code plugin assets — compiled into the binary.
 const PLUGIN_JSON: &str = include_str!("../../claude-plugin/.claude-plugin/plugin.json");
 const SKILL_TASK_MGMT: &str = include_str!("../../claude-plugin/skills/task-management/SKILL.md");
 const SKILL_EPIC_PLAN: &str = include_str!("../../claude-plugin/skills/epic-planning/SKILL.md");
 const SKILL_TASK_EXEC: &str = include_str!("../../claude-plugin/skills/task-execution/SKILL.md");
+
+// Embedded pi integration assets — compiled into the binary.
+const PI_EXTENSION_TAK: &str = include_str!("../../pi-plugin/extensions/tak.ts");
+const PI_SKILL_COORDINATION: &str =
+    include_str!("../../pi-plugin/skills/tak-coordination/SKILL.md");
+
+const PI_SYSTEM_APPEND_START: &str = "<!-- tak:pi-system:start -->";
+const PI_SYSTEM_APPEND_END: &str = "<!-- tak:pi-system:end -->";
+const PI_SYSTEM_APPEND_BODY: &str = "Use `tak` actively as the source of truth for work planning and execution.\n\nCoordination rules:\n- Prefer `/tak` and `tak_cli` for task selection and updates.\n- Prioritise urgent tasks first (critical/high), then oldest tasks first within the same priority.\n- Keep task state accurate with lifecycle commands (`claim/start/handoff/finish/cancel/reopen`).\n- If mesh peers are active, avoid stepping on their toes:\n  - check mesh state/inbox,\n  - reserve files before major edits,\n  - coordinate via mesh and blackboard before overlapping work.\n- Use blackboard notes for blockers, handoffs, and cross-agent context.";
 
 const REINDEX_HOOK_COMMAND: &str = "tak reindex 2>/dev/null || true";
 const MESH_JOIN_HOOK_COMMAND: &str =
@@ -69,6 +78,260 @@ fn plugin_files() -> Vec<(&'static str, &'static str)> {
             SKILL_TASK_EXEC,
         ),
     ]
+}
+
+fn pi_base_path(global: bool) -> Result<PathBuf> {
+    if global {
+        let home = std::env::var("HOME").map_err(|_| {
+            TakError::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "HOME not set",
+            ))
+        })?;
+        Ok(PathBuf::from(home).join(".pi").join("agent"))
+    } else {
+        Ok(PathBuf::from(".pi"))
+    }
+}
+
+fn pi_files(base: &Path) -> Vec<(PathBuf, &'static str)> {
+    vec![
+        (base.join("extensions").join("tak.ts"), PI_EXTENSION_TAK),
+        (
+            base.join("skills")
+                .join("tak-coordination")
+                .join("SKILL.md"),
+            PI_SKILL_COORDINATION,
+        ),
+    ]
+}
+
+fn pi_append_system_path(base: &Path) -> PathBuf {
+    base.join("APPEND_SYSTEM.md")
+}
+
+#[cfg(test)]
+fn pi_system_block() -> String {
+    format!(
+        "{}\n{}\n{}",
+        PI_SYSTEM_APPEND_START, PI_SYSTEM_APPEND_BODY, PI_SYSTEM_APPEND_END
+    )
+}
+
+fn upsert_marked_block(existing: &str, start: &str, end: &str, body: &str) -> (String, bool) {
+    let block = format!("{}\n{}\n{}", start, body, end);
+
+    if let Some(start_idx) = existing.find(start)
+        && let Some(end_rel) = existing[start_idx..].find(end)
+    {
+        let end_idx = start_idx + end_rel + end.len();
+        let mut updated = String::new();
+        updated.push_str(&existing[..start_idx]);
+        updated.push_str(&block);
+        updated.push_str(&existing[end_idx..]);
+        return (updated.clone(), updated != existing);
+    }
+
+    let mut updated = existing.to_string();
+    if updated.trim().is_empty() {
+        updated = format!("{block}\n");
+    } else {
+        if !updated.ends_with('\n') {
+            updated.push('\n');
+        }
+        updated.push('\n');
+        updated.push_str(&block);
+        updated.push('\n');
+    }
+
+    (updated.clone(), updated != existing)
+}
+
+fn remove_marked_block(existing: &str, start: &str, end: &str) -> (String, bool) {
+    if let Some(start_idx) = existing.find(start)
+        && let Some(end_rel) = existing[start_idx..].find(end)
+    {
+        let end_idx = start_idx + end_rel + end.len();
+        let mut updated = String::new();
+        updated.push_str(&existing[..start_idx]);
+        updated.push_str(&existing[end_idx..]);
+        return (updated, true);
+    }
+    (existing.to_string(), false)
+}
+
+fn upsert_pi_append_system(path: &Path) -> Result<bool> {
+    let existing = if path.exists() {
+        fs::read_to_string(path)?
+    } else {
+        String::new()
+    };
+
+    let (updated, changed) = upsert_marked_block(
+        &existing,
+        PI_SYSTEM_APPEND_START,
+        PI_SYSTEM_APPEND_END,
+        PI_SYSTEM_APPEND_BODY,
+    );
+
+    if !changed {
+        return Ok(false);
+    }
+
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(path, updated)?;
+    Ok(true)
+}
+
+fn remove_pi_append_system(path: &Path) -> Result<bool> {
+    if !path.exists() {
+        return Ok(false);
+    }
+
+    let existing = fs::read_to_string(path)?;
+    let (updated, changed) =
+        remove_marked_block(&existing, PI_SYSTEM_APPEND_START, PI_SYSTEM_APPEND_END);
+
+    if !changed {
+        return Ok(false);
+    }
+
+    if updated.trim().is_empty() {
+        fs::remove_file(path)?;
+    } else {
+        fs::write(path, updated)?;
+    }
+    Ok(true)
+}
+
+fn check_pi_installed_at(base: &Path) -> &'static str {
+    let files = pi_files(base);
+    let mut any_exists = false;
+    let mut any_mismatch = false;
+
+    for (path, expected) in &files {
+        if path.exists() {
+            any_exists = true;
+            if let Ok(actual) = fs::read_to_string(path) {
+                if actual.trim() != expected.trim() {
+                    any_mismatch = true;
+                }
+            } else {
+                any_mismatch = true;
+            }
+        } else if any_exists {
+            any_mismatch = true;
+        }
+    }
+
+    let append_path = pi_append_system_path(base);
+    let has_prompt_block = fs::read_to_string(&append_path).ok().is_some_and(|text| {
+        text.contains(PI_SYSTEM_APPEND_START) && text.contains(PI_SYSTEM_APPEND_END)
+    });
+
+    if !any_exists && !has_prompt_block {
+        "not installed"
+    } else if any_mismatch || !has_prompt_block {
+        "outdated"
+    } else {
+        "installed"
+    }
+}
+
+pub fn check_pi_installed(global: bool) -> &'static str {
+    let Ok(base) = pi_base_path(global) else {
+        return "not installed";
+    };
+    check_pi_installed_at(&base)
+}
+
+fn write_pi_files(global: bool, format: Format) -> Result<bool> {
+    let base = pi_base_path(global)?;
+    let mut changed = false;
+
+    for (path, content) in pi_files(&base) {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        if path.exists() {
+            let existing = fs::read_to_string(&path)?;
+            if existing.trim() == content.trim() {
+                if format == Format::Pretty {
+                    eprintln!("  skip  {} (unchanged)", path.display());
+                }
+                continue;
+            }
+            if format == Format::Pretty {
+                eprintln!("  write {} (updated)", path.display());
+            }
+        } else if format == Format::Pretty {
+            eprintln!("  write {}", path.display());
+        }
+
+        fs::write(&path, content)?;
+        changed = true;
+    }
+
+    let append_path = pi_append_system_path(&base);
+    if upsert_pi_append_system(&append_path)? {
+        changed = true;
+        if format == Format::Pretty {
+            eprintln!("  upsert {}", append_path.display());
+        }
+    }
+
+    Ok(changed)
+}
+
+fn remove_dir_if_empty(path: &Path) -> Result<()> {
+    match fs::read_dir(path) {
+        Ok(mut iter) => {
+            if iter.next().is_none() {
+                fs::remove_dir(path)?;
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e.into()),
+    }
+    Ok(())
+}
+
+fn remove_pi_files(global: bool, format: Format) -> Result<bool> {
+    let base = pi_base_path(global)?;
+    let mut changed = false;
+
+    for (path, _) in pi_files(&base) {
+        if path.exists() {
+            fs::remove_file(&path)?;
+            changed = true;
+            if format == Format::Pretty {
+                eprintln!("  remove {}", path.display());
+            }
+        }
+    }
+
+    let append_path = pi_append_system_path(&base);
+    if remove_pi_append_system(&append_path)? {
+        changed = true;
+        if format == Format::Pretty {
+            eprintln!("  remove tak block from {}", append_path.display());
+        }
+    }
+
+    // Best-effort cleanup of empty integration directories.
+    let skill_dir = base.join("skills").join("tak-coordination");
+    let skills_root = base.join("skills");
+    let extensions_root = base.join("extensions");
+
+    remove_dir_if_empty(&skill_dir)?;
+    remove_dir_if_empty(&skills_root)?;
+    remove_dir_if_empty(&extensions_root)?;
+    remove_dir_if_empty(&base)?;
+
+    Ok(changed)
 }
 
 /// Resolve the settings file path.
@@ -144,6 +407,7 @@ fn is_tak_entry_with_command(entry: &Value, command: &str) -> bool {
 
 fn is_tak_session_start_entry(entry: &Value) -> bool {
     is_tak_entry_with_command(entry, REINDEX_HOOK_COMMAND)
+        || is_tak_entry_with_command(entry, MESH_JOIN_HOOK_COMMAND)
 }
 
 fn is_tak_stop_entry(entry: &Value) -> bool {
@@ -151,13 +415,92 @@ fn is_tak_stop_entry(entry: &Value) -> bool {
 }
 
 fn has_session_start_hook(session_start: &[Value]) -> bool {
-    let target = session_start_hook_entry();
-    session_start.iter().any(|entry| entry == &target)
+    session_start
+        .iter()
+        .any(|entry| is_tak_entry_with_command(entry, REINDEX_HOOK_COMMAND))
+        && session_start
+            .iter()
+            .any(|entry| is_tak_entry_with_command(entry, MESH_JOIN_HOOK_COMMAND))
 }
 
 fn has_stop_hook(stop: &[Value]) -> bool {
-    let target = stop_hook_entry();
-    stop.iter().any(|entry| entry == &target)
+    stop.iter()
+        .any(|entry| is_tak_entry_with_command(entry, MESH_LEAVE_HOOK_COMMAND))
+}
+
+fn command_hook(command: &str) -> Value {
+    json!({
+        "type": "command",
+        "command": command,
+        "timeout": 10
+    })
+}
+
+fn upsert_commands_into_entry(entry: &mut Value, commands: &[&str]) -> bool {
+    let Some(obj) = entry.as_object_mut() else {
+        return false;
+    };
+    if obj.get("matcher").and_then(Value::as_str) != Some("") {
+        return false;
+    }
+
+    let hooks_val = obj.entry("hooks").or_insert_with(|| json!([]));
+    let hooks = match hooks_val.as_array_mut() {
+        Some(a) => a,
+        None => {
+            *hooks_val = json!([]);
+            hooks_val.as_array_mut().unwrap()
+        }
+    };
+
+    let mut changed = false;
+    for command in commands {
+        let exists = hooks.iter().any(|hook| {
+            hook.get("type").and_then(Value::as_str) == Some("command")
+                && hook.get("command").and_then(Value::as_str) == Some(*command)
+        });
+        if !exists {
+            hooks.push(command_hook(command));
+            changed = true;
+        }
+    }
+
+    changed
+}
+
+fn remove_commands_from_entry(entry: &mut Value, commands: &[&str]) -> bool {
+    let Some(obj) = entry.as_object_mut() else {
+        return false;
+    };
+    if obj.get("matcher").and_then(Value::as_str) != Some("") {
+        return false;
+    }
+
+    let Some(hooks) = obj.get_mut("hooks").and_then(Value::as_array_mut) else {
+        return false;
+    };
+
+    let before = hooks.len();
+    hooks.retain(|hook| {
+        !(hook.get("type").and_then(Value::as_str) == Some("command")
+            && hook
+                .get("command")
+                .and_then(Value::as_str)
+                .is_some_and(|cmd| commands.contains(&cmd)))
+    });
+    hooks.len() != before
+}
+
+fn is_empty_matcher_entry_with_no_hooks(entry: &Value) -> bool {
+    let Some(obj) = entry.as_object() else {
+        return false;
+    };
+    if obj.get("matcher").and_then(Value::as_str) != Some("") {
+        return false;
+    }
+    obj.get("hooks")
+        .and_then(Value::as_array)
+        .is_some_and(|hooks| hooks.is_empty())
 }
 
 fn upsert_hook_entry(
@@ -165,6 +508,7 @@ fn upsert_hook_entry(
     event: &str,
     hook_entry: Value,
     matcher: fn(&Value) -> bool,
+    commands: &[&str],
 ) -> bool {
     let event_val = hooks_obj.entry(event).or_insert_with(|| json!([]));
 
@@ -176,14 +520,14 @@ fn upsert_hook_entry(
         }
     };
 
-    if arr.iter().any(|entry| entry == &hook_entry) {
-        return false; // already installed with current shape
+    if let Some(existing) = arr.iter_mut().find(|entry| matcher(entry)) {
+        // Migrate/extend legacy tak hook entries in place without dropping
+        // unrelated hook commands users may have colocated.
+        return upsert_commands_into_entry(existing, commands);
     }
 
-    if let Some(existing) = arr.iter_mut().find(|entry| matcher(entry)) {
-        // Migrate legacy tak hook entries in place.
-        *existing = hook_entry;
-        return true;
+    if arr.iter().any(|entry| entry == &hook_entry) {
+        return false;
     }
 
     arr.push(hook_entry);
@@ -208,12 +552,19 @@ fn install_hook(settings: &mut Map<String, Value>) -> bool {
         "SessionStart",
         session_start_hook_entry(),
         is_tak_session_start_entry,
+        &[REINDEX_HOOK_COMMAND, MESH_JOIN_HOOK_COMMAND],
     );
-    changed |= upsert_hook_entry(hooks_obj, "Stop", stop_hook_entry(), is_tak_stop_entry);
+    changed |= upsert_hook_entry(
+        hooks_obj,
+        "Stop",
+        stop_hook_entry(),
+        is_tak_stop_entry,
+        &[MESH_LEAVE_HOOK_COMMAND],
+    );
     changed
 }
 
-/// Remove tak hook entries from settings. Returns true if anything was removed.
+/// Remove tak hook commands from settings. Returns true if anything was removed.
 fn remove_hook(settings: &mut Map<String, Value>) -> bool {
     let Some(hooks) = settings.get_mut("hooks") else {
         return false;
@@ -227,8 +578,12 @@ fn remove_hook(settings: &mut Map<String, Value>) -> bool {
     if let Some(session_start) = hooks_obj.get_mut("SessionStart")
         && let Some(arr) = session_start.as_array_mut()
     {
+        for entry in arr.iter_mut() {
+            removed |=
+                remove_commands_from_entry(entry, &[REINDEX_HOOK_COMMAND, MESH_JOIN_HOOK_COMMAND]);
+        }
         let before = arr.len();
-        arr.retain(|entry| !is_tak_session_start_entry(entry));
+        arr.retain(|entry| !is_empty_matcher_entry_with_no_hooks(entry));
         removed |= arr.len() < before;
         if arr.is_empty() {
             hooks_obj.remove("SessionStart");
@@ -238,8 +593,11 @@ fn remove_hook(settings: &mut Map<String, Value>) -> bool {
     if let Some(stop) = hooks_obj.get_mut("Stop")
         && let Some(arr) = stop.as_array_mut()
     {
+        for entry in arr.iter_mut() {
+            removed |= remove_commands_from_entry(entry, &[MESH_LEAVE_HOOK_COMMAND]);
+        }
         let before = arr.len();
-        arr.retain(|entry| !is_tak_stop_entry(entry));
+        arr.retain(|entry| !is_empty_matcher_entry_with_no_hooks(entry));
         removed |= arr.len() < before;
         if arr.is_empty() {
             hooks_obj.remove("Stop");
@@ -363,25 +721,37 @@ fn remove_plugin_files(format: Format) -> Result<()> {
     Ok(())
 }
 
-pub fn run(global: bool, check: bool, remove: bool, plugin: bool, format: Format) -> Result<()> {
-    // Project-scoped setup writes into `.claude/` and must run from a git repo root.
+pub fn run(
+    global: bool,
+    check: bool,
+    remove: bool,
+    plugin: bool,
+    pi: bool,
+    format: Format,
+) -> Result<()> {
+    // Project-scoped setup writes into repo-local config and must run from a git repo root.
     if !global || plugin {
         ensure_git_repo_root()?;
     }
 
     if check {
-        return run_check(plugin, format);
+        return run_check(global, plugin, pi, format);
     }
     if remove {
-        return run_remove(global, plugin, format);
+        return run_remove(global, plugin, pi, format);
     }
-    run_install(global, plugin, format)
+    run_install(global, plugin, pi, format)
 }
 
-fn run_check(plugin: bool, format: Format) -> Result<()> {
+fn run_check(global: bool, plugin: bool, pi: bool, format: Format) -> Result<()> {
     let hooks_status = check_hooks_installed();
     let plugin_status = if plugin {
         Some(check_plugin_installed())
+    } else {
+        None
+    };
+    let pi_status = if pi {
+        Some(check_pi_installed(global))
     } else {
         None
     };
@@ -400,6 +770,15 @@ fn run_check(plugin: bool, format: Format) -> Result<()> {
             if let Some(ps) = plugin_status {
                 obj.insert("plugin".into(), json!(ps));
             }
+            if let Some(ps) = pi_status {
+                obj.insert(
+                    "pi".into(),
+                    json!({
+                        "status": ps,
+                        "scope": if global { "global" } else { "project" }
+                    }),
+                );
+            }
             obj.insert("tak_binary".into(), json!(tak_in_path));
             println!("{}", serde_json::to_string(&Value::Object(obj))?);
         }
@@ -411,6 +790,10 @@ fn run_check(plugin: bool, format: Format) -> Result<()> {
             if let Some(ps) = plugin_status {
                 eprintln!("plugin: {ps}");
             }
+            if let Some(ps) = pi_status {
+                let scope = if global { "global" } else { "project" };
+                eprintln!("pi: {ps} ({scope})");
+            }
             if tak_in_path {
                 eprintln!("tak binary: found in PATH");
             } else {
@@ -419,14 +802,17 @@ fn run_check(plugin: bool, format: Format) -> Result<()> {
         }
     }
 
-    if hooks_status.is_some() {
+    let hooks_ok = hooks_status.is_some();
+    let pi_ok = pi_status.is_none_or(|s| s == "installed");
+
+    if hooks_ok && pi_ok {
         Ok(())
     } else {
         std::process::exit(1);
     }
 }
 
-fn run_install(global: bool, plugin: bool, format: Format) -> Result<()> {
+fn run_install(global: bool, plugin: bool, pi: bool, format: Format) -> Result<()> {
     let path = settings_path(global)?;
     let mut settings = read_settings(&path)?;
 
@@ -434,6 +820,12 @@ fn run_install(global: bool, plugin: bool, format: Format) -> Result<()> {
     write_settings(&path, &settings)?;
 
     let scope = if global { "global" } else { "project" };
+    let mut pi_changed = false;
+
+    if pi {
+        pi_changed = write_pi_files(global, format)?;
+    }
+
     match format {
         Format::Json => {
             let mut obj = serde_json::Map::new();
@@ -444,6 +836,9 @@ fn run_install(global: bool, plugin: bool, format: Format) -> Result<()> {
             if plugin {
                 obj.insert("plugin".into(), json!(true));
             }
+            if pi {
+                obj.insert("pi".into(), json!({"enabled": true, "changed": pi_changed}));
+            }
             println!("{}", serde_json::to_string(&Value::Object(obj))?);
         }
         _ => {
@@ -451,6 +846,13 @@ fn run_install(global: bool, plugin: bool, format: Format) -> Result<()> {
                 eprintln!("Installed tak hooks ({scope}): {}", path.display());
             } else {
                 eprintln!("Hooks already installed ({scope}): {}", path.display());
+            }
+            if pi {
+                if pi_changed {
+                    eprintln!("Installed pi integration ({scope})");
+                } else {
+                    eprintln!("Pi integration already installed ({scope})");
+                }
             }
         }
     }
@@ -465,7 +867,7 @@ fn run_install(global: bool, plugin: bool, format: Format) -> Result<()> {
     Ok(())
 }
 
-fn run_remove(global: bool, plugin: bool, format: Format) -> Result<()> {
+fn run_remove(global: bool, plugin: bool, pi: bool, format: Format) -> Result<()> {
     let path = settings_path(global)?;
     let mut settings = read_settings(&path)?;
 
@@ -473,6 +875,12 @@ fn run_remove(global: bool, plugin: bool, format: Format) -> Result<()> {
     write_settings(&path, &settings)?;
 
     let scope = if global { "global" } else { "project" };
+    let mut pi_changed = false;
+
+    if pi {
+        pi_changed = remove_pi_files(global, format)?;
+    }
+
     match format {
         Format::Json => {
             let mut obj = serde_json::Map::new();
@@ -482,6 +890,9 @@ fn run_remove(global: bool, plugin: bool, format: Format) -> Result<()> {
             if plugin {
                 obj.insert("plugin".into(), json!(true));
             }
+            if pi {
+                obj.insert("pi".into(), json!({"removed": pi_changed}));
+            }
             println!("{}", serde_json::to_string(&Value::Object(obj))?);
         }
         _ => {
@@ -489,6 +900,13 @@ fn run_remove(global: bool, plugin: bool, format: Format) -> Result<()> {
                 eprintln!("Removed tak hooks ({scope}): {}", path.display());
             } else {
                 eprintln!("No tak hooks found ({scope}): {}", path.display());
+            }
+            if pi {
+                if pi_changed {
+                    eprintln!("Removed pi integration ({scope})");
+                } else {
+                    eprintln!("No pi integration found ({scope})");
+                }
             }
         }
     }
@@ -563,6 +981,100 @@ mod tests {
                 .iter()
                 .any(|h| h["command"] == json!(MESH_LEAVE_HOOK_COMMAND))
         );
+    }
+
+    #[test]
+    fn install_hook_preserves_colocated_non_tak_commands() {
+        let mut settings = Map::new();
+        settings.insert(
+            "hooks".into(),
+            json!({
+                "SessionStart": [{
+                    "matcher": "",
+                    "hooks": [
+                        {"type": "command", "command": "echo custom start", "timeout": 5},
+                        {"type": "command", "command": REINDEX_HOOK_COMMAND, "timeout": 10}
+                    ]
+                }],
+                "Stop": [{
+                    "matcher": "",
+                    "hooks": [
+                        {"type": "command", "command": "echo custom stop", "timeout": 5},
+                        {"type": "command", "command": MESH_LEAVE_HOOK_COMMAND, "timeout": 10}
+                    ]
+                }]
+            }),
+        );
+
+        assert!(install_hook(&mut settings));
+
+        let start_hooks = settings["hooks"]["SessionStart"][0]["hooks"]
+            .as_array()
+            .unwrap();
+        assert!(
+            start_hooks
+                .iter()
+                .any(|h| h["command"] == json!("echo custom start"))
+        );
+        assert!(
+            start_hooks
+                .iter()
+                .any(|h| h["command"] == json!(REINDEX_HOOK_COMMAND))
+        );
+        assert!(
+            start_hooks
+                .iter()
+                .any(|h| h["command"] == json!(MESH_JOIN_HOOK_COMMAND))
+        );
+
+        let stop_hooks = settings["hooks"]["Stop"][0]["hooks"].as_array().unwrap();
+        assert!(
+            stop_hooks
+                .iter()
+                .any(|h| h["command"] == json!("echo custom stop"))
+        );
+        assert!(
+            stop_hooks
+                .iter()
+                .any(|h| h["command"] == json!(MESH_LEAVE_HOOK_COMMAND))
+        );
+    }
+
+    #[test]
+    fn remove_hook_preserves_colocated_non_tak_commands() {
+        let mut settings = Map::new();
+        settings.insert(
+            "hooks".into(),
+            json!({
+                "SessionStart": [{
+                    "matcher": "",
+                    "hooks": [
+                        {"type": "command", "command": "echo custom start", "timeout": 5},
+                        {"type": "command", "command": REINDEX_HOOK_COMMAND, "timeout": 10},
+                        {"type": "command", "command": MESH_JOIN_HOOK_COMMAND, "timeout": 10}
+                    ]
+                }],
+                "Stop": [{
+                    "matcher": "",
+                    "hooks": [
+                        {"type": "command", "command": "echo custom stop", "timeout": 5},
+                        {"type": "command", "command": MESH_LEAVE_HOOK_COMMAND, "timeout": 10}
+                    ]
+                }]
+            }),
+        );
+
+        assert!(remove_hook(&mut settings));
+
+        let start_hooks = settings["hooks"]["SessionStart"][0]["hooks"]
+            .as_array()
+            .unwrap();
+        assert_eq!(start_hooks.len(), 1);
+        assert_eq!(start_hooks[0]["command"], json!("echo custom start"));
+
+        let stop_hooks = settings["hooks"]["Stop"][0]["hooks"].as_array().unwrap();
+        assert_eq!(stop_hooks.len(), 1);
+        assert_eq!(stop_hooks[0]["command"], json!("echo custom stop"));
     }
 
     #[test]
@@ -647,6 +1159,83 @@ mod tests {
                 "plugin path should live under .claude/plugins/tak: {path}"
             );
         }
+    }
+
+    #[test]
+    fn pi_files_are_under_pi_extension_and_skill_paths() {
+        let dir = tempdir().unwrap();
+        let files = pi_files(dir.path());
+
+        assert_eq!(files.len(), 2);
+        assert!(
+            files[0].0.to_string_lossy().ends_with("extensions/tak.ts"),
+            "unexpected extension path: {}",
+            files[0].0.display()
+        );
+        assert!(
+            files[1]
+                .0
+                .to_string_lossy()
+                .ends_with("skills/tak-coordination/SKILL.md"),
+            "unexpected skill path: {}",
+            files[1].0.display()
+        );
+    }
+
+    #[test]
+    fn marked_block_upsert_and_remove_are_idempotent() {
+        let existing = "user line\n";
+
+        let (with_block, changed) = upsert_marked_block(
+            existing,
+            PI_SYSTEM_APPEND_START,
+            PI_SYSTEM_APPEND_END,
+            PI_SYSTEM_APPEND_BODY,
+        );
+        assert!(changed);
+        assert!(with_block.contains(PI_SYSTEM_APPEND_START));
+        assert!(with_block.contains(PI_SYSTEM_APPEND_END));
+
+        let (with_block_again, changed_again) = upsert_marked_block(
+            &with_block,
+            PI_SYSTEM_APPEND_START,
+            PI_SYSTEM_APPEND_END,
+            PI_SYSTEM_APPEND_BODY,
+        );
+        assert!(!changed_again);
+        assert_eq!(with_block_again, with_block);
+
+        let (removed, removed_changed) =
+            remove_marked_block(&with_block, PI_SYSTEM_APPEND_START, PI_SYSTEM_APPEND_END);
+        assert!(removed_changed);
+        assert!(!removed.contains(PI_SYSTEM_APPEND_START));
+
+        let (removed_again, removed_again_changed) =
+            remove_marked_block(&removed, PI_SYSTEM_APPEND_START, PI_SYSTEM_APPEND_END);
+        assert!(!removed_again_changed);
+        assert_eq!(removed_again, removed);
+    }
+
+    #[test]
+    fn check_pi_installed_at_reports_states() {
+        let dir = tempdir().unwrap();
+        let base = dir.path().join(".pi");
+        fs::create_dir_all(&base).unwrap();
+
+        assert_eq!(check_pi_installed_at(&base), "not installed");
+
+        let files = pi_files(&base);
+        fs::create_dir_all(files[0].0.parent().unwrap()).unwrap();
+        fs::write(&files[0].0, files[0].1).unwrap();
+        assert_eq!(check_pi_installed_at(&base), "outdated");
+
+        fs::create_dir_all(files[1].0.parent().unwrap()).unwrap();
+        fs::write(&files[1].0, files[1].1).unwrap();
+
+        let append_path = pi_append_system_path(&base);
+        fs::write(&append_path, pi_system_block()).unwrap();
+
+        assert_eq!(check_pi_installed_at(&base), "installed");
     }
 
     #[test]

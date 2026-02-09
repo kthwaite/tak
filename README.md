@@ -117,16 +117,42 @@ Tak ships as a Claude Code plugin. Enable it to get:
 - **Task management skill**: Full CLI reference for creating, querying, and updating tasks
 - **Epic planning skill**: Guided decomposition of features into task hierarchies
 - **Task execution skill**: Agent workflow for claiming, executing, and completing tasks
-- **Session start hook**: Auto-reindex on session start
+- **Session lifecycle hooks**: Auto-reindex + auto-join mesh on session start, auto-leave mesh on stop
 
 ```bash
 # Run from your git repo root
-# Install SessionStart hook into .claude/settings.local.json
+# Install SessionStart + Stop hooks into .claude/settings.local.json
 tak setup
 
 # Also write plugin files under .claude/plugins/tak
 tak setup --plugin
 ```
+
+## Pi Integration
+
+Tak also ships a pi package under [`pi-plugin/`](./pi-plugin):
+
+- `/tak` task picker with filtering (`ready`, `blocked`, `all`, `mine`, `in_progress`) and default **urgent → oldest** ordering
+- `tak_cli` tool for structured task/mesh/blackboard command execution
+- Mesh + blackboard integration (`/tak mesh`, `/tak inbox`, `/tak blackboard`)
+- Auto `tak reindex` + mesh join/leave lifecycle behavior
+- System-prompt augmentation that enforces active tak usage and cross-agent coordination
+
+Install project-local pi integration from the repo root:
+
+```bash
+tak setup --pi
+```
+
+(Use `tak setup --global --pi` to install into `~/.pi/agent/` instead.)
+
+You can also install the package manually:
+
+```bash
+pi install ./pi-plugin -l
+```
+
+Then run `pi` in this repository and use `/tak`.
 
 ## License
 

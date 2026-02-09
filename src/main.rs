@@ -284,7 +284,7 @@ enum Commands {
     },
     /// Rebuild the SQLite index from task files
     Reindex,
-    /// Install Claude Code integration (hooks + optional plugin)
+    /// Install agent integrations (Claude hooks; optional Claude plugin and pi integration)
     Setup {
         /// Write to ~/.claude/settings.json instead of .claude/settings.local.json
         #[arg(long)]
@@ -295,9 +295,12 @@ enum Commands {
         /// Remove tak hooks from settings
         #[arg(long)]
         remove: bool,
-        /// Also write the full plugin directory to .claude/plugins/tak
+        /// Also write the full Claude plugin directory to .claude/plugins/tak
         #[arg(long)]
         plugin: bool,
+        /// Also install pi integration (extension, skill, and APPEND_SYSTEM block)
+        #[arg(long)]
+        pi: bool,
     },
     /// Validate tak installation and report issues
     Doctor {
@@ -529,8 +532,9 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
             check,
             remove,
             plugin,
+            pi,
         } => {
-            return tak::commands::setup::run(*global, *check, *remove, *plugin, format);
+            return tak::commands::setup::run(*global, *check, *remove, *plugin, *pi, format);
         }
         Commands::Doctor { fix } => {
             return tak::commands::doctor::run(*fix, format);
