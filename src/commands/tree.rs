@@ -102,7 +102,7 @@ fn print_tree_minimal(node: &TreeNode, depth: usize) {
 
 pub fn run(repo_root: &Path, id: Option<u64>, format: Format) -> Result<()> {
     let repo = Repo::open(repo_root)?;
-    let blocked_ids: HashSet<u64> = repo.index.blocked()?.into_iter().collect();
+    let blocked_ids: HashSet<u64> = repo.index.blocked()?.iter().map(u64::from).collect();
 
     // Pre-load all tasks into memory (one pass over files)
     let all_tasks = repo.store.list_all()?;

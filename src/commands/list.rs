@@ -20,11 +20,19 @@ pub fn run(
     let repo = Repo::open(repo_root)?;
 
     let mut tasks = if available {
-        repo.store.read_many(&repo.index.available(None)?)?
+        let ids: Vec<u64> = repo.index.available(None)?.iter().map(u64::from).collect();
+        repo.store.read_many(&ids)?
     } else if blocked {
-        repo.store.read_many(&repo.index.blocked()?)?
+        let ids: Vec<u64> = repo.index.blocked()?.iter().map(u64::from).collect();
+        repo.store.read_many(&ids)?
     } else if let Some(parent_id) = children_of {
-        repo.store.read_many(&repo.index.children_of(parent_id)?)?
+        let ids: Vec<u64> = repo
+            .index
+            .children_of(parent_id)?
+            .iter()
+            .map(u64::from)
+            .collect();
+        repo.store.read_many(&ids)?
     } else {
         repo.store.list_all()?
     };

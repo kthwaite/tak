@@ -20,7 +20,8 @@ pub fn run(repo_root: &Path, assignee: String, tag: Option<String>, format: Form
     let id = if let Some(ref tg) = tag {
         // Find first available task with matching tag
         let mut found = None;
-        for &aid in &available {
+        for aid in &available {
+            let aid: u64 = aid.into();
             if let Ok(t) = repo.store.read(aid)
                 && t.tags.contains(tg)
             {
@@ -37,7 +38,7 @@ pub fn run(repo_root: &Path, assignee: String, tag: Option<String>, format: Form
         }
     } else {
         match available.first() {
-            Some(&id) => id,
+            Some(id) => id.into(),
             None => {
                 lock::release_lock(lock_file)?;
                 return Err(TakError::NoAvailableTask);

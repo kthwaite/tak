@@ -2,7 +2,13 @@ use colored::Colorize;
 
 use crate::error::Result;
 use crate::model::{Priority, Risk, Status, Task};
+use crate::task_id::TaskId;
 use clap::ValueEnum;
+
+const MINIMAL_ID_WIDTH: usize = TaskId::HEX_LEN;
+const MINIMAL_TITLE_WIDTH: usize = 20;
+const MINIMAL_KIND_WIDTH: usize = 7;
+const MINIMAL_STATUS_WIDTH: usize = 11;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum Format {
@@ -43,12 +49,17 @@ pub fn style_risk(r: &Risk) -> String {
     }
 }
 
+fn format_task_id(id: u64) -> String {
+    TaskId::from(id).to_string()
+}
+
 fn format_dependency(dep: &crate::model::Dependency) -> String {
+    let id = format_task_id(dep.id);
     match (&dep.dep_type, &dep.reason) {
-        (None, None) => format!("{}", dep.id),
-        (Some(t), None) => format!("{} ({})", dep.id, t),
-        (None, Some(r)) => format!("{} [{}]", dep.id, r),
-        (Some(t), Some(r)) => format!("{} ({}) [{}]", dep.id, t, r),
+        (None, None) => id,
+        (Some(t), None) => format!("{} ({})", id, t),
+        (None, Some(r)) => format!("{} [{}]", id, r),
+        (Some(t), Some(r)) => format!("{} ({}) [{}]", id, t, r),
     }
 }
 
@@ -58,10 +69,19 @@ pub fn print_task(task: &Task, format: Format) -> Result<()> {
         Format::Pretty => print_task_pretty_table(task),
         Format::Minimal => {
             let assignee = task.assignee.as_deref().unwrap_or("-");
-            let title = truncate_title(&task.title, 12);
+            let title = truncate_title(&task.title, MINIMAL_TITLE_WIDTH);
+            let id = format_task_id(task.id);
             println!(
-                "{:>4} {:12} {:6} {:10} {}",
-                task.id, title, task.kind, task.status, assignee
+                "{:>id_width$} {:title_width$} {:kind_width$} {:status_width$} {}",
+                id,
+                title,
+                task.kind,
+                task.status,
+                assignee,
+                id_width = MINIMAL_ID_WIDTH,
+                title_width = MINIMAL_TITLE_WIDTH,
+                kind_width = MINIMAL_KIND_WIDTH,
+                status_width = MINIMAL_STATUS_WIDTH,
             );
         }
     }
@@ -160,7 +180,7 @@ fn print_key_value_table(rows: &[(String, String)]) {
 
 fn print_task_pretty_table(task: &Task) {
     let mut rows: Vec<(String, String)> = vec![
-        ("id".to_string(), task.id.to_string()),
+        ("id".to_string(), format_task_id(task.id)),
         ("title".to_string(), task.title.clone()),
         ("kind".to_string(), task.kind.to_string()),
         ("status".to_string(), task.status.to_string()),
@@ -170,7 +190,7 @@ fn print_task_pretty_table(task: &Task) {
         rows.push(("description".to_string(), desc.clone()));
     }
     if let Some(parent) = task.parent {
-        rows.push(("parent".to_string(), parent.to_string()));
+        rows.push(("parent".to_string(), format_task_id(parent)));
     }
     if !task.depends_on.is_empty() {
         let deps = task
@@ -344,9 +364,9 @@ fn style_priority_cell(priority: Option<Priority>, padded: String) -> String {
 }
 
 fn print_tasks_pretty_table(tasks: &[Task]) {
-    const TITLE_MAX_WIDTH: usize = 48;
-    const ASSIGNEE_MAX_WIDTH: usize = 20;
-    const TAGS_MAX_WIDTH: usize = 28;
+    const TITLE_MAX_WIDTH: usize = 40;
+    const ASSIGNEE_MAX_WIDTH: usize = 18;
+    const TAGS_MAX_WIDTH: usize = 24;
 
     let headers = [
         "ID", "TITLE", "KIND", "STATUS", "ASSIGNEE", "PRIORITY", "TAGS",
@@ -369,7 +389,7 @@ fn print_tasks_pretty_table(tasks: &[Task]) {
             };
 
             [
-                task.id.to_string(),
+                format_task_id(task.id),
                 truncate_text(&task.title, TITLE_MAX_WIDTH),
                 task.kind.to_string(),
                 task.status.to_string(),
@@ -445,23 +465,80 @@ pub fn print_tasks(tasks: &[Task], format: Format) -> Result<()> {
         Format::Json => println!("{}", serde_json::to_string(tasks)?),
         Format::Pretty => print_tasks_pretty_table(tasks),
         Format::Minimal => {
+            const ASSIGNEE_HEADER: &str = "ASSIGNEE";
             println!(
-                "{:>4} {:12} {:6} {:10} ASSIGNEE",
+                "{:>id_width$} {:title_width$} {:kind_width$} {:status_width$} {}",
                 "ID".bold(),
                 "TITLE".bold(),
                 "KIND".bold(),
-                "STATUS".bold()
+                "STATUS".bold(),
+                ASSIGNEE_HEADER,
+                id_width = MINIMAL_ID_WIDTH,
+                title_width = MINIMAL_TITLE_WIDTH,
+                kind_width = MINIMAL_KIND_WIDTH,
+                status_width = MINIMAL_STATUS_WIDTH,
             );
-            println!("{}", "-".repeat(50).dimmed());
+
+            let separator_width = MINIMAL_ID_WIDTH
+                + 1
+                + MINIMAL_TITLE_WIDTH
+                + 1
+                + MINIMAL_KIND_WIDTH
+                + 1
+                + MINIMAL_STATUS_WIDTH
+                + 1
+                + ASSIGNEE_HEADER.len();
+            println!("{}", "-".repeat(separator_width).dimmed());
+
             for task in tasks {
                 let assignee = task.assignee.as_deref().unwrap_or("-");
-                let title = truncate_title(&task.title, 12);
+                let title = truncate_title(&task.title, MINIMAL_TITLE_WIDTH);
+                let id = format_task_id(task.id);
                 println!(
-                    "{:>4} {:12} {:6} {:10} {}",
-                    task.id, title, task.kind, task.status, assignee
+                    "{:>id_width$} {:title_width$} {:kind_width$} {:status_width$} {}",
+                    id,
+                    title,
+                    task.kind,
+                    task.status,
+                    assignee,
+                    id_width = MINIMAL_ID_WIDTH,
+                    title_width = MINIMAL_TITLE_WIDTH,
+                    kind_width = MINIMAL_KIND_WIDTH,
+                    status_width = MINIMAL_STATUS_WIDTH,
                 );
             }
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{DepType, Dependency};
+
+    #[test]
+    fn format_task_id_uses_fixed_width_lower_hex() {
+        assert_eq!(format_task_id(42), "000000000000002a");
+    }
+
+    #[test]
+    fn format_dependency_includes_canonical_id_and_metadata() {
+        let dep = Dependency {
+            id: 255,
+            dep_type: Some(DepType::Soft),
+            reason: Some("ordering".into()),
+        };
+
+        assert_eq!(
+            format_dependency(&dep),
+            "00000000000000ff (soft) [ordering]"
+        );
+    }
+
+    #[test]
+    fn minimal_id_width_matches_task_id_hex_length() {
+        assert_eq!(MINIMAL_ID_WIDTH, TaskId::HEX_LEN);
+        assert_eq!(format_task_id(1).len(), MINIMAL_ID_WIDTH);
+    }
 }

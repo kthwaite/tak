@@ -7,7 +7,8 @@ pub fn run(repo_root: &Path, assignee: Option<String>, format: Format) -> Result
     let repo = Repo::open(repo_root)?;
     let available = repo.index.available(assignee.as_deref())?;
 
-    if let Some(&id) = available.first() {
+    if let Some(id) = available.first() {
+        let id: u64 = id.into();
         let task = repo.store.read(id)?;
         output::print_task(&task, format)?;
     } else if format != Format::Json {

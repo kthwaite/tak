@@ -181,24 +181,30 @@ fn run_core_checks(checks: &mut Vec<Check>, tak_dir: Option<&Path>) {
         checks.push(Check::error("Core", "missing config.json"));
     }
 
-    // counter.json
+    // counter.json (legacy): optional in hash-id storage mode
     let counter_path = tak.join("counter.json");
     if counter_path.exists() {
         match fs::read_to_string(&counter_path) {
             Ok(data) => match serde_json::from_str::<Value>(&data) {
                 Ok(val) => {
                     if let Some(n) = val.get("next_id").and_then(|v| v.as_u64()) {
-                        checks.push(Check::ok("Core", format!("counter at {n}")));
+                        checks.push(Check::ok("Core", format!("legacy counter present at {n}")));
                     } else {
                         checks.push(Check::warn("Core", "counter.json missing next_id field"));
                     }
                 }
-                Err(_) => checks.push(Check::error("Core", "corrupt counter.json")),
+                Err(_) => checks.push(Check::warn("Core", "corrupt counter.json (legacy file)")),
             },
-            Err(_) => checks.push(Check::error("Core", "cannot read counter.json")),
+            Err(_) => checks.push(Check::warn(
+                "Core",
+                "cannot read counter.json (legacy file)",
+            )),
         }
     } else {
-        checks.push(Check::error("Core", "missing counter.json"));
+        checks.push(Check::ok(
+            "Core",
+            "counter.json not required (hash-id task allocation)",
+        ));
     }
 
     // tasks/ directory
@@ -298,6 +304,7 @@ fn run_integrity_checks(checks: &mut Vec<Check>, tak: &Path) {
 
     let mut tasks: HashMap<u64, Task> = HashMap::new();
     let mut parse_errors = Vec::new();
+    let mut filename_issues = Vec::new();
 
     // Load all task files
     if let Ok(entries) = fs::read_dir(&tasks_dir) {
@@ -307,27 +314,53 @@ fn run_integrity_checks(checks: &mut Vec<Check>, tak: &Path) {
             let Some(stem) = name.strip_suffix(".json") else {
                 continue;
             };
-            let Ok(id) = stem.parse::<u64>() else {
-                continue;
-            };
+
+            if !is_valid_task_filename_stem(stem) {
+                filename_issues.push(format!(
+                    "task file '{}' has invalid name; expected 16 lowercase hex (or legacy numeric)",
+                    name
+                ));
+            }
 
             match fs::read_to_string(entry.path()) {
                 Ok(data) => match serde_json::from_str::<Task>(&data) {
                     Ok(task) => {
-                        tasks.insert(id, task);
+                        if let Ok(file_id) = stem.parse::<u64>()
+                            && file_id != task.id
+                        {
+                            filename_issues.push(format!(
+                                "task file '{}' id mismatch (filename {file_id}, payload {})",
+                                name, task.id
+                            ));
+                        }
+
+                        let task_id = task.id;
+                        if tasks.insert(task_id, task).is_some() {
+                            filename_issues.push(format!(
+                                "duplicate task id found in task files for id {task_id}"
+                            ));
+                        }
                     }
-                    Err(e) => parse_errors.push(format!("task {id}: {e}")),
+                    Err(e) => parse_errors.push(format!("task file '{}': {e}", name)),
                 },
-                Err(e) => parse_errors.push(format!("task {id}: {e}")),
+                Err(e) => parse_errors.push(format!("task file '{}': {e}", name)),
             }
         }
     }
 
     if parse_errors.is_empty() {
-        checks.push(Check::ok("Data Integrity", "all tasks valid"));
+        checks.push(Check::ok("Data Integrity", "all task JSON files parse"));
     } else {
         for err in &parse_errors {
             checks.push(Check::error("Data Integrity", err.clone()));
+        }
+    }
+
+    if filename_issues.is_empty() {
+        checks.push(Check::ok("Data Integrity", "task filename conventions OK"));
+    } else {
+        for issue in &filename_issues {
+            checks.push(Check::warn("Data Integrity", issue.clone()));
         }
     }
 
@@ -417,7 +450,6 @@ fn run_env_checks(checks: &mut Vec<Check>, tak_dir: Option<&Path>) {
         if gitignore_path.exists() {
             let content = fs::read_to_string(&gitignore_path).unwrap_or_default();
             check_gitignore_entry(checks, &content, "index.db", &gitignore_path);
-            check_gitignore_entry(checks, &content, "counter.lock", &gitignore_path);
             check_gitignore_entry(checks, &content, "claim.lock", &gitignore_path);
         } else {
             checks.push(Check::warn("Environment", ".gitignore not found"));
@@ -447,12 +479,32 @@ fn check_gitignore_entry(
     }
 }
 
+fn is_valid_task_filename_stem(stem: &str) -> bool {
+    is_taskid_hex_stem(stem) || is_legacy_numeric_stem(stem)
+}
+
+fn is_taskid_hex_stem(stem: &str) -> bool {
+    stem.len() == 16
+        && stem
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+}
+
+fn is_legacy_numeric_stem(stem: &str) -> bool {
+    !stem.is_empty() && stem.bytes().all(|b| b.is_ascii_digit())
+}
+
 fn count_task_files(tasks_dir: &Path) -> usize {
     fs::read_dir(tasks_dir)
         .map(|entries| {
             entries
                 .flatten()
-                .filter(|e| e.file_name().to_string_lossy().ends_with(".json"))
+                .filter(|e| {
+                    e.file_name()
+                        .to_string_lossy()
+                        .strip_suffix(".json")
+                        .is_some_and(is_valid_task_filename_stem)
+                })
                 .count()
         })
         .unwrap_or(0)
@@ -562,6 +614,31 @@ mod tests {
             updated_at: now,
             extensions: serde_json::Map::new(),
         }
+    }
+
+    #[test]
+    fn validates_task_filename_stems() {
+        assert!(is_valid_task_filename_stem("0000000000000001"));
+        assert!(is_valid_task_filename_stem("deadbeefcafefeed"));
+        assert!(is_valid_task_filename_stem("123")); // legacy numeric
+
+        assert!(!is_valid_task_filename_stem(""));
+        assert!(!is_valid_task_filename_stem("DEADBEEFCAFEBABE"));
+        assert!(!is_valid_task_filename_stem("not-a-task-id"));
+    }
+
+    #[test]
+    fn count_task_files_ignores_invalid_stems() {
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let tasks = dir.path();
+        std::fs::write(tasks.join("0000000000000001.json"), "{}").unwrap();
+        std::fs::write(tasks.join("2.json"), "{}").unwrap();
+        std::fs::write(tasks.join("BAD.json"), "{}").unwrap();
+        std::fs::write(tasks.join("notes.txt"), "{}").unwrap();
+
+        assert_eq!(count_task_files(tasks), 2);
     }
 
     #[test]

@@ -4,6 +4,7 @@ use rusqlite::{Connection, params};
 
 use crate::error::Result;
 use crate::model::{Learning, Task};
+use crate::task_id::TaskId;
 
 pub struct Index {
     conn: Connection,
@@ -29,12 +30,12 @@ impl Index {
     fn create_tables(&self) -> Result<()> {
         self.conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS tasks (
-                id INTEGER PRIMARY KEY,
+                id TEXT PRIMARY KEY,
                 title TEXT NOT NULL,
                 description TEXT,
                 status TEXT NOT NULL DEFAULT 'pending',
                 kind TEXT NOT NULL DEFAULT 'task',
-                parent_id INTEGER REFERENCES tasks(id),
+                parent_id TEXT REFERENCES tasks(id),
                 assignee TEXT,
                 priority INTEGER,
                 estimate TEXT,
@@ -43,19 +44,19 @@ impl Index {
                 updated_at TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS dependencies (
-                task_id INTEGER NOT NULL REFERENCES tasks(id),
-                depends_on_id INTEGER NOT NULL REFERENCES tasks(id),
+                task_id TEXT NOT NULL REFERENCES tasks(id),
+                depends_on_id TEXT NOT NULL REFERENCES tasks(id),
                 dep_type TEXT,
                 reason TEXT,
                 PRIMARY KEY (task_id, depends_on_id)
             );
             CREATE TABLE IF NOT EXISTS tags (
-                task_id INTEGER NOT NULL REFERENCES tasks(id),
+                task_id TEXT NOT NULL REFERENCES tasks(id),
                 tag TEXT NOT NULL,
                 PRIMARY KEY (task_id, tag)
             );
             CREATE TABLE IF NOT EXISTS skills (
-                task_id INTEGER NOT NULL REFERENCES tasks(id),
+                task_id TEXT NOT NULL REFERENCES tasks(id),
                 skill TEXT NOT NULL,
                 PRIMARY KEY (task_id, skill)
             );
@@ -78,7 +79,7 @@ impl Index {
             );
             CREATE TABLE IF NOT EXISTS learning_tasks (
                 learning_id INTEGER NOT NULL REFERENCES learnings(id),
-                task_id INTEGER NOT NULL,
+                task_id TEXT NOT NULL,
                 PRIMARY KEY (learning_id, task_id)
             );
             CREATE INDEX IF NOT EXISTS idx_learning_tasks_task ON learning_tasks(task_id);
@@ -104,11 +105,12 @@ impl Index {
 
         // Pass 1: insert all task rows with parent_id deferred (avoids FK failures)
         for task in tasks {
+            let task_id = TaskId::from(task.id);
             tx.execute(
                 "INSERT INTO tasks (id, title, description, status, kind, parent_id, assignee, priority, estimate, attempt_count, created_at, updated_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, ?7, ?8, ?9, ?10, ?11)",
                 params![
-                    task.id, task.title, task.description,
+                    &task_id, task.title, task.description,
                     task.status.to_string(), task.kind.to_string(),
                     task.assignee,
                     task.planning.priority.map(|p| p.rank() as i64),
@@ -121,28 +123,31 @@ impl Index {
 
         // Pass 2: set parent_id, insert dependencies and tags
         for task in tasks {
+            let task_id = TaskId::from(task.id);
             if let Some(parent) = task.parent {
+                let parent_id = TaskId::from(parent);
                 tx.execute(
                     "UPDATE tasks SET parent_id = ?1 WHERE id = ?2",
-                    params![parent, task.id],
+                    params![&parent_id, &task_id],
                 )?;
             }
             for dep in &task.depends_on {
+                let dep_id = TaskId::from(dep.id);
                 tx.execute(
                     "INSERT OR IGNORE INTO dependencies (task_id, depends_on_id, dep_type, reason) VALUES (?1, ?2, ?3, ?4)",
-                    params![task.id, dep.id, dep.dep_type.as_ref().map(|t| t.to_string()), dep.reason],
+                    params![&task_id, &dep_id, dep.dep_type.as_ref().map(|t| t.to_string()), dep.reason],
                 )?;
             }
             for tag in &task.tags {
                 tx.execute(
                     "INSERT OR IGNORE INTO tags (task_id, tag) VALUES (?1, ?2)",
-                    params![task.id, tag],
+                    params![&task_id, tag],
                 )?;
             }
             for skill in &task.planning.required_skills {
                 tx.execute(
                     "INSERT OR IGNORE INTO skills (task_id, skill) VALUES (?1, ?2)",
-                    params![task.id, skill],
+                    params![&task_id, skill],
                 )?;
             }
         }
@@ -154,13 +159,16 @@ impl Index {
     pub fn upsert(&self, task: &Task) -> Result<()> {
         let tx = self.conn.unchecked_transaction()?;
 
+        let task_id = TaskId::from(task.id);
+        let parent_id = task.parent.map(TaskId::from);
+
         tx.execute(
             "INSERT OR REPLACE INTO tasks (id, title, description, status, kind, parent_id, assignee, priority, estimate, attempt_count, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             params![
-                task.id, task.title, task.description,
+                &task_id, task.title, task.description,
                 task.status.to_string(), task.kind.to_string(),
-                task.parent, task.assignee,
+                parent_id, task.assignee,
                 task.planning.priority.map(|p| p.rank() as i64),
                 task.planning.estimate.map(|e| e.to_string()),
                 task.execution.attempt_count,
@@ -169,26 +177,27 @@ impl Index {
         )?;
         tx.execute(
             "DELETE FROM dependencies WHERE task_id = ?1",
-            params![task.id],
+            params![&task_id],
         )?;
         for dep in &task.depends_on {
+            let dep_id = TaskId::from(dep.id);
             tx.execute(
                 "INSERT OR IGNORE INTO dependencies (task_id, depends_on_id, dep_type, reason) VALUES (?1, ?2, ?3, ?4)",
-                params![task.id, dep.id, dep.dep_type.as_ref().map(|t| t.to_string()), dep.reason],
+                params![&task_id, &dep_id, dep.dep_type.as_ref().map(|t| t.to_string()), dep.reason],
             )?;
         }
-        tx.execute("DELETE FROM tags WHERE task_id = ?1", params![task.id])?;
+        tx.execute("DELETE FROM tags WHERE task_id = ?1", params![&task_id])?;
         for tag in &task.tags {
             tx.execute(
                 "INSERT OR IGNORE INTO tags (task_id, tag) VALUES (?1, ?2)",
-                params![task.id, tag],
+                params![&task_id, tag],
             )?;
         }
-        tx.execute("DELETE FROM skills WHERE task_id = ?1", params![task.id])?;
+        tx.execute("DELETE FROM skills WHERE task_id = ?1", params![&task_id])?;
         for skill in &task.planning.required_skills {
             tx.execute(
                 "INSERT OR IGNORE INTO skills (task_id, skill) VALUES (?1, ?2)",
-                params![task.id, skill],
+                params![&task_id, skill],
             )?;
         }
 
@@ -196,16 +205,17 @@ impl Index {
         Ok(())
     }
 
-    pub fn remove(&self, id: u64) -> Result<()> {
+    pub fn remove(&self, id: impl Into<TaskId>) -> Result<()> {
+        let id = id.into();
         let tx = self.conn.unchecked_transaction()?;
-        tx.execute("DELETE FROM skills WHERE task_id = ?1", params![id])?;
-        tx.execute("DELETE FROM tags WHERE task_id = ?1", params![id])?;
-        tx.execute("DELETE FROM dependencies WHERE task_id = ?1", params![id])?;
+        tx.execute("DELETE FROM skills WHERE task_id = ?1", params![&id])?;
+        tx.execute("DELETE FROM tags WHERE task_id = ?1", params![&id])?;
+        tx.execute("DELETE FROM dependencies WHERE task_id = ?1", params![&id])?;
         tx.execute(
             "DELETE FROM dependencies WHERE depends_on_id = ?1",
-            params![id],
+            params![&id],
         )?;
-        tx.execute("DELETE FROM tasks WHERE id = ?1", params![id])?;
+        tx.execute("DELETE FROM tasks WHERE id = ?1", params![&id])?;
         tx.commit()?;
         Ok(())
     }
@@ -213,7 +223,7 @@ impl Index {
     /// Return IDs of available (claimable) tasks.
     /// If `assignee` is Some, also include tasks already assigned to that person.
     /// If `assignee` is None, only unassigned tasks.
-    pub fn available(&self, assignee: Option<&str>) -> Result<Vec<u64>> {
+    pub fn available(&self, assignee: Option<&str>) -> Result<Vec<TaskId>> {
         let (sql, has_param) = match assignee {
             Some(_) => (
                 "SELECT t.id FROM tasks t
@@ -225,7 +235,7 @@ impl Index {
                      WHERE d.task_id = t.id
                      AND dep.status NOT IN ('done', 'cancelled')
                  )
-                 ORDER BY COALESCE(t.priority, 4), t.id",
+                 ORDER BY COALESCE(t.priority, 4), t.created_at, t.id",
                 true,
             ),
             None => (
@@ -238,22 +248,22 @@ impl Index {
                      WHERE d.task_id = t.id
                      AND dep.status NOT IN ('done', 'cancelled')
                  )
-                 ORDER BY COALESCE(t.priority, 4), t.id",
+                 ORDER BY COALESCE(t.priority, 4), t.created_at, t.id",
                 false,
             ),
         };
         let mut stmt = self.conn.prepare(sql)?;
         let ids = if has_param {
             stmt.query_map(params![assignee.unwrap()], |row| row.get(0))?
-                .collect::<std::result::Result<Vec<u64>, _>>()?
+                .collect::<std::result::Result<Vec<TaskId>, _>>()?
         } else {
             stmt.query_map([], |row| row.get(0))?
-                .collect::<std::result::Result<Vec<u64>, _>>()?
+                .collect::<std::result::Result<Vec<TaskId>, _>>()?
         };
         Ok(ids)
     }
 
-    pub fn blocked(&self) -> Result<Vec<u64>> {
+    pub fn blocked(&self) -> Result<Vec<TaskId>> {
         let mut stmt = self.conn.prepare(
             "SELECT DISTINCT t.id FROM tasks t
              JOIN dependencies d ON d.task_id = t.id
@@ -264,12 +274,13 @@ impl Index {
         )?;
         let ids = stmt
             .query_map([], |row| row.get(0))?
-            .collect::<std::result::Result<Vec<u64>, _>>()?;
+            .collect::<std::result::Result<Vec<TaskId>, _>>()?;
         Ok(ids)
     }
 
     /// Check whether a specific task is blocked by unfinished dependencies.
-    pub fn is_blocked(&self, id: u64) -> Result<bool> {
+    pub fn is_blocked(&self, id: impl Into<TaskId>) -> Result<bool> {
+        let id = id.into();
         let mut stmt = self.conn.prepare(
             "SELECT EXISTS(
                 SELECT 1 FROM dependencies d
@@ -278,42 +289,50 @@ impl Index {
                 AND dep.status NOT IN ('done', 'cancelled')
             )",
         )?;
-        let blocked: bool = stmt.query_row(params![id], |row| row.get(0))?;
+        let blocked: bool = stmt.query_row(params![&id], |row| row.get(0))?;
         Ok(blocked)
     }
 
     /// Return IDs of tasks that depend on the given task.
-    pub fn dependents_of(&self, id: u64) -> Result<Vec<u64>> {
+    pub fn dependents_of(&self, id: impl Into<TaskId>) -> Result<Vec<TaskId>> {
+        let id = id.into();
         let mut stmt = self.conn.prepare(
             "SELECT task_id FROM dependencies WHERE depends_on_id = ?1 ORDER BY task_id",
         )?;
         let ids = stmt
-            .query_map(params![id], |row| row.get(0))?
-            .collect::<std::result::Result<Vec<u64>, _>>()?;
+            .query_map(params![&id], |row| row.get(0))?
+            .collect::<std::result::Result<Vec<TaskId>, _>>()?;
         Ok(ids)
     }
 
-    pub fn children_of(&self, parent_id: u64) -> Result<Vec<u64>> {
+    pub fn children_of(&self, parent_id: impl Into<TaskId>) -> Result<Vec<TaskId>> {
+        let parent_id = parent_id.into();
         let mut stmt = self
             .conn
             .prepare("SELECT id FROM tasks WHERE parent_id = ?1 ORDER BY id")?;
         let ids = stmt
-            .query_map(params![parent_id], |row| row.get(0))?
-            .collect::<std::result::Result<Vec<u64>, _>>()?;
+            .query_map(params![&parent_id], |row| row.get(0))?
+            .collect::<std::result::Result<Vec<TaskId>, _>>()?;
         Ok(ids)
     }
 
-    pub fn roots(&self) -> Result<Vec<u64>> {
+    pub fn roots(&self) -> Result<Vec<TaskId>> {
         let mut stmt = self
             .conn
             .prepare("SELECT id FROM tasks WHERE parent_id IS NULL ORDER BY id")?;
         let ids = stmt
             .query_map([], |row| row.get(0))?
-            .collect::<std::result::Result<Vec<u64>, _>>()?;
+            .collect::<std::result::Result<Vec<TaskId>, _>>()?;
         Ok(ids)
     }
 
-    pub fn would_cycle(&self, task_id: u64, depends_on_id: u64) -> Result<bool> {
+    pub fn would_cycle(
+        &self,
+        task_id: impl Into<TaskId>,
+        depends_on_id: impl Into<TaskId>,
+    ) -> Result<bool> {
+        let task_id = task_id.into();
+        let depends_on_id = depends_on_id.into();
         if task_id == depends_on_id {
             return Ok(true);
         }
@@ -326,12 +345,18 @@ impl Index {
             )
             SELECT EXISTS(SELECT 1 FROM reachable WHERE id = ?2)",
         )?;
-        let exists: bool = stmt.query_row(params![depends_on_id, task_id], |row| row.get(0))?;
+        let exists: bool = stmt.query_row(params![&depends_on_id, &task_id], |row| row.get(0))?;
         Ok(exists)
     }
 
     /// Check if making `child_id` a child of `parent_id` would create a parent-child cycle.
-    pub fn would_parent_cycle(&self, child_id: u64, parent_id: u64) -> Result<bool> {
+    pub fn would_parent_cycle(
+        &self,
+        child_id: impl Into<TaskId>,
+        parent_id: impl Into<TaskId>,
+    ) -> Result<bool> {
+        let child_id = child_id.into();
+        let parent_id = parent_id.into();
         if child_id == parent_id {
             return Ok(true);
         }
@@ -346,7 +371,7 @@ impl Index {
             )
             SELECT EXISTS(SELECT 1 FROM ancestors WHERE id = ?2)",
         )?;
-        let exists: bool = stmt.query_row(params![parent_id, child_id], |row| row.get(0))?;
+        let exists: bool = stmt.query_row(params![&parent_id, &child_id], |row| row.get(0))?;
         Ok(exists)
     }
 
@@ -368,6 +393,33 @@ impl Index {
             params![fingerprint],
         )?;
         Ok(())
+    }
+
+    /// Returns true when task-related ID columns use the expected TEXT schema.
+    pub fn uses_text_task_id_schema(&self) -> Result<bool> {
+        Ok(self.column_type_is_text("tasks", "id")?
+            && self.column_type_is_text("tasks", "parent_id")?
+            && self.column_type_is_text("dependencies", "task_id")?
+            && self.column_type_is_text("dependencies", "depends_on_id")?
+            && self.column_type_is_text("tags", "task_id")?
+            && self.column_type_is_text("skills", "task_id")?
+            && self.column_type_is_text("learning_tasks", "task_id")?)
+    }
+
+    fn column_type_is_text(&self, table: &str, column: &str) -> Result<bool> {
+        let mut stmt = self.conn.prepare(&format!("PRAGMA table_info({table})"))?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+        })?;
+
+        for row in rows {
+            let (name, ty) = row?;
+            if name == column {
+                return Ok(ty.eq_ignore_ascii_case("TEXT"));
+            }
+        }
+
+        Ok(false)
     }
 
     // === Learning index methods ===
@@ -430,9 +482,10 @@ impl Index {
             )?;
         }
         for &task_id in &learning.task_ids {
+            let task_id = TaskId::from(task_id);
             tx.execute(
                 "INSERT OR IGNORE INTO learning_tasks (learning_id, task_id) VALUES (?1, ?2)",
-                params![learning.id, task_id],
+                params![learning.id, &task_id],
             )?;
         }
 
@@ -503,9 +556,10 @@ impl Index {
                 )?;
             }
             for &task_id in &learning.task_ids {
+                let task_id = TaskId::from(task_id);
                 tx.execute(
                     "INSERT OR IGNORE INTO learning_tasks (learning_id, task_id) VALUES (?1, ?2)",
-                    params![learning.id, task_id],
+                    params![learning.id, &task_id],
                 )?;
             }
         }
@@ -543,7 +597,7 @@ impl Index {
             from.push_str(&format!(
                 " JOIN learning_tasks lta ON lta.learning_id = l.id AND lta.task_id = ?{param_idx}"
             ));
-            param_values.push(Box::new(tid));
+            param_values.push(Box::new(TaskId::from(tid)));
             let _ = param_idx; // suppress unused warning
         }
 
@@ -597,12 +651,13 @@ impl Index {
     }
 
     /// Return learning IDs linked to a given task ID.
-    pub fn learnings_for_task(&self, task_id: u64) -> Result<Vec<u64>> {
+    pub fn learnings_for_task(&self, task_id: impl Into<TaskId>) -> Result<Vec<u64>> {
+        let task_id = task_id.into();
         let mut stmt = self.conn.prepare(
             "SELECT learning_id FROM learning_tasks WHERE task_id = ?1 ORDER BY learning_id",
         )?;
         let ids = stmt
-            .query_map(params![task_id], |row| row.get(0))?
+            .query_map(params![&task_id], |row| row.get(0))?
             .collect::<std::result::Result<Vec<u64>, _>>()?;
         Ok(ids)
     }
@@ -661,6 +716,44 @@ mod tests {
         }
     }
 
+    fn tids(ids: &[u64]) -> Vec<TaskId> {
+        ids.iter().copied().map(TaskId::from).collect()
+    }
+
+    fn column_type(idx: &Index, table: &str, column: &str) -> String {
+        let mut stmt = idx
+            .conn()
+            .prepare(&format!("PRAGMA table_info({table})"))
+            .unwrap();
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+            })
+            .unwrap();
+
+        for row in rows {
+            let (name, ty) = row.unwrap();
+            if name == column {
+                return ty;
+            }
+        }
+
+        panic!("column {column} missing from {table}");
+    }
+
+    #[test]
+    fn schema_uses_text_for_task_related_ids() {
+        let idx = Index::open_memory().unwrap();
+
+        assert_eq!(column_type(&idx, "tasks", "id"), "TEXT");
+        assert_eq!(column_type(&idx, "tasks", "parent_id"), "TEXT");
+        assert_eq!(column_type(&idx, "dependencies", "task_id"), "TEXT");
+        assert_eq!(column_type(&idx, "dependencies", "depends_on_id"), "TEXT");
+        assert_eq!(column_type(&idx, "tags", "task_id"), "TEXT");
+        assert_eq!(column_type(&idx, "skills", "task_id"), "TEXT");
+        assert_eq!(column_type(&idx, "learning_tasks", "task_id"), "TEXT");
+    }
+
     #[test]
     fn rebuild_and_query_available() {
         let idx = Index::open_memory().unwrap();
@@ -670,8 +763,8 @@ mod tests {
             make_task(3, Status::Pending, vec![], None),
         ];
         idx.rebuild(&tasks).unwrap();
-        assert_eq!(idx.available(None).unwrap(), vec![1, 3]);
-        assert_eq!(idx.blocked().unwrap(), vec![2]);
+        assert_eq!(idx.available(None).unwrap(), tids(&[1, 3]));
+        assert_eq!(idx.blocked().unwrap(), tids(&[2]));
     }
 
     #[test]
@@ -682,10 +775,10 @@ mod tests {
             make_task(2, Status::Pending, vec![1], None),
         ];
         idx.rebuild(&tasks).unwrap();
-        assert_eq!(idx.available(None).unwrap(), vec![1]);
+        assert_eq!(idx.available(None).unwrap(), tids(&[1]));
         tasks[0].status = Status::Done;
         idx.upsert(&tasks[0]).unwrap();
-        assert_eq!(idx.available(None).unwrap(), vec![2]);
+        assert_eq!(idx.available(None).unwrap(), tids(&[2]));
     }
 
     #[test]
@@ -704,6 +797,28 @@ mod tests {
     }
 
     #[test]
+    fn cycle_detection_with_text_task_ids() {
+        let idx = Index::open_memory().unwrap();
+        let id_a = 0xaaaa_aaaa_aaaa_aaa1_u64;
+        let id_b = 0xbbbb_bbbb_bbbb_bbb2_u64;
+        let id_c = 0xcccc_cccc_cccc_ccc3_u64;
+        let tasks = vec![
+            make_task(id_a, Status::Pending, vec![], None),
+            make_task(id_b, Status::Pending, vec![id_a], None),
+            make_task(id_c, Status::Pending, vec![id_b], None),
+        ];
+        idx.rebuild(&tasks).unwrap();
+
+        let a: TaskId = "aaaaaaaaaaaaaaa1".parse().unwrap();
+        let c: TaskId = "ccccccccccccccc3".parse().unwrap();
+
+        // c -> b -> a. If a depends on c, that's a cycle.
+        assert!(idx.would_cycle(a.clone(), c.clone()).unwrap());
+        // c depending on a is not a cycle (a doesn't transitively depend on c)
+        assert!(!idx.would_cycle(c, a).unwrap());
+    }
+
+    #[test]
     fn children_and_roots() {
         let idx = Index::open_memory().unwrap();
         let tasks = vec![
@@ -713,9 +828,9 @@ mod tests {
             make_task(4, Status::Pending, vec![], None),
         ];
         idx.rebuild(&tasks).unwrap();
-        assert_eq!(idx.roots().unwrap(), vec![1, 4]);
-        assert_eq!(idx.children_of(1).unwrap(), vec![2, 3]);
-        assert_eq!(idx.children_of(4).unwrap(), Vec::<u64>::new());
+        assert_eq!(idx.roots().unwrap(), tids(&[1, 4]));
+        assert_eq!(idx.children_of(1).unwrap(), tids(&[2, 3]));
+        assert_eq!(idx.children_of(4).unwrap(), Vec::<TaskId>::new());
     }
 
     #[test]
@@ -731,8 +846,8 @@ mod tests {
         ];
         idx.rebuild(&tasks).unwrap();
         // Task 1 is blocked by task 3; tasks 2 and 3 are available
-        assert_eq!(idx.available(None).unwrap(), vec![2, 3]);
-        assert_eq!(idx.blocked().unwrap(), vec![1]);
+        assert_eq!(idx.available(None).unwrap(), tids(&[2, 3]));
+        assert_eq!(idx.blocked().unwrap(), tids(&[1]));
     }
 
     #[test]
@@ -746,8 +861,8 @@ mod tests {
             make_task(3, Status::Pending, vec![], None),
         ];
         idx.rebuild(&tasks).unwrap();
-        assert_eq!(idx.children_of(3).unwrap(), vec![1]);
-        assert_eq!(idx.roots().unwrap(), vec![2, 3]);
+        assert_eq!(idx.children_of(3).unwrap(), tids(&[1]));
+        assert_eq!(idx.roots().unwrap(), tids(&[2, 3]));
     }
 
     #[test]
@@ -786,7 +901,7 @@ mod tests {
         // First open builds index
         let repo = Repo::open(dir.path()).unwrap();
         let avail = repo.index.available(None).unwrap();
-        assert_eq!(avail, vec![1, 2]);
+        assert_eq!(avail, tids(&[1, 2]));
         drop(repo);
 
         // Simulate external change: delete task 2's file
@@ -795,7 +910,7 @@ mod tests {
         // Re-open should detect staleness and rebuild
         let repo = Repo::open(dir.path()).unwrap();
         let avail = repo.index.available(None).unwrap();
-        assert_eq!(avail, vec![1]); // task 2 is gone
+        assert_eq!(avail, tids(&[1])); // task 2 is gone
     }
 
     #[test]
@@ -821,7 +936,7 @@ mod tests {
 
         let repo = Repo::open(dir.path()).unwrap();
         let avail = repo.index.available(None).unwrap();
-        assert_eq!(avail, vec![1]);
+        assert_eq!(avail, tids(&[1]));
         drop(repo);
 
         // Simulate external edit: change status directly in JSON
@@ -885,7 +1000,7 @@ mod tests {
             },
         ];
         idx.rebuild(&tasks).unwrap();
-        assert_eq!(idx.available(None).unwrap(), vec![1]);
+        assert_eq!(idx.available(None).unwrap(), tids(&[1]));
     }
 
     #[test]
@@ -927,8 +1042,8 @@ mod tests {
             make_task(4, Status::Pending, vec![2], None),
         ];
         idx.rebuild(&tasks).unwrap();
-        assert_eq!(idx.dependents_of(1).unwrap(), vec![2, 3]);
-        assert_eq!(idx.dependents_of(2).unwrap(), vec![4]);
+        assert_eq!(idx.dependents_of(1).unwrap(), tids(&[2, 3]));
+        assert_eq!(idx.dependents_of(2).unwrap(), tids(&[4]));
         assert!(idx.dependents_of(4).unwrap().is_empty());
     }
 
@@ -950,26 +1065,68 @@ mod tests {
     }
 
     #[test]
-    fn available_ordered_by_priority_then_id() {
+    fn would_parent_cycle_detection_with_text_task_ids() {
+        let idx = Index::open_memory().unwrap();
+        let id_a = 0xdddd_dddd_dddd_ddd4_u64;
+        let id_b = 0xeeee_eeee_eeee_eee5_u64;
+        let id_c = 0xffff_ffff_ffff_fff6_u64;
+        let tasks = vec![
+            make_task(id_a, Status::Pending, vec![], None),
+            make_task(id_b, Status::Pending, vec![], Some(id_a)),
+            make_task(id_c, Status::Pending, vec![], Some(id_b)),
+        ];
+        idx.rebuild(&tasks).unwrap();
+
+        let a: TaskId = "ddddddddddddddd4".parse().unwrap();
+        let c: TaskId = "fffffffffffffff6".parse().unwrap();
+
+        // Reparenting a under c would create a -> c -> b -> a
+        assert!(idx.would_parent_cycle(a.clone(), c.clone()).unwrap());
+        // Self-parenting is a cycle
+        assert!(idx.would_parent_cycle(a.clone(), a.clone()).unwrap());
+        // Reparenting c under a is fine
+        assert!(!idx.would_parent_cycle(c, a).unwrap());
+    }
+
+    #[test]
+    fn available_ordered_by_priority_then_created_at_then_id() {
         use crate::model::Priority;
 
         let idx = Index::open_memory().unwrap();
+        let base = Utc::now();
 
         let mut t1 = make_task(1, Status::Pending, vec![], None);
         t1.planning.priority = Some(Priority::Low);
+        t1.created_at = base + chrono::Duration::seconds(20);
+        t1.updated_at = t1.created_at;
 
         let mut t2 = make_task(2, Status::Pending, vec![], None);
         t2.planning.priority = Some(Priority::Critical);
+        t2.created_at = base + chrono::Duration::seconds(30);
+        t2.updated_at = t2.created_at;
 
-        let t3 = make_task(3, Status::Pending, vec![], None);
-        // No priority — should sort last
+        let mut t3 = make_task(3, Status::Pending, vec![], None);
+        t3.created_at = base + chrono::Duration::seconds(10);
+        t3.updated_at = t3.created_at;
 
         let mut t4 = make_task(4, Status::Pending, vec![], None);
         t4.planning.priority = Some(Priority::High);
+        t4.created_at = base + chrono::Duration::seconds(40);
+        t4.updated_at = t4.created_at;
 
-        idx.rebuild(&[t1, t2, t3, t4]).unwrap();
+        let mut t5 = make_task(5, Status::Pending, vec![], None);
+        t5.created_at = base + chrono::Duration::seconds(10);
+        t5.updated_at = t5.created_at;
+
+        let mut t6 = make_task(6, Status::Pending, vec![], None);
+        t6.planning.priority = Some(Priority::Critical);
+        t6.created_at = base + chrono::Duration::seconds(5);
+        t6.updated_at = t6.created_at;
+
+        idx.rebuild(&[t1, t2, t3, t4, t5, t6]).unwrap();
         let avail = idx.available(None).unwrap();
-        // Expected order: critical(2), high(4), low(1), none(3)
-        assert_eq!(avail, vec![2, 4, 1, 3]);
+        // Expected order: critical by created_at (6,2), high (4), low (1),
+        // then unprioritized by created_at then id lexical fallback (3,5).
+        assert_eq!(avail, tids(&[6, 2, 4, 1, 3, 5]));
     }
 }

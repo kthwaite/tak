@@ -14,6 +14,15 @@ pub enum TakError {
     #[error("task {0} not found")]
     TaskNotFound(u64),
 
+    #[error("invalid task id '{0}': {1}")]
+    InvalidTaskId(String, String),
+
+    #[error("task id '{0}' not found")]
+    TaskIdNotFound(String),
+
+    #[error("task id '{0}' is ambiguous; matches: {1}")]
+    TaskIdAmbiguous(String, String),
+
     #[error("learning {0} not found")]
     LearningNotFound(u64),
 
@@ -84,6 +93,9 @@ impl TakError {
             Self::AlreadyInitialized => "already_initialized",
             Self::NotGitRepository => "not_git_repository",
             Self::TaskNotFound(_) => "task_not_found",
+            Self::InvalidTaskId(_, _) => "invalid_task_id",
+            Self::TaskIdNotFound(_) => "task_id_not_found",
+            Self::TaskIdAmbiguous(_, _) => "task_id_ambiguous",
             Self::LearningNotFound(_) => "learning_not_found",
             Self::CycleDetected(_) => "cycle_detected",
             Self::InvalidTransition(_, _) => "invalid_transition",

@@ -18,14 +18,16 @@ pub fn run(repo_root: &Path, id: u64, force: bool, format: Format) -> Result<()>
     }
 
     // --force: cascade — orphan children, remove incoming deps
-    for &child_id in &children {
+    for child_id in &children {
+        let child_id: u64 = child_id.into();
         let mut child = repo.store.read(child_id)?;
         child.parent = None;
         child.updated_at = Utc::now();
         repo.store.write(&child)?;
         repo.index.upsert(&child)?;
     }
-    for &dep_id in &dependents {
+    for dep_id in &dependents {
+        let dep_id: u64 = dep_id.into();
         let mut dep_task = repo.store.read(dep_id)?;
         dep_task.depends_on.retain(|d| d.id != id);
         dep_task.updated_at = Utc::now();
