@@ -374,9 +374,11 @@ impl MeshStore {
     ) -> crate::error::Result<Message> {
         Self::validate_name(from)?;
         Self::validate_name(to)?;
-        // Verify recipient exists
-        let to_path = self.registration_path(to);
-        if !to_path.exists() {
+        // Hold registry lock to serialize against concurrent leave, preventing
+        // send from writing to an inbox that leave is about to delete (which
+        // would create an orphaned inbox directory for a non-existent agent)
+        let _reg_lock = lock::acquire_lock(&self.registry_lock_path())?;
+        if !self.registration_path(to).exists() {
             return Err(crate::error::TakError::MeshAgentNotFound(to.into()));
         }
 
@@ -555,10 +557,16 @@ impl MeshStore {
             // Release all
             reservations.retain(|r| r.agent != agent);
         } else {
-            // Remove specific paths from the agent's reservation
+            // Remove specific paths from the agent's reservation.
+            // Compare without trailing slash so src/store/ and src/store
+            // are treated as equivalent, matching paths_conflict semantics.
             for res in &mut reservations {
                 if res.agent == agent {
-                    res.paths.retain(|p| !paths.contains(p));
+                    res.paths.retain(|p| {
+                        !paths
+                            .iter()
+                            .any(|rp| p.trim_end_matches('/') == rp.trim_end_matches('/'))
+                    });
                 }
             }
             // Remove empty reservations
@@ -1111,6 +1119,19 @@ mod tests {
         store.release("A", vec!["./src/a.rs".into()]).unwrap();
         let all = store.list_reservations().unwrap();
         assert_eq!(all[0].paths, vec!["src/b.rs"]);
+    }
+
+    #[test]
+    fn release_trailing_slash_equivalence() {
+        let (_dir, store) = setup_mesh();
+        store.join("A", None).unwrap();
+        store
+            .reserve("A", vec!["src/store/".into()], None)
+            .unwrap();
+        // Release without trailing slash — should still match
+        store.release("A", vec!["src/store".into()]).unwrap();
+        let all = store.list_reservations().unwrap();
+        assert!(all.is_empty());
     }
 
     // -- Fix 1: reserve/release require registered agent --------------------
