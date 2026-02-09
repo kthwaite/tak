@@ -1,336 +1,196 @@
 ---
 name: tak-task-management
-description: Use when managing tasks, tracking work items, querying task status, or coordinating work in a git repository that uses tak for task management. Activates when the user mentions tasks, issues, bugs, or work tracking, or when a .tak/ directory exists in the repository.
+description: Use when managing tasks, querying task status, updating lifecycle, coordinating via mesh/blackboard, or recording learnings in repositories that use tak.
 allowed-tools: "Read,Bash(tak:*)"
 ---
 
 # Tak Task Management
 
-You have access to `tak`, a git-native task manager CLI. Tasks are stored as JSON files in `.tak/tasks/` and indexed in SQLite for fast queries. Use `tak` to create, query, update, and track tasks.
+You have access to `tak`, a git-native task manager CLI. Tasks are stored as JSON files in `.tak/tasks/`, indexed in SQLite for fast querying, and coordinated through mesh + blackboard runtime state.
 
-## Critical Rule: Use the CLI, never manual file edits
+## Critical rule: use CLI commands, never manual `.tak/*` edits
 
-When managing tak tasks, **always** use `tak` commands.
+For task/learning/context/history/coordination changes:
 
-- Do **not** manually append or edit files in `.tak/tasks/`, `.tak/learnings/`, `.tak/context/`, `.tak/history/`, or `.tak/*.json`.
-- Do **not** hand-edit `.tak/counter.json` or `.tak/index.db`.
-- For creating or updating issues/tasks, use `tak create`, `tak edit`, `tak delete`, `tak depend`, etc.
-- If task files were edited manually and state looks wrong, run `tak reindex` and then fix data using CLI commands.
+- ✅ Use `tak` commands (`create`, `edit`, `start`, `finish`, `blackboard post`, etc.)
+- ❌ Do **not** hand-edit `.tak/tasks/*.json`, `.tak/learnings/*.json`, `.tak/context/*`, `.tak/history/*`, `.tak/runtime/*`, `.tak/counter.json`, or `.tak/index.db`
 
-## tak vs TodoWrite
-
-| Use tak | Use TodoWrite |
-|---|---|
-| Project tasks/issues that must persist across sessions | Ephemeral checklist for this one conversation |
-| Work with dependencies, blockers, assignees, history | Quick local execution steps |
-| Anything teammates/other agents need to see | Personal scratch tracking |
-
-**Decision test:** if it should exist as a real task/issue in the repo, use `tak` (not TodoWrite).
-
-## Default behavior for task/issue requests
-
-When the user asks to create, update, prioritize, block, or close an issue/task:
-
-1. Use the `tak` CLI command that represents that action
-2. Show the resulting task ID/status from CLI output
-3. Never mutate `.tak/*` files directly
-
-If `.tak/` is missing, initialize first with `tak init` (or ask before doing so).
-
-## Session protocol (task-aware default)
-
-When `tak` is available in a repository:
-
-1. `tak list --available` (or `tak next`) to establish current ready work
-2. Use `tak show <id>` before making task decisions
-3. Use lifecycle commands (`start`, `claim`, `handoff`, `finish`, `cancel`, `reopen`) instead of editing status fields manually
-4. After `git pull`/merge/branch switch, run `tak reindex`
-
-## Quick Reference
-
-All commands output JSON by default. Add `--pretty` for human-readable output.
-
-### Creating tasks
+If repo state looks stale after branch changes, run:
 
 ```bash
-# Create a simple task
-tak create "Fix login bug" --kind bug
-
-# Create with description and tags
-tak create "Add OAuth support" --kind task -d "Implement Google OAuth2 flow" --tag auth,backend
-
-# Create a child task under a parent
-tak create "Write unit tests" --parent 3
-
-# Create with dependencies
-tak create "Deploy to staging" --depends-on 4,5
-
-# Create with contract (executable spec)
-tak create "Refactor auth module" --objective "Consolidate auth into single module" \
-  --verify "cargo test" --verify "cargo clippy" \
-  --constraint "No unsafe code" --constraint "Backwards compatible" \
-  --criterion "All auth logic in src/auth/" --criterion "No public API changes"
-
-# Create with planning fields
-tak create "Fix auth bug" --kind bug --priority critical --estimate s --risk high
-
-# Create with required skills
-tak create "ML pipeline" --skill python --skill pytorch --estimate xl
-```
-
-### Viewing tasks
-
-```bash
-# Show a specific task
-tak show 1
-
-# List all tasks
-tak list
-
-# List only available (unblocked, unassigned, pending) tasks
-tak list --available
-
-# List blocked tasks
-tak list --blocked
-
-# Filter by status, kind, tag, or assignee
-tak list --status pending
-tak list --kind bug
-tak list --tag backend
-tak list --assignee agent-1
-tak list --priority critical
-
-# Show children of a task
-tak list --children-of 1
-
-# Show the task tree
-tak tree
-tak tree 1          # tree rooted at task 1
-tak tree --pretty   # with box-drawing characters
-```
-
-### Updating tasks
-
-```bash
-# Edit fields
-tak edit 1 --title "New title" -d "Updated description" --kind epic --tag new-tag
-
-# Edit contract fields
-tak edit 1 --objective "New objective" --verify "cargo test" --constraint "No panics"
-tak edit 1 --objective ""   # Clear objective
-
-# Edit planning fields
-tak edit 1 --priority high --estimate m --risk low
-tak edit 1 --skill rust --skill sql
-
-# Set pull request URL
-tak edit 1 --pr "https://github.com/org/repo/pull/42"
-tak edit 1 --pr ""   # Clear PR
-
-# Claim the next available task (atomic find+start, preferred for multi-agent)
-tak claim --assignee agent-1
-
-# Start a specific task
-tak start 3 --assignee agent-1
-
-# Mark as done
-tak finish 3
-
-# Cancel a task
-tak cancel 5
-
-# Cancel with a reason (stored as execution.last_error)
-tak cancel 5 --reason "approach was wrong, needs redesign"
-
-# Hand off an in-progress task to another agent
-tak handoff 3 --summary "Auth flow works, still need error handling for expired tokens"
-
-# Reopen a done or cancelled task
-tak reopen 3
-
-# Clear assignee without changing status
-tak unassign 3
-```
-
-### Deleting tasks
-
-```bash
-# Delete a leaf task (no children or dependents)
-tak delete 5
-
-# Force-delete a task with children/dependents (orphans children, removes deps)
-tak delete 1 --force
-```
-
-### Managing dependencies
-
-```bash
-# Add dependency: task 4 depends on tasks 2 and 3
-tak depend 4 --on 2,3
-
-# Remove a dependency
-tak undepend 4 --on 2
-
-# Change parent
-tak reparent 5 --to 1
-
-# Remove parent (make root-level)
-tak orphan 5
-```
-
-### Context notes and history
-
-```bash
-# Set context notes for a task (free-form markdown)
-tak context 1 --set "This task requires careful migration of the auth tokens table."
-
-# Read context notes
-tak context 1
-
-# Clear context notes
-tak context 1 --clear
-
-# View task history log (auto-populated by lifecycle commands)
-tak log 1
-
-# Run verification commands from task contract
-tak verify 1
-tak verify 1 --pretty   # PASS/FAIL with stderr details
-```
-
-### Finding work
-
-```bash
-# Claim the next available task atomically
-tak claim --assignee <your-name>
-
-# Preview the next available task (without claiming)
-tak next
-
-# Rebuild the index (after git pull, merge, etc.)
 tak reindex
 ```
 
-## Task Contract
+## `tak` vs TodoWrite
 
-Tasks can carry an executable spec via the `contract` field:
+| Use tak | Use TodoWrite |
+|---|---|
+| Persistent project work items shared across agents | Ephemeral one-conversation checklist |
+| Dependencies, lifecycle state, assignees, history | Personal scratch execution steps |
+| Anything teammates/agents should see later | Temporary note-taking |
 
-- **objective** — One-sentence outcome definition (`--objective`)
-- **acceptance_criteria** — Checklist of what "done" means (`--criterion`, repeatable)
-- **verification** — Commands to verify completion (`--verify`, repeatable)
-- **constraints** — Rules the implementer must follow (`--constraint`, repeatable)
+## Session default in tak repos
 
-Contract fields are optional. Empty contracts are omitted from JSON output. In pretty output, verification commands are prefixed with `$` to distinguish them from prose.
+1. Check ready work: `tak list --available` (or `tak next`)
+2. Inspect: `tak show <id>`
+3. Transition with lifecycle commands (`claim/start/handoff/finish/cancel/reopen`)
+4. Coordinate with mesh + blackboard when other agents are active
+5. Reindex after pull/merge/switch: `tak reindex`
 
-Use `tak verify ID` to run verification commands and check pass/fail status.
+> If the user asks for `/tak work` behavior, use the **tak-task-execution** skill flow.
 
-## Git Provenance
+## Quick reference
 
-Tasks automatically track git context through their lifecycle:
+All commands output JSON by default. Add `--pretty` for readable output.
 
-- **branch** — Branch name at `tak start` time (auto-captured)
-- **start_commit** — HEAD SHA when `tak start` is first run (auto-captured)
-- **end_commit** — HEAD SHA when `tak finish` is run (auto-captured)
-- **commits** — One-line summaries of commits between start and finish (auto-captured)
-- **pr** — Pull request URL (set manually via `tak edit --pr`)
-
-Git info is captured automatically by `start` and `finish` when the repo is inside a git repository. It degrades gracefully when git is not available. The `--pr` flag on `edit` allows associating a pull request URL after the fact.
-
-## Task Planning
-
-Tasks can carry planning metadata via the `planning` field:
-
-- **priority** — `critical`, `high`, `medium`, `low` (`--priority`)
-- **estimate** — T-shirt size: `xs`, `s`, `m`, `l`, `xl` (`--estimate`)
-- **risk** — `low`, `medium`, `high` (`--risk`)
-- **required_skills** — Advisory skill tags (`--skill`, repeatable)
-
-Planning fields are optional. Empty planning is omitted from JSON output. Available tasks (`tak list --available`, `tak claim`, `tak next`) are ordered by priority: critical first, unprioritized last. Tasks with the same priority are ordered by ID.
-
-## Task Kinds
-
-- **epic**: A large initiative decomposed into child tasks
-- **task**: A unit of work
-- **bug**: A defect to fix
-
-## Task Statuses
-
-- **pending**: Not started
-- **in_progress**: Being worked on (set via `tak start` or `tak claim`)
-- **done**: Completed (set via `tak finish`)
-- **cancelled**: Won't do (set via `tak cancel`)
-
-A task is **blocked** (derived, not stored) when any of its dependencies are not done or cancelled. A task is **available** when it is pending, unblocked, and unassigned.
-
-## Execution Metadata
-
-Tasks track runtime execution state via the `execution` field:
-
-- **attempt_count** — Incremented each time `tak start` or `tak claim` is called; tracks retry attempts
-- **last_error** — Set by `tak cancel --reason`; records why the task was cancelled
-- **handoff_summary** — Set by `tak handoff --summary`; records progress for the next agent
-- **blocked_reason** — Human-supplied context for why a task is blocked (distinct from derived blocked status)
-
-Execution fields are optional. Empty execution is omitted from JSON output. In pretty output, execution metadata is shown when non-empty (attempts, last error, handoff summary, blocked reason).
-
-## Sidecar Files
-
-Each task can have associated sidecar files stored alongside the task JSON:
-
-- **Context notes** (`.tak/context/{id}.md`) — Free-form markdown notes, instructions, or context for a task. Set via `tak context ID --set TEXT`, read via `tak context ID`, clear via `tak context ID --clear`.
-- **History log** (`.tak/history/{id}.log`) — Append-only timestamped event log, auto-populated by lifecycle commands (`start`, `finish`, `cancel`, `handoff`, `reopen`, `unassign`, `claim`). View via `tak log ID`.
-
-Sidecar files are committed to git alongside task files. They are automatically cleaned up when a task is deleted.
-
-## Verification
-
-Run `tak verify ID` to execute the verification commands from a task's contract. Each command runs via `sh -c` from the repo root. The command exits 0 if all verifications pass, 1 if any fail.
+### Create tasks
 
 ```bash
-# JSON output with per-command results
-tak verify 1
-
-# Pretty output with PASS/FAIL markers
-tak verify 1 --pretty
+tak create "Fix login bug" --kind bug
+tak create "Implement OAuth" --kind feature -d "Google OAuth2 flow" --tag auth,backend
+tak create "Write unit tests" --parent 3
+tak create "Deploy staging" --depends-on 4,5
 ```
 
-## JSON Output Parsing
-
-All commands output single-line JSON by default. Parse with standard JSON tools:
+With contract + planning fields:
 
 ```bash
-# Get the ID of the next available task
-tak next | jq '.id'
-
-# List available task IDs
-tak list --available | jq '.[].id'
-
-# Check if a task is blocked (has unfinished deps)
-tak list --blocked | jq '.[].id'
-
-# Read context notes
-tak context 1 | jq '.context'
-
-# Check verification results
-tak verify 1 | jq '.all_passed'
+tak create "Refactor auth module" \
+  --objective "Consolidate auth logic" \
+  --verify "cargo test" --verify "cargo clippy" \
+  --constraint "No unsafe code" \
+  --criterion "No public API changes" \
+  --priority high --estimate m --risk medium --skill rust
 ```
 
-## Workflow
+### Query tasks
 
-1. Check for available work: `tak list --available`
-2. Claim a task: `tak claim --assignee <your-name>`
-3. Read context: `tak context <id>` (if set)
-4. Do the work
-5. Verify: `tak verify <id>` (if contract has verification commands)
-6. Mark complete: `tak finish <id>`
-7. Check what's unblocked: `tak list --available`
-8. Repeat
+```bash
+tak show 12
+tak list
+tak list --available
+tak list --blocked
+tak list --status in_progress
+tak list --kind feature
+tak list --tag backend
+tak list --assignee agent-1
+tak list --priority critical
+tak list --children-of 5
+tak tree
+tak tree 5 --pretty
+```
 
-## Important Notes
+### Update tasks
 
-- Never manually edit or append `.tak/*` data files for task changes; always use the `tak` CLI
-- Always run `tak reindex` after pulling changes or switching branches
-- The `.tak/tasks/`, `.tak/context/`, and `.tak/history/` directories should be committed to git
-- The `.tak/index.db` file is gitignored (rebuilt on demand)
-- Use `tak claim` instead of `tak next` + `tak start` to avoid TOCTOU races in multi-agent setups
-- History logging is best-effort — it never fails a lifecycle command
+```bash
+tak edit 12 --title "New title" -d "Updated description" --kind task --tag auth,api
+tak edit 12 --objective "Updated objective" --verify "cargo test"
+tak edit 12 --priority critical --estimate s --risk high --skill rust --skill sql
+tak edit 12 --pr "https://github.com/org/repo/pull/42"
+```
+
+Lifecycle:
+
+```bash
+tak claim --assignee agent-1
+tak start 12 --assignee agent-1
+tak handoff 12 --summary "Implemented parser; blocked on schema migration"
+tak finish 12
+tak cancel 12 --reason "Superseded by new approach"
+tak reopen 12
+tak unassign 12
+```
+
+### Dependencies and hierarchy
+
+```bash
+tak depend 12 --on 3,4 --dep-type hard --reason "Needs schema + API"
+tak undepend 12 --on 3
+tak reparent 12 --to 2
+tak orphan 12
+```
+
+### Context, history, verification
+
+```bash
+tak context 12 --set "Careful: migration must be backwards-compatible"
+tak context 12
+tak context 12 --clear
+tak log 12
+tak verify 12
+```
+
+### Learnings
+
+```bash
+tak learn add "Avoid N+1 query" --category pattern -d "Batch preload relationships" --tag db,perf --task 12
+tak learn list --tag perf
+tak learn suggest 12
+```
+
+### Mesh coordination
+
+```bash
+tak mesh join --name agent-1
+tak mesh list
+tak mesh inbox --name agent-1 --ack
+tak mesh send --from agent-1 --to agent-2 --message "Can you release src/store?"
+tak mesh reserve --name agent-1 --path src/store --reason task-12
+tak mesh release --name agent-1 --path src/store
+```
+
+### Blackboard coordination
+
+```bash
+tak blackboard post --from agent-1 --message "Blocked by migration lock" --task 12 --tag blocker,db
+tak blackboard list --status open --task 12
+tak blackboard show 7
+tak blackboard close 7 --by agent-2 --reason "Lock released"
+tak blackboard reopen 7 --by agent-1
+```
+
+### Workflow therapist
+
+```bash
+tak therapist offline --by agent-1 --limit 200
+tak therapist online --by agent-1
+tak therapist log --limit 20
+```
+
+## Data model quick notes
+
+### Task kinds
+
+- `epic` — large initiative with children
+- `feature` — user-facing capability or architectural slice
+- `task` — standard work unit
+- `bug` — defect fix
+
+### Statuses
+
+- `pending`
+- `in_progress`
+- `done`
+- `cancelled`
+
+Blocked state is derived from dependencies (not persisted as status).
+
+### Sidecar/runtime files (managed by CLI)
+
+- `.tak/context/{id}.md` — free-form task context notes
+- `.tak/history/{id}.jsonl` — lifecycle event history
+- `.tak/verification_results/{id}.json` — verification output
+- `.tak/artifacts/{id}/` — task artifacts
+- `.tak/runtime/mesh/*` — mesh state (registry/inbox/reservations/feed)
+- `.tak/runtime/blackboard/*` — blackboard notes + counter
+- `.tak/therapist/log.jsonl` — append-only therapist observations
+
+## Practical workflow
+
+1. `tak list --available`
+2. `tak claim --assignee <name>`
+3. `tak show <id>` + `tak context <id>`
+4. Reserve touched paths before major edits
+5. Execute + verify (`tak verify <id>` when contract has verification)
+6. `tak finish <id>` (or `tak handoff` / `tak cancel` with reasons)
+7. Re-check unblocked work: `tak list --available`

@@ -1,136 +1,171 @@
 ---
 name: tak-task-execution
-description: Use when an agent needs to find, claim, execute, and complete tasks from a tak task list. Activates when working through a backlog of tasks, when coordinating with other agents, or when the user says "work on the next task", "what should I do next", or "pick up a task".
+description: 'Use when an agent needs to find, claim, execute, and complete tasks from a tak task list, including when the user asks for "/tak work", "/tak work status", or "/tak work stop" behavior.'
+allowed-tools: "Read,Bash(tak:*)"
 ---
 
 # Task Execution with Tak
 
-Systematic workflow for agents to find available work, claim it, execute it, and report completion. Designed for both single-agent and multi-agent scenarios.
+Systematic workflow for agents to find available work, claim it, execute it, and report completion in tak-managed repositories.
 
-**Critical:** update task state via `tak` commands only (`claim`, `start`, `edit`, `finish`, etc.). Never manually edit or append `.tak/tasks/*.json` (or other `.tak/*` data files).
+**Critical:** update task state via `tak` commands only (`claim`, `start`, `handoff`, `finish`, `cancel`, etc.). Never manually edit `.tak/*` data files.
 
-## Single-Agent Workflow
+## Claude `/tak work` loop (pi-parity mode)
 
-### 1. Claim available work
+Claude Code does not provide the same extension runtime hooks/guards as pi. Emulate the same workflow behavior conversationally.
 
-```bash
-tak claim --assignee <your-name>
+When the user requests `/tak work`, interpret it as:
+
+```text
+/tak work [tag:<tag>] [limit:<n>] [verify:isolated|local]
 ```
 
-This atomically finds the next available task (pending, unblocked, unassigned), sets it to `in_progress`, and assigns it to you. If no task is available, it returns an error.
+Support these control variants:
 
-For previewing work without claiming:
-```bash
-tak next                # preview the next available task
-tak list --available    # all available tasks
-tak tree --pretty       # full picture of what's left
+```text
+/tak work status
+/tak work stop
 ```
 
-### 2. Understand the task
+### Loop algorithm
 
-Read the task details:
-```bash
-tak show <id>
-```
+1. **Ensure agent identity**
+   - If needed, join mesh and capture identity:
+     ```bash
+     tak mesh join --format minimal
+     ```
+   - Reuse that name for `claim`, `start`, reservation, and coordination commands.
 
-Check if the task has a description with acceptance criteria. If not, check the parent task for context:
-```bash
-tak show <parent-id>
-```
+2. **Attach or claim**
+   - First check if you already own in-progress work:
+     ```bash
+     tak list --status in_progress --assignee <agent>
+     ```
+   - If none, claim atomically:
+     ```bash
+     tak claim --assignee <agent>
+     tak claim --assignee <agent> --tag <tag>   # when tag filter requested
+     ```
 
-### 3. Execute the work
+3. **Load execution context**
+   ```bash
+   tak show <id>
+   tak context <id>
+   tak blackboard list --status open --task <id>
+   ```
 
-Do whatever the task requires — write code, fix bugs, create files, run tests.
+4. **Coordinate before major edits**
+   ```bash
+   tak mesh reserve --name <agent> --path <path> --reason task-<id>
+   ```
 
-### 4. Track discovered work immediately
+5. **Run the task to completion or handoff**
+   - Done:
+     ```bash
+     tak finish <id>
+     ```
+   - Blocked but resumable:
+     ```bash
+     tak handoff <id> --summary "<what is done, what is blocked, and exact next step>"
+     tak blackboard post --from <agent> --message "<blocker + unblock request>" --task <id> --tag blocker,coordination
+     ```
+   - Abandon/cancel:
+     ```bash
+     tak cancel <id> --reason "<why>"
+     ```
 
-If you discover a bug, follow-up, or side quest while executing:
+6. **Release reservations when leaving the task**
+   ```bash
+   tak mesh release --name <agent> --all
+   ```
 
-```bash
-# Create a new task/bug issue
-# (use --kind bug when appropriate)
-tak create "<title>" --kind task -d "<context discovered during execution>"
+7. **Continue loop until stop/limit/no work**
+   - If a `limit:<n>` was requested, stop after `n` completed/handed-off/cancelled tasks.
+   - Otherwise auto-claim next available task and repeat.
 
-# Link the current task to the discovered work when there is a scheduling dependency
-# (example: current task depends on discovered prerequisite)
-tak depend <current-id> --on <new-id>
-```
+### `/tak work status`
 
-Capture discovered work in `tak` right away; do not leave it only in narrative text or TodoWrite.
-
-### 5. Mark completion
-
-```bash
-tak finish <id>
-```
-
-### 6. Check for newly unblocked work
+Report:
 
 ```bash
 tak list --available
-```
-
-Finishing a task may unblock dependent tasks. Check what's now available and continue.
-
-### 7. Repeat
-
-Go back to step 1.
-
-## Multi-Agent Workflow
-
-When multiple agents work from the same task list:
-
-### Use `claim` for atomic task acquisition
-
-Always use `tak claim` instead of `tak next` + `tak start`:
-
-```bash
-tak claim --assignee agent-1
-```
-
-`tak claim` holds an exclusive file lock while finding and starting the task, preventing two agents from claiming the same work. The `tak next` + `tak start` pattern has a TOCTOU race — another agent can claim the task between the two commands.
-
-### After pulling changes
-
-If another agent has committed task state changes:
-
-```bash
-git pull
-tak reindex
-tak list --available
-```
-
-### Handling blocked work
-
-If all available tasks are claimed by other agents, wait or look for other ways to help:
-
-```bash
-# See what's in progress
-tak list --status in_progress
-
-# See what's blocked and why
 tak list --blocked
+tak list --status in_progress --assignee <agent>
+tak blackboard list --status open --limit 10
 ```
 
-## Status Transitions
+Include whether a loop is active, current task (if any), and remaining limit (if set).
+
+### `/tak work stop`
+
+Stop the loop intent and clean up:
+
+```bash
+tak mesh release --name <agent> --all
+```
+
+If there is an in-progress task, leave it in a truthful lifecycle state (`in_progress` if still active, or handoff/cancel if stepping away).
+
+## Verify mode semantics
+
+When `/tak work verify:isolated` (default):
+
+- Be conservative with local build/test/check commands while peers are active on mesh and may hold overlapping reservations.
+- Coordinate first via mesh/blackboard if verification likely touches shared paths.
+
+When `/tak work verify:local`:
+
+- Run normal local verification for the task.
+
+## Standard (non-loop) workflow
+
+1. Claim available work:
+   ```bash
+   tak claim --assignee <your-name>
+   ```
+2. Understand the task:
+   ```bash
+   tak show <id>
+   ```
+3. Execute.
+4. Capture discovered follow-up work immediately:
+   ```bash
+   tak create "<title>" --kind task -d "<context>"
+   tak depend <current-id> --on <new-id>   # when scheduling dependency exists
+   ```
+5. Finish or hand off:
+   ```bash
+   tak finish <id>
+   # or
+   tak handoff <id> --summary "..."
+   ```
+
+## Multi-agent requirements
+
+- Prefer `tak claim` over `tak next` + `tak start` to avoid TOCTOU races.
+- Reindex after pull/merge/branch switch:
+  ```bash
+  tak reindex
+  ```
+- Do not silently take over tasks assigned to another agent.
+- Use mesh + blackboard when blocked on reservations or cross-agent dependencies.
+
+## Status transitions
 
 ```
 pending ──→ in_progress ──→ done
    │              │
    │              ├──→ cancelled
-   │              │
-   │              └──→ pending (un-start)
+   │              └──→ pending (handoff)
    │
    └──→ cancelled
 
-done ──→ pending (reopen)
-cancelled ──→ pending (reopen)
+done/cancelled ──→ pending (reopen)
 ```
 
-## Best Practices
+## Best practices
 
-- **One task at a time**: Finish the current task before starting the next
-- **Commit frequently**: Commit after each task so other agents can pull your changes
-- **Update status promptly**: Don't leave tasks in `in_progress` after you're done
-- **Reindex after merge**: Always `tak reindex` after pulling or merging branches
-- **Use descriptive assignee names**: Helps identify which agent is doing what
+- Keep one active task at a time unless explicitly parallelizing.
+- Use handoff summaries that are actionable for the next agent.
+- Keep reservation scope narrow (file/dir level, not repo-wide).
+- Keep blackboard notes concise: blocker, owner/path, required action, next check time.

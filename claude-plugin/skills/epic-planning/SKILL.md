@@ -1,113 +1,111 @@
 ---
 name: tak-epic-planning
-description: Use when the user wants to plan a feature, create an epic, break down a large task into subtasks, or design a work breakdown structure. Activates when the user says things like "plan this feature", "break this down", "create an epic", or "decompose this into tasks".
+description: Use when the user wants to plan a feature, create an epic, break down large work into child tasks, or design dependency structure in tak.
 allowed-tools: "Read,Bash(tak:*)"
 ---
 
 # Epic Planning with Tak
 
-Guide the user through structured decomposition of a large feature or initiative into an epic with child tasks and dependency relationships.
+Guide users through structured decomposition of large initiatives into an epic with child tasks and clear scheduling dependencies.
 
-**Critical:** create and update all tasks via `tak` CLI commands only. Never manually edit or append `.tak/tasks/*.json` (or other `.tak/*` data files).
+**Critical:** create/update plan artifacts with `tak` commands only. Never hand-edit `.tak/*` data files.
 
-## Planning Workflow
+## Planning workflow
 
-### Step 1: Create the Epic
-
-```bash
-tak create "Epic title" --kind epic -d "High-level description of the initiative"
-```
-
-### Step 2: Brainstorm and Propose Tasks
-
-Before creating tasks, discuss the decomposition with the user:
-
-1. Identify the major components or phases of the work
-2. For each component, identify concrete deliverable tasks
-3. Consider what can be parallelized vs what must be sequential
-4. Identify external dependencies or blockers
-
-Present the proposed task breakdown to the user for feedback before creating anything.
-
-### Step 3: Create Child Tasks
-
-For each agreed-upon task:
+### 1) Create the epic
 
 ```bash
-tak create "Task description" --parent <epic-id> --kind task
+tak create "Epic title" --kind epic -d "High-level initiative description"
 ```
 
-For subtasks of tasks:
+### 2) Propose decomposition before creating everything
+
+Discuss and validate:
+
+1. Major phases/components
+2. Concrete deliverables per phase
+3. Parallelizable vs strictly sequential work
+4. External blockers and skill/risk hotspots
+
+Then create agreed tasks.
+
+### 3) Create child tasks
 
 ```bash
-tak create "Subtask description" --parent <task-id> --kind task
+tak create "Phase 1: schema migration" --parent <epic-id> --kind feature --priority high
+tak create "Implement migration" --parent <task-id> --kind task
 ```
 
-### Step 4: Establish Dependencies
+Use kinds intentionally:
 
-Dependencies represent scheduling constraints — task B cannot start until task A is done:
+- `feature` for coherent capability slices
+- `task` for implementation units
+- `bug` for defect-fix tasks inside the epic
+
+### 4) Add dependencies (scheduling graph)
 
 ```bash
 tak depend <blocked-task> --on <blocking-task>
 ```
 
-Common patterns:
-- **Sequential chain**: A -> B -> C (each depends on the previous)
-- **Fan-out**: A blocks B, C, D (shared prerequisite)
-- **Fan-in**: B, C, D all block E (integration point)
+Patterns:
 
-### Step 5: Review the Plan
+- Chain: A → B → C
+- Fan-out: A blocks B/C/D
+- Fan-in: B/C/D all block E
+
+Only add dependencies when ordering is required.
+
+### 5) Review structure and readiness
 
 ```bash
 tak tree <epic-id> --pretty
+tak list --children-of <epic-id>
+tak list --available
 ```
 
-This shows the full hierarchy with blocked status. Verify:
-- All tasks have appropriate parents
-- Dependencies form a DAG (no cycles)
-- The first tasks to work on are unblocked
-- Nothing critical is missing
+Validate:
 
-### Step 6: Iterate
+- Parent/child hierarchy is correct
+- Dependency graph is acyclic and minimal
+- First actionable tasks are unblocked
+- Priorities/estimates are sane
 
-If the plan needs changes:
-- Add missing tasks: `tak create ...`
-- Remove incorrect dependencies: `tak undepend <id> --on <id>`
-- Restructure hierarchy: `tak reparent <id> --to <new-parent>`
-- Cancel unnecessary tasks: `tak cancel <id>`
+### 6) Add coordination scaffolding for multi-agent plans
 
-## Decomposition Principles
+For cross-team or multi-agent epics, add a blackboard note for shared plan state:
 
-- **Atomic tasks**: Each task should be completable in one focused session
-- **Clear acceptance criteria**: Include enough description that another agent could implement it
-- **Minimal dependencies**: Only add dependencies where there's a genuine ordering constraint
-- **Balanced granularity**: Not too coarse (hard to track) or too fine (overhead exceeds value)
+```bash
+tak blackboard post \
+  --from <agent> \
+  --message "Epic <id> planning baseline agreed; use linked tasks for execution updates" \
+  --task <epic-id> \
+  --tag planning,coordination
+```
+
+Update/close as plan stabilizes.
+
+## Decomposition principles
+
+- **Atomic enough to finish** in one focused session when possible
+- **Explicit done criteria** (description + contract fields)
+- **Minimal dependency edges** (avoid accidental over-blocking)
+- **Balanced granularity** (not giant blobs, not hyper-fragmented)
+- **Traceable coordination** (blackboard notes for blockers/handoffs)
 
 ## Example
 
 ```bash
-# Create the epic
-tak create "User authentication system" --kind epic -d "Add login, registration, and session management"
+# Epic
+tak create "User authentication system" --kind epic -d "Registration, login, sessions"
 
-# Create phase 1 tasks
-tak create "Design auth database schema" --parent 1
-tak create "Implement user registration API" --parent 1 --depends-on 2
-tak create "Implement login API" --parent 1 --depends-on 2
-tak create "Add session management middleware" --parent 1 --depends-on 3,4
-tak create "Write integration tests" --parent 1 --depends-on 5
+# Children
+tak create "Design auth schema" --parent 1 --kind feature --priority high
+tak create "Registration API" --parent 1 --kind task --depends-on 2
+tak create "Login API" --parent 1 --kind task --depends-on 2
+tak create "Session middleware" --parent 1 --kind feature --depends-on 3,4
+tak create "Auth integration tests" --parent 1 --kind task --depends-on 5
 
 # Review
 tak tree 1 --pretty
 ```
-
-Output:
-```
-[1] User authentication system (epic, pending)
-├── [2] Design auth database schema (task, pending)
-├── [3] Implement user registration API (task, pending) [BLOCKED]
-├── [4] Implement login API (task, pending) [BLOCKED]
-├── [5] Add session management middleware (task, pending) [BLOCKED]
-└── [6] Write integration tests (task, pending) [BLOCKED]
-```
-
-Tasks 2 is available to start immediately. Tasks 3 and 4 unblock after 2 is done. Task 5 unblocks after both 3 and 4 are done.

@@ -41,14 +41,18 @@ Tasks are JSON files in `.tak/tasks/` (the git-committed source of truth). A git
 - **`src/store/learnings.rs`** — `LearningStore`: CRUD on `.tak/learnings/*.json`, atomic ID allocation via counter.json + fs2 lock; separate from task ID sequence
 - **`src/store/sidecars.rs`** — `SidecarStore`: manages per-task context notes (`.tak/context/{id}.md`), structured history logs (`.tak/history/{id}.jsonl`), verification results (`.tak/verification_results/{id}.json`), and artifact directories (`.tak/artifacts/{id}/`); defines `HistoryEvent` (timestamp/event/agent/detail), `VerificationResult` (timestamp/results/passed), `CommandResult` (command/exit_code/stdout/stderr/passed)
 - **`src/store/mesh.rs`** — `MeshStore`: manages `.tak/runtime/mesh/` — agent registry (join/leave/list), messaging (send/broadcast/inbox), file reservations (reserve/release), activity feed (append/read). Per-domain file locks via `lock.rs`. Auto-generates agent names when omitted.
+- **`src/store/blackboard.rs`** — `BlackboardStore`: shared coordination notes under `.tak/runtime/blackboard/` (`post/list/show/close/reopen`) with tags, task links, and close metadata.
+- **`src/store/therapist.rs`** — `TherapistStore`: append-only workflow observations under `.tak/therapist/log.jsonl` (`offline`/`online` diagnosis artifacts).
 - **`src/store/repo.rs`** — `Repo`: wraps FileStore + Index + SidecarStore + LearningStore. Walks up from CWD to find `.tak/`. Auto-rebuilds index on open if missing or stale (file fingerprint mismatch). Also auto-rebuilds learnings index via separate fingerprint.
 - **`src/commands/`** — One file per command group. Most take `&Path` (repo root) and return `Result<()>`. `doctor` doesn't require a repo; `setup` supports global mode anywhere but project-scoped setup requires a git repo root.
 - **`src/commands/mesh.rs`** — 9 mesh subcommand handlers: join, leave, list, send, broadcast, inbox, reserve, release, feed
-- **`src/main.rs`** — Clap derive CLI with 35 subcommands and global `--format`/`--pretty` flags. Uses `ValueEnum` for `Format`, `Kind`, `Status`; `conflicts_with` for `--available`/`--blocked`.
+- **`src/commands/blackboard.rs`** — 5 blackboard subcommand handlers: post, list, show, close, reopen
+- **`src/commands/therapist.rs`** — therapist handlers: offline diagnosis, online RPC interview, and observation log listing
+- **`src/main.rs`** — Clap derive CLI with 31 top-level subcommands and global `--format`/`--pretty` flags. Uses `ValueEnum` for `Format`, `Kind`, `Status`; `conflicts_with` for `--available`/`--blocked`.
 
 ### CLI Commands
 
-35 subcommands. `--format json` (default), `--format pretty`, `--format minimal`.
+31 top-level subcommands. `--format json` (default), `--format pretty`, `--format minimal`.
 
 | Command | Purpose |
 |---------|---------|
@@ -89,8 +93,16 @@ Tasks are JSON files in `.tak/tasks/` (the git-committed source of truth). A git
 | `mesh reserve` | Reserve file paths (`--name`, `--path`, `--reason`) |
 | `mesh release` | Release reservations (`--name`, `--path`/`--all`) |
 | `mesh feed` | Show activity feed (`--limit`) |
+| `blackboard post` | Post a shared coordination note (`--from`, `--message`, `--tag`, `--task`) |
+| `blackboard list` | List notes (`--status`, `--tag`, `--task`, `--limit`) |
+| `blackboard show` | Show one note by ID |
+| `blackboard close` | Close note (`--by`, `--reason`) |
+| `blackboard reopen` | Re-open note (`--by`) |
+| `therapist offline` | Diagnose workflow friction from mesh + blackboard and append an observation (`--by`, `--limit`) |
+| `therapist online` | Resume a pi session via RPC for interview-style workflow diagnosis (`--session`, `--session-dir`, `--by`) |
+| `therapist log` | Read therapist observation log (`--limit`) |
 | `reindex` | Rebuild SQLite index from files |
-| `setup` | Install agent integrations (`--global`, `--check`, `--remove`, `--plugin`, `--pi`) |
+| `setup` | Install agent integrations (`--global`, `--check`, `--remove`, `--plugin`, `--skills`, `--pi`) |
 | `doctor` | Validate installation health (`--fix`) |
 
 Errors are structured JSON on stderr when `--format json`: `{"error":"<code>","message":"<text>"}`.
@@ -110,7 +122,7 @@ Errors are structured JSON on stderr when `--format json`: `{"error":"<code>","m
 - Stale index detection via file fingerprint: `Repo::open()` compares task ID + size + nanosecond mtime against stored metadata, auto-rebuilds on mismatch
 - Tree command pre-loads all tasks into a HashMap — no per-node file I/O or SQL queries
 - `setup` and `doctor` are dispatched before `find_repo_root()`; project-scoped `setup` validates that CWD is a git repo root
-- `setup` embeds Claude plugin + pi integration assets via `include_str!` at compile time; idempotent install/remove
+- `setup` embeds Claude plugin/skills + pi integration assets via `include_str!` at compile time; idempotent install/remove
 - `doctor` runs grouped health checks (Core/Index/Data Integrity/Environment) with auto-fix support
 - `Task` uses `#[serde(flatten)]` extensions map for forward-compatible JSON round-trips (unknown fields survive read→write)
 - `depends_on: Vec<Dependency>` — each dep has `id`, optional `dep_type` (hard/soft), optional `reason`; `depend` updates metadata on existing deps
@@ -147,6 +159,8 @@ Errors are structured JSON on stderr when `--format json`: `{"error":"<code>","m
 - Reservation conflict is prefix-based: `src/store/` conflicts with `src/store/mesh.rs`
 - Feed events are best-effort: failures never break primary operations
 - All mesh runtime state is gitignored (ephemeral per-session data)
+- `BlackboardStore` persists shared notes in `.tak/runtime/blackboard/notes.json` with lock-protected ID allocation and lifecycle transitions (`open`/`closed`)
+- `TherapistStore` appends JSONL observations to `.tak/therapist/log.jsonl`; `offline` analyzes mesh+blackboard signals, `online` resumes pi RPC sessions for interviews
 
 ### On-Disk Layout
 
@@ -171,11 +185,19 @@ Errors are structured JSON on stderr when `--format json`: `{"error":"<code>","m
     reservations.json            # File path reservations
     feed.jsonl                   # Append-only activity timeline
     locks/                       # Per-domain lock files
+  runtime/blackboard/            # Shared coordination board (gitignored)
+    notes.json                   # Open/closed note records
+    counter.json                 # Blackboard note IDs
+    locks/                       # Blackboard lock files
+  therapist/                     # Workflow therapist observations (committed)
+    log.jsonl                    # Append-only JSONL observations
   index.db                       # SQLite index (gitignored, rebuilt on demand)
 ```
 
 ## Claude Code Plugin
 
-Three skills in `skills/`: **task-management** (CLI reference), **epic-planning** (structured decomposition), **task-execution** (agent claim-work-finish loop). Lifecycle hooks auto-run `tak reindex` + `tak mesh join` on `SessionStart`, and `tak mesh leave` on `Stop`.
+Three embedded Claude skills under `claude-plugin/skills/`: **task-management** (CLI + coordination reference), **epic-planning** (structured decomposition), and **task-execution** (including conversational `/tak work`, `/tak work status`, `/tak work stop` loop semantics).
 
-`tak setup` installs hooks into Claude Code settings (project-local or global). Project-scoped setup must run from a git repo root. `tak setup --plugin` writes Claude plugin files to `.claude/plugins/tak`. `tak setup --pi` installs pi integration files (`extensions/tak.ts`, `skills/tak-coordination/SKILL.md`, and a managed `APPEND_SYSTEM.md` block) under `.pi/` (or `~/.pi/agent/` with `--global`). `tak doctor` validates installation health.
+Lifecycle hooks remain lightweight and session-scoped: `tak reindex` + `tak mesh join` on `SessionStart`, and `tak mesh leave` on `Stop`.
+
+`tak setup` installs hooks into Claude Code settings (project-local or global). Project-scoped setup must run from a git repo root. `tak setup --plugin` writes Claude plugin files to `.claude/plugins/tak`. `tak setup --skills` installs only the Claude skill files under `.claude/skills/` (or `~/.claude/skills/` with `--global`). `tak setup --pi` installs pi integration files (`extensions/tak.ts`, `skills/tak-coordination/SKILL.md`, and a managed `APPEND_SYSTEM.md` block) under `.pi/` (or `~/.pi/agent/` with `--global`). `tak doctor` validates installation health.

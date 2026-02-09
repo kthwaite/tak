@@ -29,6 +29,8 @@ Use tak as the source of truth for task state and multi-agent coordination.
 5. Execute work and keep blackboard updated for cross-agent visibility
 6. Finish/handoff and release reservations
 
+> Note: In Claude Code (without the pi extension runtime), use the same `/tak work` phrasing to trigger the analogous conversational loop in the `tak-task-execution` skill.
+
 ## Mesh etiquette
 
 - Do not silently take over work assigned to another agent.

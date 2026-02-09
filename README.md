@@ -40,30 +40,27 @@ tak list --available
 | Command | Description |
 |---------|-------------|
 | `tak init` | Initialize `.tak/` in the current repository |
-| `tak create <title>` | Create a task (`--kind`, `--parent`, `--depends-on`, `-d`, `--tag`) |
-| `tak delete <id>` | Delete a task (`--force` to cascade and orphan children / remove deps) |
-| `tak show <id>` | Show task details |
-| `tak list` | List tasks (`--status`, `--kind`, `--tag`, `--assignee`, `--available`, `--blocked`, `--children-of`) |
-| `tak edit <id>` | Edit task fields (`--title`, `-d`, `--kind`, `--tag`) |
-| `tak start <id>` | Set status to in_progress (`--assignee`) |
-| `tak finish <id>` | Set status to done |
-| `tak cancel <id>` | Set status to cancelled |
-| `tak claim` | Atomic next+start with file lock (`--assignee`, `--tag`) |
-| `tak reopen <id>` | Done/cancelled back to pending (clears assignee) |
-| `tak unassign <id>` | Clear assignee without changing status |
-| `tak depend <id> --on <ids>` | Add dependency edges (with cycle detection) |
-| `tak undepend <id> --on <ids>` | Remove dependency edges |
-| `tak reparent <id> --to <id>` | Change a task's parent |
-| `tak orphan <id>` | Remove a task's parent |
-| `tak tree [<id>]` | Show task hierarchy |
-| `tak next` | Show the next available task (preview only) |
+| `tak create <title>` | Create a task (`--kind`, `--parent`, `--depends-on`, contract + planning flags) |
+| `tak show <id>` / `tak list` / `tak tree [id]` | Query tasks and hierarchy |
+| `tak edit <id>` | Update task metadata (`--title`, `--kind`, tags, contract/planning, `--pr`) |
+| `tak claim` / `tak start <id>` | Start work (atomic claim preferred in multi-agent mode) |
+| `tak finish <id>` / `tak handoff <id>` / `tak cancel <id>` | Close, hand off, or cancel execution |
+| `tak reopen <id>` / `tak unassign <id>` | Reopen or clear assignment |
+| `tak depend` / `tak undepend` / `tak reparent` / `tak orphan` | Manage dependency + parent-child edges |
+| `tak context <id>` / `tak log <id>` / `tak verify <id>` | Task sidecars: notes, history, verification |
+| `tak learn <subcommand>` | Manage learnings + suggestions |
+| `tak mesh <subcommand>` | Agent presence, messaging, reservations, activity feed |
+| `tak blackboard <subcommand>` | Shared coordination notes (`post/list/show/close/reopen`) |
+| `tak therapist <subcommand>` | Workflow diagnosis (`offline`, `online`, `log`) |
+| `tak delete <id>` | Delete task (`--force` to cascade orphan/removal behavior) |
 | `tak reindex` | Rebuild SQLite index from task files |
+| `tak setup` / `tak doctor` | Install/check integrations and environment health |
 
 All commands output JSON by default. Use `--format pretty` for human-readable output or `--format minimal` for tabular summaries.
 
 ## Data Model
 
-**Task kinds:** `epic`, `task`, `bug`
+**Task kinds:** `epic`, `feature`, `task`, `bug`
 
 **Statuses:** `pending` → `in_progress` → `done` / `cancelled`
 
@@ -77,12 +74,18 @@ All commands output JSON by default. Use `--format pretty` for human-readable ou
 
 ```
 .tak/
-  config.json         # Repository configuration
-  counter.json        # Next task ID (locked during creation)
-  tasks/
-    1.json            # One file per task (committed to git)
-    2.json
-  index.db            # SQLite index (gitignored, rebuilt on demand)
+  config.json                     # Repository configuration
+  counter.json                    # Next task ID (locked during creation)
+  tasks/*.json                    # Task source of truth (committed)
+  context/*.md                    # Task notes sidecars (committed)
+  history/*.jsonl                 # Lifecycle history sidecars (committed)
+  verification_results/*.json     # Verification outputs (gitignored)
+  artifacts/{id}/                 # Task artifacts (gitignored)
+  learnings/*.json                # Learning records (committed)
+  runtime/mesh/*                  # Agent registry/inbox/reservations/feed (gitignored)
+  runtime/blackboard/*            # Shared note board (gitignored)
+  therapist/log.jsonl             # Workflow observations (committed)
+  index.db                        # SQLite index (gitignored, rebuilt on demand)
 ```
 
 Task files are the source of truth. The SQLite index is derived and rebuilt automatically when missing (e.g., after a fresh clone).
@@ -114,10 +117,12 @@ Note: `tak next` + `tak start` is subject to TOCTOU races — another agent can 
 
 Tak ships as a Claude Code plugin. Enable it to get:
 
-- **Task management skill**: Full CLI reference for creating, querying, and updating tasks
-- **Epic planning skill**: Guided decomposition of features into task hierarchies
-- **Task execution skill**: Agent workflow for claiming, executing, and completing tasks
+- **Task management skill**: Full CLI + coordination reference (tasks, mesh, blackboard, learnings, therapist)
+- **Epic planning skill**: Guided decomposition of features into task hierarchies and dependency graphs
+- **Task execution skill**: Agent workflow for claiming/executing/completing tasks, including conversational `/tak work`, `/tak work status`, and `/tak work stop` loop semantics
 - **Session lifecycle hooks**: Auto-reindex + auto-join mesh on session start, auto-leave mesh on stop
+
+> Note: Claude implements `/tak work` via skill instructions (conversational loop), while pi additionally enforces loop guards through extension runtime hooks.
 
 ```bash
 # Run from your git repo root
@@ -126,6 +131,9 @@ tak setup
 
 # Also write plugin files under .claude/plugins/tak
 tak setup --plugin
+
+# Install only Claude skills under .claude/skills/
+tak setup --skills
 ```
 
 ## Pi Integration
