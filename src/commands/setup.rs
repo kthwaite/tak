@@ -80,6 +80,34 @@ fn plugin_files() -> Vec<(&'static str, &'static str)> {
     ]
 }
 
+fn claude_skills_base_path(global: bool) -> Result<PathBuf> {
+    if global {
+        let home = std::env::var("HOME").map_err(|_| {
+            TakError::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "HOME not set",
+            ))
+        })?;
+        Ok(PathBuf::from(home).join(".claude").join("skills"))
+    } else {
+        Ok(PathBuf::from(".claude").join("skills"))
+    }
+}
+
+fn claude_skill_files(base: &Path) -> Vec<(PathBuf, &'static str)> {
+    vec![
+        (
+            base.join("task-management").join("SKILL.md"),
+            SKILL_TASK_MGMT,
+        ),
+        (base.join("epic-planning").join("SKILL.md"), SKILL_EPIC_PLAN),
+        (
+            base.join("task-execution").join("SKILL.md"),
+            SKILL_TASK_EXEC,
+        ),
+    ]
+}
+
 fn pi_base_path(global: bool) -> Result<PathBuf> {
     if global {
         let home = std::env::var("HOME").map_err(|_| {
@@ -679,6 +707,95 @@ pub fn check_plugin_installed() -> &'static str {
     }
 }
 
+fn check_claude_skills_installed_at(base: &Path) -> &'static str {
+    let files = claude_skill_files(base);
+    let mut any_exists = false;
+    let mut any_mismatch = false;
+
+    for (path, expected) in &files {
+        if path.exists() {
+            any_exists = true;
+            if let Ok(actual) = fs::read_to_string(path) {
+                if actual.trim() != expected.trim() {
+                    any_mismatch = true;
+                }
+            } else {
+                any_mismatch = true;
+            }
+        } else if any_exists {
+            any_mismatch = true;
+        }
+    }
+
+    if !any_exists {
+        "not installed"
+    } else if any_mismatch {
+        "outdated"
+    } else {
+        "installed"
+    }
+}
+
+pub fn check_claude_skills_installed(global: bool) -> &'static str {
+    let Ok(base) = claude_skills_base_path(global) else {
+        return "not installed";
+    };
+    check_claude_skills_installed_at(&base)
+}
+
+fn write_claude_skill_files(global: bool, format: Format) -> Result<bool> {
+    let base = claude_skills_base_path(global)?;
+    let mut changed = false;
+
+    for (path, content) in claude_skill_files(&base) {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        if path.exists() {
+            let existing = fs::read_to_string(&path)?;
+            if existing.trim() == content.trim() {
+                if format == Format::Pretty {
+                    eprintln!("  skip  {} (unchanged)", path.display());
+                }
+                continue;
+            }
+            if format == Format::Pretty {
+                eprintln!("  write {} (updated)", path.display());
+            }
+        } else if format == Format::Pretty {
+            eprintln!("  write {}", path.display());
+        }
+
+        fs::write(&path, content)?;
+        changed = true;
+    }
+
+    Ok(changed)
+}
+
+fn remove_claude_skill_files(global: bool, format: Format) -> Result<bool> {
+    let base = claude_skills_base_path(global)?;
+    let mut changed = false;
+
+    for (path, _) in claude_skill_files(&base) {
+        if path.exists() {
+            fs::remove_file(&path)?;
+            changed = true;
+            if format == Format::Pretty {
+                eprintln!("  remove {}", path.display());
+            }
+        }
+    }
+
+    for skill_dir in ["task-management", "epic-planning", "task-execution"] {
+        remove_dir_if_empty(&base.join(skill_dir))?;
+    }
+    remove_dir_if_empty(&base)?;
+
+    Ok(changed)
+}
+
 /// Write plugin files to `.claude/plugins/tak`.
 fn write_plugin_files(format: Format) -> Result<()> {
     for (rel_path, content) in plugin_files() {
@@ -721,11 +838,17 @@ fn remove_plugin_files(format: Format) -> Result<()> {
     Ok(())
 }
 
+fn hooks_requested(plugin: bool, pi: bool, skills: bool) -> bool {
+    // `tak setup --skills` is an explicit skills-only mode.
+    !(skills && !plugin && !pi)
+}
+
 pub fn run(
     global: bool,
     check: bool,
     remove: bool,
     plugin: bool,
+    skills: bool,
     pi: bool,
     format: Format,
 ) -> Result<()> {
@@ -734,19 +857,37 @@ pub fn run(
         ensure_git_repo_root()?;
     }
 
+    let manage_hooks = hooks_requested(plugin, pi, skills);
+
     if check {
-        return run_check(global, plugin, pi, format);
+        return run_check(global, plugin, skills, pi, manage_hooks, format);
     }
     if remove {
-        return run_remove(global, plugin, pi, format);
+        return run_remove(global, plugin, skills, pi, manage_hooks, format);
     }
-    run_install(global, plugin, pi, format)
+    run_install(global, plugin, skills, pi, manage_hooks, format)
 }
 
-fn run_check(global: bool, plugin: bool, pi: bool, format: Format) -> Result<()> {
-    let hooks_status = check_hooks_installed();
+fn run_check(
+    global: bool,
+    plugin: bool,
+    skills: bool,
+    pi: bool,
+    manage_hooks: bool,
+    format: Format,
+) -> Result<()> {
+    let hooks_status = if manage_hooks {
+        check_hooks_installed()
+    } else {
+        None
+    };
     let plugin_status = if plugin {
         Some(check_plugin_installed())
+    } else {
+        None
+    };
+    let skills_status = if skills {
+        Some(check_claude_skills_installed(global))
     } else {
         None
     };
@@ -760,15 +901,26 @@ fn run_check(global: bool, plugin: bool, pi: bool, format: Format) -> Result<()>
     match format {
         Format::Json => {
             let mut obj = serde_json::Map::new();
-            obj.insert(
-                "hooks".into(),
-                match hooks_status {
-                    Some(scope) => json!({"installed": true, "scope": scope}),
-                    None => json!({"installed": false}),
-                },
-            );
+            if manage_hooks {
+                obj.insert(
+                    "hooks".into(),
+                    match hooks_status {
+                        Some(scope) => json!({"installed": true, "scope": scope}),
+                        None => json!({"installed": false}),
+                    },
+                );
+            }
             if let Some(ps) = plugin_status {
                 obj.insert("plugin".into(), json!(ps));
+            }
+            if let Some(ps) = skills_status {
+                obj.insert(
+                    "skills".into(),
+                    json!({
+                        "status": ps,
+                        "scope": if global { "global" } else { "project" }
+                    }),
+                );
             }
             if let Some(ps) = pi_status {
                 obj.insert(
@@ -783,12 +935,18 @@ fn run_check(global: bool, plugin: bool, pi: bool, format: Format) -> Result<()>
             println!("{}", serde_json::to_string(&Value::Object(obj))?);
         }
         _ => {
-            match hooks_status {
-                Some(scope) => eprintln!("hooks: installed ({scope})"),
-                None => eprintln!("hooks: not installed"),
+            if manage_hooks {
+                match hooks_status {
+                    Some(scope) => eprintln!("hooks: installed ({scope})"),
+                    None => eprintln!("hooks: not installed"),
+                }
             }
             if let Some(ps) = plugin_status {
                 eprintln!("plugin: {ps}");
+            }
+            if let Some(ps) = skills_status {
+                let scope = if global { "global" } else { "project" };
+                eprintln!("skills: {ps} ({scope})");
             }
             if let Some(ps) = pi_status {
                 let scope = if global { "global" } else { "project" };
@@ -802,26 +960,45 @@ fn run_check(global: bool, plugin: bool, pi: bool, format: Format) -> Result<()>
         }
     }
 
-    let hooks_ok = hooks_status.is_some();
+    let hooks_ok = !manage_hooks || hooks_status.is_some();
+    let plugin_ok = plugin_status.is_none_or(|s| s == "installed");
+    let skills_ok = skills_status.is_none_or(|s| s == "installed");
     let pi_ok = pi_status.is_none_or(|s| s == "installed");
 
-    if hooks_ok && pi_ok {
+    if hooks_ok && plugin_ok && skills_ok && pi_ok {
         Ok(())
     } else {
         std::process::exit(1);
     }
 }
 
-fn run_install(global: bool, plugin: bool, pi: bool, format: Format) -> Result<()> {
-    let path = settings_path(global)?;
-    let mut settings = read_settings(&path)?;
-
-    let installed = install_hook(&mut settings);
-    write_settings(&path, &settings)?;
-
+fn run_install(
+    global: bool,
+    plugin: bool,
+    skills: bool,
+    pi: bool,
+    manage_hooks: bool,
+    format: Format,
+) -> Result<()> {
     let scope = if global { "global" } else { "project" };
-    let mut pi_changed = false;
 
+    let mut hooks_changed = false;
+    let mut hooks_path: Option<PathBuf> = None;
+    if manage_hooks {
+        let path = settings_path(global)?;
+        let mut settings = read_settings(&path)?;
+
+        hooks_changed = install_hook(&mut settings);
+        write_settings(&path, &settings)?;
+        hooks_path = Some(path);
+    }
+
+    let mut skills_changed = false;
+    if skills {
+        skills_changed = write_claude_skill_files(global, format)?;
+    }
+
+    let mut pi_changed = false;
     if pi {
         pi_changed = write_pi_files(global, format)?;
     }
@@ -831,10 +1008,20 @@ fn run_install(global: bool, plugin: bool, pi: bool, format: Format) -> Result<(
             let mut obj = serde_json::Map::new();
             obj.insert("action".into(), json!("install"));
             obj.insert("scope".into(), json!(scope));
-            obj.insert("changed".into(), json!(installed));
-            obj.insert("path".into(), json!(path.display().to_string()));
+            if manage_hooks {
+                obj.insert("changed".into(), json!(hooks_changed));
+                if let Some(path) = &hooks_path {
+                    obj.insert("path".into(), json!(path.display().to_string()));
+                }
+            }
             if plugin {
                 obj.insert("plugin".into(), json!(true));
+            }
+            if skills {
+                obj.insert(
+                    "skills".into(),
+                    json!({"enabled": true, "changed": skills_changed}),
+                );
             }
             if pi {
                 obj.insert("pi".into(), json!({"enabled": true, "changed": pi_changed}));
@@ -842,10 +1029,20 @@ fn run_install(global: bool, plugin: bool, pi: bool, format: Format) -> Result<(
             println!("{}", serde_json::to_string(&Value::Object(obj))?);
         }
         _ => {
-            if installed {
-                eprintln!("Installed tak hooks ({scope}): {}", path.display());
-            } else {
-                eprintln!("Hooks already installed ({scope}): {}", path.display());
+            if manage_hooks {
+                let path = hooks_path.expect("hooks path present when hooks are managed");
+                if hooks_changed {
+                    eprintln!("Installed tak hooks ({scope}): {}", path.display());
+                } else {
+                    eprintln!("Hooks already installed ({scope}): {}", path.display());
+                }
+            }
+            if skills {
+                if skills_changed {
+                    eprintln!("Installed Claude skills ({scope})");
+                } else {
+                    eprintln!("Claude skills already installed ({scope})");
+                }
             }
             if pi {
                 if pi_changed {
@@ -867,16 +1064,33 @@ fn run_install(global: bool, plugin: bool, pi: bool, format: Format) -> Result<(
     Ok(())
 }
 
-fn run_remove(global: bool, plugin: bool, pi: bool, format: Format) -> Result<()> {
-    let path = settings_path(global)?;
-    let mut settings = read_settings(&path)?;
-
-    let removed = remove_hook(&mut settings);
-    write_settings(&path, &settings)?;
-
+fn run_remove(
+    global: bool,
+    plugin: bool,
+    skills: bool,
+    pi: bool,
+    manage_hooks: bool,
+    format: Format,
+) -> Result<()> {
     let scope = if global { "global" } else { "project" };
-    let mut pi_changed = false;
 
+    let mut hooks_removed = false;
+    let mut hooks_path: Option<PathBuf> = None;
+    if manage_hooks {
+        let path = settings_path(global)?;
+        let mut settings = read_settings(&path)?;
+
+        hooks_removed = remove_hook(&mut settings);
+        write_settings(&path, &settings)?;
+        hooks_path = Some(path);
+    }
+
+    let mut skills_removed = false;
+    if skills {
+        skills_removed = remove_claude_skill_files(global, format)?;
+    }
+
+    let mut pi_changed = false;
     if pi {
         pi_changed = remove_pi_files(global, format)?;
     }
@@ -886,9 +1100,14 @@ fn run_remove(global: bool, plugin: bool, pi: bool, format: Format) -> Result<()
             let mut obj = serde_json::Map::new();
             obj.insert("action".into(), json!("remove"));
             obj.insert("scope".into(), json!(scope));
-            obj.insert("changed".into(), json!(removed));
+            if manage_hooks {
+                obj.insert("changed".into(), json!(hooks_removed));
+            }
             if plugin {
                 obj.insert("plugin".into(), json!(true));
+            }
+            if skills {
+                obj.insert("skills".into(), json!({"removed": skills_removed}));
             }
             if pi {
                 obj.insert("pi".into(), json!({"removed": pi_changed}));
@@ -896,10 +1115,20 @@ fn run_remove(global: bool, plugin: bool, pi: bool, format: Format) -> Result<()
             println!("{}", serde_json::to_string(&Value::Object(obj))?);
         }
         _ => {
-            if removed {
-                eprintln!("Removed tak hooks ({scope}): {}", path.display());
-            } else {
-                eprintln!("No tak hooks found ({scope}): {}", path.display());
+            if manage_hooks {
+                let path = hooks_path.expect("hooks path present when hooks are managed");
+                if hooks_removed {
+                    eprintln!("Removed tak hooks ({scope}): {}", path.display());
+                } else {
+                    eprintln!("No tak hooks found ({scope}): {}", path.display());
+                }
+            }
+            if skills {
+                if skills_removed {
+                    eprintln!("Removed Claude skills ({scope})");
+                } else {
+                    eprintln!("No Claude skills found ({scope})");
+                }
             }
             if pi {
                 if pi_changed {
@@ -1159,6 +1388,68 @@ mod tests {
                 "plugin path should live under .claude/plugins/tak: {path}"
             );
         }
+    }
+
+    #[test]
+    fn claude_skill_files_are_under_claude_skills_paths() {
+        let dir = tempdir().unwrap();
+        let base = dir.path().join(".claude").join("skills");
+        let files = claude_skill_files(&base);
+
+        assert_eq!(files.len(), 3);
+        assert!(
+            files[0]
+                .0
+                .to_string_lossy()
+                .ends_with("skills/task-management/SKILL.md"),
+            "unexpected claude skill path: {}",
+            files[0].0.display()
+        );
+        assert!(
+            files[1]
+                .0
+                .to_string_lossy()
+                .ends_with("skills/epic-planning/SKILL.md"),
+            "unexpected claude skill path: {}",
+            files[1].0.display()
+        );
+        assert!(
+            files[2]
+                .0
+                .to_string_lossy()
+                .ends_with("skills/task-execution/SKILL.md"),
+            "unexpected claude skill path: {}",
+            files[2].0.display()
+        );
+    }
+
+    #[test]
+    fn check_claude_skills_installed_at_reports_states() {
+        let dir = tempdir().unwrap();
+        let base = dir.path().join(".claude").join("skills");
+        fs::create_dir_all(&base).unwrap();
+
+        assert_eq!(check_claude_skills_installed_at(&base), "not installed");
+
+        let files = claude_skill_files(&base);
+        fs::create_dir_all(files[0].0.parent().unwrap()).unwrap();
+        fs::write(&files[0].0, files[0].1).unwrap();
+        assert_eq!(check_claude_skills_installed_at(&base), "outdated");
+
+        fs::create_dir_all(files[1].0.parent().unwrap()).unwrap();
+        fs::write(&files[1].0, files[1].1).unwrap();
+        fs::create_dir_all(files[2].0.parent().unwrap()).unwrap();
+        fs::write(&files[2].0, files[2].1).unwrap();
+
+        assert_eq!(check_claude_skills_installed_at(&base), "installed");
+    }
+
+    #[test]
+    fn hooks_requested_is_false_for_skills_only_mode() {
+        assert!(!hooks_requested(false, false, true));
+        assert!(hooks_requested(false, true, true));
+        assert!(hooks_requested(true, false, true));
+        assert!(hooks_requested(false, false, false));
     }
 
     #[test]
