@@ -1,3 +1,4 @@
+pub mod blackboard;
 pub mod files;
 pub mod index;
 pub mod learnings;

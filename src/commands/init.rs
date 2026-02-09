@@ -2,8 +2,10 @@ use std::fs;
 use std::path::Path;
 
 use crate::error::Result;
+use crate::store::blackboard::BlackboardStore;
 use crate::store::files::FileStore;
 use crate::store::index::Index;
+use crate::store::mesh::MeshStore;
 
 pub fn run(repo_root: &Path) -> Result<()> {
     let store = FileStore::init(repo_root)?;
@@ -17,10 +19,9 @@ pub fn run(repo_root: &Path) -> Result<()> {
     fs::create_dir_all(tak.join("verification_results"))?;
     fs::create_dir_all(tak.join("learnings"))?;
 
-    // Create mesh runtime directories
-    fs::create_dir_all(tak.join("runtime").join("mesh").join("registry"))?;
-    fs::create_dir_all(tak.join("runtime").join("mesh").join("inbox"))?;
-    fs::create_dir_all(tak.join("runtime").join("mesh").join("locks"))?;
+    // Create coordination runtime directories
+    MeshStore::open(tak).ensure_dirs()?;
+    BlackboardStore::open(tak).ensure_dirs()?;
 
     // Write .gitignore for derived/ephemeral data
     fs::write(

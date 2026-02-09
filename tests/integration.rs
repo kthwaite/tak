@@ -876,7 +876,10 @@ fn test_setup_install_idempotent() {
 
     let hook_entry = serde_json::json!({
         "matcher": "",
-        "hooks": [{"type": "command", "command": "tak reindex 2>/dev/null || true", "timeout": 10}]
+        "hooks": [
+            {"type": "command", "command": "tak reindex 2>/dev/null || true", "timeout": 10},
+            {"type": "command", "command": "tak mesh join --format minimal >/dev/null 2>/dev/null || true", "timeout": 10}
+        ]
     });
 
     // First install
@@ -921,7 +924,10 @@ fn test_setup_remove_cleans_hooks() {
         "hooks": {
             "SessionStart": [{
                 "matcher": "",
-                "hooks": [{"type": "command", "command": "tak reindex 2>/dev/null || true", "timeout": 10}]
+                "hooks": [
+            {"type": "command", "command": "tak reindex 2>/dev/null || true", "timeout": 10},
+            {"type": "command", "command": "tak mesh join --format minimal >/dev/null 2>/dev/null || true", "timeout": 10}
+        ]
             }]
         }
     });
@@ -937,7 +943,10 @@ fn test_setup_remove_cleans_hooks() {
 
     let target = serde_json::json!({
         "matcher": "",
-        "hooks": [{"type": "command", "command": "tak reindex 2>/dev/null || true", "timeout": 10}]
+        "hooks": [
+            {"type": "command", "command": "tak reindex 2>/dev/null || true", "timeout": 10},
+            {"type": "command", "command": "tak mesh join --format minimal >/dev/null 2>/dev/null || true", "timeout": 10}
+        ]
     });
 
     let hooks = settings.get_mut("hooks").unwrap().as_object_mut().unwrap();
@@ -978,7 +987,10 @@ fn test_setup_preserves_existing_settings() {
 
     let hook_entry = serde_json::json!({
         "matcher": "",
-        "hooks": [{"type": "command", "command": "tak reindex 2>/dev/null || true", "timeout": 10}]
+        "hooks": [
+            {"type": "command", "command": "tak reindex 2>/dev/null || true", "timeout": 10},
+            {"type": "command", "command": "tak mesh join --format minimal >/dev/null 2>/dev/null || true", "timeout": 10}
+        ]
     });
     let hooks = settings
         .entry("hooks")
@@ -2514,7 +2526,7 @@ fn test_mesh_join_list_leave() {
     let store = MeshStore::open(&dir.path().join(".tak"));
 
     // Join
-    let reg = store.join("agent-1", Some("sess-1")).unwrap();
+    let reg = store.join(Some("agent-1"), Some("sess-1")).unwrap();
     assert_eq!(reg.name, "agent-1");
 
     // List
@@ -2536,8 +2548,8 @@ fn test_mesh_send_inbox_ack() {
     use tak::store::mesh::MeshStore;
     let store = MeshStore::open(&dir.path().join(".tak"));
 
-    store.join("sender", None).unwrap();
-    store.join("receiver", None).unwrap();
+    store.join(Some("sender"), None).unwrap();
+    store.join(Some("receiver"), None).unwrap();
 
     store
         .send("sender", "receiver", "task 5 is ready", None)
@@ -2564,8 +2576,8 @@ fn test_mesh_reserve_conflict_release() {
     use tak::store::mesh::MeshStore;
     let store = MeshStore::open(&dir.path().join(".tak"));
 
-    store.join("A", None).unwrap();
-    store.join("B", None).unwrap();
+    store.join(Some("A"), None).unwrap();
+    store.join(Some("B"), None).unwrap();
 
     store
         .reserve("A", vec!["src/store/".into()], Some("task-1"))
@@ -2600,8 +2612,8 @@ fn test_mesh_feed() {
     use tak::store::mesh::MeshStore;
     let store = MeshStore::open(&dir.path().join(".tak"));
 
-    store.join("A", None).unwrap();
-    store.join("B", None).unwrap();
+    store.join(Some("A"), None).unwrap();
+    store.join(Some("B"), None).unwrap();
     store.send("A", "B", "hello", None).unwrap();
 
     let events = store.read_feed(None).unwrap();
@@ -2622,12 +2634,82 @@ fn test_mesh_leave_cleans_reservations() {
     use tak::store::mesh::MeshStore;
     let store = MeshStore::open(&dir.path().join(".tak"));
 
-    store.join("A", None).unwrap();
+    store.join(Some("A"), None).unwrap();
     store.reserve("A", vec!["src/".into()], None).unwrap();
     store.leave("A").unwrap();
 
     let reservations = store.list_reservations().unwrap();
     assert!(reservations.is_empty());
+}
+
+#[test]
+fn test_blackboard_post_close_reopen() {
+    let dir = tempdir().unwrap();
+    let store = FileStore::init(dir.path()).unwrap();
+
+    store
+        .create(
+            "Investigate flaky test".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![],
+            vec![],
+            Contract::default(),
+            Planning::default(),
+        )
+        .unwrap();
+
+    tak::commands::blackboard::post(
+        dir.path(),
+        "agent_1",
+        "Need help triaging this",
+        vec!["triage".into()],
+        vec![1],
+        Format::Json,
+    )
+    .unwrap();
+
+    use tak::store::blackboard::{BlackboardStatus, BlackboardStore};
+    let board = BlackboardStore::open(&dir.path().join(".tak"));
+
+    let notes = board.list(None, None, None, None).unwrap();
+    assert_eq!(notes.len(), 1);
+    assert_eq!(notes[0].status, BlackboardStatus::Open);
+    assert_eq!(notes[0].task_ids, vec![1]);
+
+    tak::commands::blackboard::close(
+        dir.path(),
+        notes[0].id,
+        "reviewer",
+        Some("handled"),
+        Format::Json,
+    )
+    .unwrap();
+
+    let closed = board.get(notes[0].id).unwrap();
+    assert_eq!(closed.status, BlackboardStatus::Closed);
+    assert_eq!(closed.closed_by.as_deref(), Some("reviewer"));
+
+    tak::commands::blackboard::reopen(dir.path(), notes[0].id, "agent_1", Format::Json).unwrap();
+    let reopened = board.get(notes[0].id).unwrap();
+    assert_eq!(reopened.status, BlackboardStatus::Open);
+}
+
+#[test]
+fn test_blackboard_post_invalid_task_link_fails() {
+    let dir = tempdir().unwrap();
+    FileStore::init(dir.path()).unwrap();
+
+    let result = tak::commands::blackboard::post(
+        dir.path(),
+        "agent_1",
+        "link to missing task",
+        vec![],
+        vec![999],
+        Format::Json,
+    );
+    assert!(matches!(result.unwrap_err(), TakError::TaskNotFound(999)));
 }
 
 #[test]

@@ -6,7 +6,12 @@ use crate::error::Result;
 use crate::output::Format;
 use crate::store::mesh::MeshStore;
 
-pub fn join(repo_root: &Path, name: &str, session_id: Option<&str>, format: Format) -> Result<()> {
+pub fn join(
+    repo_root: &Path,
+    name: Option<&str>,
+    session_id: Option<&str>,
+    format: Format,
+) -> Result<()> {
     let store = MeshStore::open(&repo_root.join(".tak"));
     let reg = store.join(name, session_id)?;
     match format {
@@ -14,20 +19,24 @@ pub fn join(repo_root: &Path, name: &str, session_id: Option<&str>, format: Form
         Format::Pretty => {
             println!("Joined mesh as '{}'", reg.name.cyan().bold());
             println!("  {} {}", "session:".dimmed(), reg.session_id);
-            println!("  {} {}", "pid:".dimmed(), reg.pid);
         }
         Format::Minimal => println!("{}", reg.name),
     }
     Ok(())
 }
 
-pub fn leave(repo_root: &Path, name: &str, format: Format) -> Result<()> {
+pub fn leave(repo_root: &Path, name: Option<&str>, format: Format) -> Result<()> {
     let store = MeshStore::open(&repo_root.join(".tak"));
-    store.leave(name)?;
+    let left = if let Some(name) = name {
+        store.leave(name)?;
+        name.to_string()
+    } else {
+        store.leave_current()?
+    };
     match format {
-        Format::Json => println!("{}", serde_json::json!({"left": name})),
-        Format::Pretty => println!("Left mesh: '{}'", name.cyan()),
-        Format::Minimal => println!("{name}"),
+        Format::Json => println!("{}", serde_json::json!({"left": left})),
+        Format::Pretty => println!("Left mesh: '{}'", left.cyan()),
+        Format::Minimal => println!("{left}"),
     }
     Ok(())
 }
@@ -43,9 +52,8 @@ pub fn list(repo_root: &Path, format: Format) -> Result<()> {
             } else {
                 for a in &agents {
                     println!(
-                        "{} {} {}",
+                        "{} {}",
                         format!("[{}]", a.name).cyan().bold(),
-                        format!("pid={}", a.pid).dimmed(),
                         format!("session={}", a.session_id).dimmed(),
                     );
                     println!("  {} {}", "cwd:".dimmed(), a.cwd);

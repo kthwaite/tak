@@ -1,6 +1,7 @@
 use clap::{Parser, Subcommand};
 use tak::model::{DepType, Estimate, Kind, LearningCategory, Priority, Risk, Status};
 use tak::output::Format;
+use tak::store::blackboard::BlackboardStatus;
 
 #[derive(Parser)]
 #[command(
@@ -182,7 +183,7 @@ enum Commands {
     },
     /// Atomically find and start the next available task
     Claim {
-        /// Who is claiming the task (default: $TAK_AGENT, then pid-{PID})
+        /// Who is claiming the task (default: $TAK_AGENT, then auto-generated)
         #[arg(long)]
         assignee: Option<String>,
         /// Only claim tasks with this tag
@@ -275,6 +276,11 @@ enum Commands {
     Mesh {
         #[command(subcommand)]
         action: MeshAction,
+    },
+    /// Shared coordination blackboard
+    Blackboard {
+        #[command(subcommand)]
+        action: BlackboardAction,
     },
     /// Rebuild the SQLite index from task files
     Reindex,
@@ -376,18 +382,18 @@ enum LearnAction {
 enum MeshAction {
     /// Register this agent in the mesh
     Join {
-        /// Agent name
+        /// Agent name (auto-generated if omitted)
         #[arg(long)]
-        name: String,
+        name: Option<String>,
         /// Session ID (auto-generated if omitted)
         #[arg(long)]
         session_id: Option<String>,
     },
     /// Unregister from the mesh
     Leave {
-        /// Agent name
+        /// Agent name (optional; resolves from current session when omitted)
         #[arg(long)]
-        name: String,
+        name: Option<String>,
     },
     /// List registered agents
     List,
@@ -450,6 +456,64 @@ enum MeshAction {
         /// Show only the last N events
         #[arg(long)]
         limit: Option<usize>,
+    },
+}
+
+#[derive(Subcommand)]
+enum BlackboardAction {
+    /// Post a shared note to the blackboard
+    Post {
+        /// Author/agent name
+        #[arg(long)]
+        from: String,
+        /// Message text
+        #[arg(long)]
+        message: String,
+        /// Tags (comma-separated)
+        #[arg(long, value_delimiter = ',')]
+        tag: Vec<String>,
+        /// Link note to task IDs (comma-separated)
+        #[arg(long = "task", value_delimiter = ',')]
+        task_ids: Vec<u64>,
+    },
+    /// List blackboard notes with optional filters
+    List {
+        /// Filter by status
+        #[arg(long, value_enum)]
+        status: Option<BlackboardStatus>,
+        /// Filter by tag
+        #[arg(long)]
+        tag: Option<String>,
+        /// Filter by linked task ID
+        #[arg(long = "task")]
+        task_id: Option<u64>,
+        /// Show only the most recent N notes
+        #[arg(long)]
+        limit: Option<usize>,
+    },
+    /// Show one note
+    Show {
+        /// Blackboard note ID
+        id: u64,
+    },
+    /// Close (resolve) a note
+    Close {
+        /// Blackboard note ID
+        id: u64,
+        /// Agent closing the note
+        #[arg(long)]
+        by: String,
+        /// Optional closure reason
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    /// Re-open a closed note
+    Reopen {
+        /// Blackboard note ID
+        id: u64,
+        /// Agent re-opening the note
+        #[arg(long)]
+        by: String,
     },
 }
 
@@ -589,7 +653,7 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
         Commands::Claim { assignee, tag } => {
             let assignee = assignee
                 .or_else(tak::agent::resolve_agent)
-                .unwrap_or_else(tak::agent::pid_fallback);
+                .unwrap_or_else(tak::agent::generated_fallback);
             tak::commands::claim::run(&root, assignee, tag, format)
         }
         Commands::Reopen { id } => tak::commands::lifecycle::reopen(&root, id, format),
@@ -658,9 +722,11 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
         },
         Commands::Mesh { action } => match action {
             MeshAction::Join { name, session_id } => {
-                tak::commands::mesh::join(&root, &name, session_id.as_deref(), format)
+                tak::commands::mesh::join(&root, name.as_deref(), session_id.as_deref(), format)
             }
-            MeshAction::Leave { name } => tak::commands::mesh::leave(&root, &name, format),
+            MeshAction::Leave { name } => {
+                tak::commands::mesh::leave(&root, name.as_deref(), format)
+            }
             MeshAction::List => tak::commands::mesh::list(&root, format),
             MeshAction::Send { from, to, message } => {
                 tak::commands::mesh::send(&root, &from, &to, &message, format)
@@ -680,6 +746,27 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
                 tak::commands::mesh::release(&root, &name, paths, all, format)
             }
             MeshAction::Feed { limit } => tak::commands::mesh::feed(&root, limit, format),
+        },
+        Commands::Blackboard { action } => match action {
+            BlackboardAction::Post {
+                from,
+                message,
+                tag,
+                task_ids,
+            } => tak::commands::blackboard::post(&root, &from, &message, tag, task_ids, format),
+            BlackboardAction::List {
+                status,
+                tag,
+                task_id,
+                limit,
+            } => tak::commands::blackboard::list(&root, status, tag, task_id, limit, format),
+            BlackboardAction::Show { id } => tak::commands::blackboard::show(&root, id, format),
+            BlackboardAction::Close { id, by, reason } => {
+                tak::commands::blackboard::close(&root, id, &by, reason.as_deref(), format)
+            }
+            BlackboardAction::Reopen { id, by } => {
+                tak::commands::blackboard::reopen(&root, id, &by, format)
+            }
         },
         Commands::Reindex => tak::commands::reindex::run(&root),
     }

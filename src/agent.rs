@@ -6,9 +6,10 @@ pub fn resolve_agent() -> Option<String> {
     std::env::var("TAK_AGENT").ok().filter(|s| !s.is_empty())
 }
 
-/// PID-based fallback for contexts that require an assignee (e.g. `claim`).
-pub fn pid_fallback() -> String {
-    format!("pid-{}", std::process::id())
+/// Auto-generated fallback for contexts that require an assignee (e.g. `claim`).
+pub fn generated_fallback() -> String {
+    let token = uuid::Uuid::new_v4().simple().to_string();
+    format!("agent-{}", &token[..8])
 }
 
 #[cfg(test)]
@@ -20,10 +21,10 @@ mod tests {
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
-    fn pid_fallback_is_nonempty() {
-        let f = pid_fallback();
-        assert!(f.starts_with("pid-"));
-        assert!(f.len() > 4);
+    fn generated_fallback_is_nonempty() {
+        let f = generated_fallback();
+        assert!(f.starts_with("agent-"));
+        assert!(f.len() > 6);
     }
 
     #[test]

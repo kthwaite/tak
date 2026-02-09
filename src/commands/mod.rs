@@ -1,3 +1,4 @@
+pub mod blackboard;
 pub mod claim;
 pub mod context;
 pub mod create;

@@ -15,7 +15,6 @@ use crate::store::lock;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Registration {
     pub name: String,
-    pub pid: u32,
     pub session_id: String,
     pub cwd: String,
     pub started_at: DateTime<Utc>,
@@ -197,31 +196,71 @@ impl MeshStore {
         Ok(())
     }
 
+    fn generate_name() -> String {
+        let token = uuid::Uuid::new_v4().simple().to_string();
+        format!("agent-{}", &token[..8])
+    }
+
+    fn resolve_session_id(session_id: Option<&str>) -> String {
+        session_id
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .or_else(|| {
+                std::env::var("TAK_SESSION_ID")
+                    .ok()
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+            })
+            .or_else(|| {
+                std::env::var("CLAUDE_SESSION_ID")
+                    .ok()
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+            })
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string())
+    }
+
     /// Register an agent in the mesh. Creates registry entry + inbox dir.
-    pub fn join(&self, name: &str, session_id: Option<&str>) -> crate::error::Result<Registration> {
-        Self::validate_name(name)?;
+    ///
+    /// If `name` is omitted, a unique `agent-<token>` name is auto-generated.
+    pub fn join(
+        &self,
+        name: Option<&str>,
+        session_id: Option<&str>,
+    ) -> crate::error::Result<Registration> {
+        if let Some(name) = name {
+            Self::validate_name(name)?;
+        }
         self.ensure_dirs()?;
 
         let lock = lock::acquire_lock(&self.registry_lock_path())?;
 
-        // Check for name conflict
-        let path = self.registration_path(name);
-        if path.exists() {
-            lock::release_lock(lock)?;
-            return Err(crate::error::TakError::MeshNameConflict(name.into()));
-        }
+        let resolved_name = if let Some(name) = name {
+            let path = self.registration_path(name);
+            if path.exists() {
+                lock::release_lock(lock)?;
+                return Err(crate::error::TakError::MeshNameConflict(name.into()));
+            }
+            name.to_string()
+        } else {
+            let mut generated = Self::generate_name();
+            while self.registration_path(&generated).exists() {
+                generated = Self::generate_name();
+            }
+            generated
+        };
+
+        let path = self.registration_path(&resolved_name);
 
         let now = Utc::now();
-        let sid = session_id
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let sid = Self::resolve_session_id(session_id);
         let cwd = std::env::current_dir()
             .map(|p| p.display().to_string())
             .unwrap_or_default();
 
         let reg = Registration {
-            name: name.into(),
-            pid: std::process::id(),
+            name: resolved_name.clone(),
             session_id: sid,
             cwd,
             started_at: now,
@@ -234,14 +273,14 @@ impl MeshStore {
         fs::write(&path, json)?;
 
         // Create inbox directory for this agent
-        fs::create_dir_all(self.agent_inbox_dir(name))?;
+        fs::create_dir_all(self.agent_inbox_dir(&resolved_name))?;
 
         lock::release_lock(lock)?;
 
         // Best-effort feed event
         let _ = self.append_feed(&FeedEvent {
             ts: now,
-            agent: name.into(),
+            agent: resolved_name,
             event_type: "mesh.join".into(),
             target: None,
             preview: Some("joined the mesh".into()),
@@ -291,12 +330,98 @@ impl MeshStore {
         Ok(())
     }
 
+    /// Unregister the current agent using implicit context.
+    ///
+    /// Resolution order:
+    /// 1) `$TAK_AGENT` name
+    /// 2) `$TAK_SESSION_ID`/`$CLAUDE_SESSION_ID` match (prefer current cwd)
+    /// 3) single agent in current cwd
+    /// 4) single agent in registry
+    pub fn leave_current(&self) -> crate::error::Result<String> {
+        if let Some(name) = std::env::var("TAK_AGENT")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+        {
+            self.leave(&name)?;
+            return Ok(name);
+        }
+
+        let agents = self.list_agents()?;
+        if agents.is_empty() {
+            return Err(crate::error::TakError::MeshAgentNotFound(
+                "current-session".into(),
+            ));
+        }
+
+        let cwd = std::env::current_dir()
+            .ok()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default();
+
+        let session_id = std::env::var("TAK_SESSION_ID")
+            .ok()
+            .or_else(|| std::env::var("CLAUDE_SESSION_ID").ok())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+
+        if let Some(sid) = session_id {
+            let by_session: Vec<&Registration> = agents
+                .iter()
+                .filter(|a| a.session_id == sid && (cwd.is_empty() || a.cwd == cwd))
+                .collect();
+            if by_session.len() == 1 {
+                let name = by_session[0].name.clone();
+                self.leave(&name)?;
+                return Ok(name);
+            }
+            if by_session.len() > 1 {
+                let names = by_session
+                    .iter()
+                    .map(|a| a.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                return Err(crate::error::TakError::MeshAmbiguousAgent(names));
+            }
+        }
+
+        let by_cwd: Vec<&Registration> = agents
+            .iter()
+            .filter(|a| !cwd.is_empty() && a.cwd == cwd)
+            .collect();
+        if by_cwd.len() == 1 {
+            let name = by_cwd[0].name.clone();
+            self.leave(&name)?;
+            return Ok(name);
+        }
+        if by_cwd.len() > 1 {
+            let names = by_cwd
+                .iter()
+                .map(|a| a.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(crate::error::TakError::MeshAmbiguousAgent(names));
+        }
+
+        if agents.len() == 1 {
+            let name = agents[0].name.clone();
+            self.leave(&name)?;
+            return Ok(name);
+        }
+
+        let names = agents
+            .iter()
+            .map(|a| a.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        Err(crate::error::TakError::MeshAmbiguousAgent(names))
+    }
+
     /// List all registered agents.
     ///
-    /// Note: PID-based stale cleanup is intentionally NOT done here because
-    /// `tak` is a CLI tool where each invocation is a separate process.
-    /// The PID stored at `join` time is always dead by the next command.
-    /// Use a future `mesh cleanup --stale` for explicit stale detection.
+    /// Stale cleanup is intentionally NOT done here. Presence records are
+    /// explicit runtime state; use a future `mesh cleanup --stale` command for
+    /// policy-driven cleanup.
     pub fn list_agents(&self) -> crate::error::Result<Vec<Registration>> {
         if !self.exists() {
             return Ok(vec![]);
@@ -609,26 +734,6 @@ impl MeshStore {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Check if a PID is alive using `kill -0` (signal 0 checks existence without
-/// actually sending a signal). Reserved for future `mesh cleanup --stale`.
-#[cfg(unix)]
-#[allow(dead_code)]
-fn is_pid_alive(pid: u32) -> bool {
-    std::process::Command::new("kill")
-        .args(["-0", &pid.to_string()])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(true) // Conservative: assume alive on error
-}
-
-#[cfg(not(unix))]
-#[allow(dead_code)]
-fn is_pid_alive(_pid: u32) -> bool {
-    true // Conservative: assume alive on non-Unix
-}
-
 /// Lexically normalize a path: resolve `.`/`..` components, collapse duplicate
 /// separators. Preserves trailing slash (directory indicator).
 fn normalize_path(path: &str) -> String {
@@ -686,7 +791,10 @@ fn truncate(s: &str, max_len: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
     use tempfile::tempdir;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     // -- setup helper -------------------------------------------------------
 
@@ -705,7 +813,6 @@ mod tests {
     fn registration_round_trips() {
         let reg = Registration {
             name: "agent-1".into(),
-            pid: 12345,
             session_id: "test-session".into(),
             cwd: "/repo".into(),
             started_at: Utc::now(),
@@ -821,7 +928,7 @@ mod tests {
     #[test]
     fn join_and_list() {
         let (_dir, store) = setup_mesh();
-        let reg = store.join("agent-1", Some("sess-1")).unwrap();
+        let reg = store.join(Some("agent-1"), Some("sess-1")).unwrap();
         assert_eq!(reg.name, "agent-1");
         assert_eq!(reg.session_id, "sess-1");
         assert_eq!(reg.status, "active");
@@ -833,26 +940,91 @@ mod tests {
     }
 
     #[test]
+    fn join_auto_generates_name() {
+        let (_dir, store) = setup_mesh();
+        let reg = store.join(None, Some("sess-1")).unwrap();
+        assert!(reg.name.starts_with("agent-"));
+        assert_eq!(reg.session_id, "sess-1");
+        assert!(store.agent_inbox_dir(&reg.name).exists());
+    }
+
+    #[test]
+    fn join_auto_name_is_unique() {
+        let (_dir, store) = setup_mesh();
+        let a = store.join(None, None).unwrap();
+        let b = store.join(None, None).unwrap();
+        assert_ne!(a.name, b.name);
+    }
+
+    #[test]
+    fn join_uses_env_session_id_when_not_provided() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        unsafe { std::env::set_var("CLAUDE_SESSION_ID", "sess-from-env") };
+
+        let (_dir, store) = setup_mesh();
+        let reg = store.join(Some("agent-env"), None).unwrap();
+        assert_eq!(reg.session_id, "sess-from-env");
+
+        unsafe { std::env::remove_var("CLAUDE_SESSION_ID") };
+    }
+
+    #[test]
+    fn leave_current_prefers_session_id() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        unsafe { std::env::set_var("CLAUDE_SESSION_ID", "sess-a") };
+
+        let (_dir, store) = setup_mesh();
+        store.join(Some("agent-a"), Some("sess-a")).unwrap();
+        store.join(Some("agent-b"), Some("sess-b")).unwrap();
+
+        let left = store.leave_current().unwrap();
+        assert_eq!(left, "agent-a");
+
+        let agents = store.list_agents().unwrap();
+        assert_eq!(agents.len(), 1);
+        assert_eq!(agents[0].name, "agent-b");
+
+        unsafe { std::env::remove_var("CLAUDE_SESSION_ID") };
+    }
+
+    #[test]
+    fn leave_current_ambiguous_without_context() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        unsafe {
+            std::env::remove_var("TAK_AGENT");
+            std::env::remove_var("TAK_SESSION_ID");
+            std::env::remove_var("CLAUDE_SESSION_ID");
+        }
+
+        let (_dir, store) = setup_mesh();
+        store.join(Some("agent-a"), Some("sess-a")).unwrap();
+        store.join(Some("agent-b"), Some("sess-b")).unwrap();
+
+        let err = store.leave_current().unwrap_err();
+        assert!(matches!(err, crate::error::TakError::MeshAmbiguousAgent(_)));
+    }
+
+    #[test]
     fn join_name_conflict() {
         let (_dir, store) = setup_mesh();
-        store.join("agent-1", None).unwrap();
-        let err = store.join("agent-1", None).unwrap_err();
+        store.join(Some("agent-1"), None).unwrap();
+        let err = store.join(Some("agent-1"), None).unwrap_err();
         assert!(matches!(err, crate::error::TakError::MeshNameConflict(_)));
     }
 
     #[test]
     fn join_invalid_name() {
         let (_dir, store) = setup_mesh();
-        assert!(store.join("", None).is_err());
-        assert!(store.join("has space", None).is_err());
-        assert!(store.join("has/slash", None).is_err());
+        assert!(store.join(Some(""), None).is_err());
+        assert!(store.join(Some("has space"), None).is_err());
+        assert!(store.join(Some("has/slash"), None).is_err());
     }
 
     #[test]
     fn path_traversal_rejected_on_all_entry_points() {
         let (_dir, store) = setup_mesh();
         let evil = "../../../etc";
-        assert!(store.join(evil, None).is_err());
+        assert!(store.join(Some(evil), None).is_err());
         assert!(store.leave(evil).is_err());
         assert!(store.send(evil, "ok", "hi", None).is_err());
         assert!(store.send("ok", evil, "hi", None).is_err());
@@ -865,7 +1037,7 @@ mod tests {
     #[test]
     fn leave_removes_registration() {
         let (_dir, store) = setup_mesh();
-        store.join("agent-1", None).unwrap();
+        store.join(Some("agent-1"), None).unwrap();
         store.leave("agent-1").unwrap();
 
         let agents = store.list_agents().unwrap();
@@ -897,8 +1069,8 @@ mod tests {
     #[test]
     fn send_and_inbox() {
         let (_dir, store) = setup_mesh();
-        store.join("sender", None).unwrap();
-        store.join("receiver", None).unwrap();
+        store.join(Some("sender"), None).unwrap();
+        store.join(Some("receiver"), None).unwrap();
 
         let msg = store.send("sender", "receiver", "hello", None).unwrap();
         assert_eq!(msg.from, "sender");
@@ -923,7 +1095,7 @@ mod tests {
     #[test]
     fn send_to_unknown_agent() {
         let (_dir, store) = setup_mesh();
-        store.join("sender", None).unwrap();
+        store.join(Some("sender"), None).unwrap();
         let err = store.send("sender", "ghost", "hello", None).unwrap_err();
         assert!(matches!(err, crate::error::TakError::MeshAgentNotFound(_)));
     }
@@ -931,9 +1103,9 @@ mod tests {
     #[test]
     fn broadcast_sends_to_all_except_sender() {
         let (_dir, store) = setup_mesh();
-        store.join("A", None).unwrap();
-        store.join("B", None).unwrap();
-        store.join("C", None).unwrap();
+        store.join(Some("A"), None).unwrap();
+        store.join(Some("B"), None).unwrap();
+        store.join(Some("C"), None).unwrap();
 
         let msgs = store.broadcast("A", "announcement").unwrap();
         assert_eq!(msgs.len(), 2);
@@ -953,7 +1125,7 @@ mod tests {
     #[test]
     fn inbox_empty_returns_empty_vec() {
         let (_dir, store) = setup_mesh();
-        store.join("lonely", None).unwrap();
+        store.join(Some("lonely"), None).unwrap();
         let msgs = store.inbox("lonely", false).unwrap();
         assert!(msgs.is_empty());
     }
@@ -963,7 +1135,7 @@ mod tests {
     #[test]
     fn reserve_and_list() {
         let (_dir, store) = setup_mesh();
-        store.join("A", None).unwrap();
+        store.join(Some("A"), None).unwrap();
         let res = store
             .reserve("A", vec!["src/store/".into()], Some("task-1"))
             .unwrap();
@@ -977,8 +1149,8 @@ mod tests {
     #[test]
     fn reserve_conflict() {
         let (_dir, store) = setup_mesh();
-        store.join("A", None).unwrap();
-        store.join("B", None).unwrap();
+        store.join(Some("A"), None).unwrap();
+        store.join(Some("B"), None).unwrap();
         store.reserve("A", vec!["src/store/".into()], None).unwrap();
 
         // Sub-path conflict
@@ -994,7 +1166,7 @@ mod tests {
     #[test]
     fn reserve_same_agent_replaces() {
         let (_dir, store) = setup_mesh();
-        store.join("A", None).unwrap();
+        store.join(Some("A"), None).unwrap();
         store.reserve("A", vec!["src/a.rs".into()], None).unwrap();
         store.reserve("A", vec!["src/b.rs".into()], None).unwrap();
 
@@ -1006,7 +1178,7 @@ mod tests {
     #[test]
     fn release_specific_paths() {
         let (_dir, store) = setup_mesh();
-        store.join("A", None).unwrap();
+        store.join(Some("A"), None).unwrap();
         store
             .reserve("A", vec!["src/a.rs".into(), "src/b.rs".into()], None)
             .unwrap();
@@ -1020,7 +1192,7 @@ mod tests {
     #[test]
     fn release_all() {
         let (_dir, store) = setup_mesh();
-        store.join("A", None).unwrap();
+        store.join(Some("A"), None).unwrap();
         store.reserve("A", vec!["src/a.rs".into()], None).unwrap();
         store.release("A", vec![]).unwrap();
 
@@ -1031,7 +1203,7 @@ mod tests {
     #[test]
     fn corrupt_reservations_errors_instead_of_silent_drop() {
         let (_dir, store) = setup_mesh();
-        store.join("A", None).unwrap();
+        store.join(Some("A"), None).unwrap();
         // Write corrupt data
         fs::write(store.reservations_path(), "NOT VALID JSON").unwrap();
         // All reservation operations should error, not silently default
@@ -1070,7 +1242,7 @@ mod tests {
     #[test]
     fn leave_cleans_up_reservations() {
         let (_dir, store) = setup_mesh();
-        store.join("A", None).unwrap();
+        store.join(Some("A"), None).unwrap();
         store.reserve("A", vec!["src/a.rs".into()], None).unwrap();
         store.leave("A").unwrap();
 
@@ -1083,7 +1255,7 @@ mod tests {
     #[test]
     fn reserve_normalizes_stored_paths() {
         let (_dir, store) = setup_mesh();
-        store.join("A", None).unwrap();
+        store.join(Some("A"), None).unwrap();
         store
             .reserve("A", vec!["src/./lib.rs".into()], None)
             .unwrap();
@@ -1094,11 +1266,9 @@ mod tests {
     #[test]
     fn reserve_detects_conflict_through_equivalent_spelling() {
         let (_dir, store) = setup_mesh();
-        store.join("A", None).unwrap();
-        store.join("B", None).unwrap();
-        store
-            .reserve("A", vec!["src/store/".into()], None)
-            .unwrap();
+        store.join(Some("A"), None).unwrap();
+        store.join(Some("B"), None).unwrap();
+        store.reserve("A", vec!["src/store/".into()], None).unwrap();
         let err = store
             .reserve("B", vec!["./src/store/mesh.rs".into()], None)
             .unwrap_err();
@@ -1111,7 +1281,7 @@ mod tests {
     #[test]
     fn release_with_equivalent_spelling() {
         let (_dir, store) = setup_mesh();
-        store.join("A", None).unwrap();
+        store.join(Some("A"), None).unwrap();
         store
             .reserve("A", vec!["src/a.rs".into(), "src/b.rs".into()], None)
             .unwrap();
@@ -1124,10 +1294,8 @@ mod tests {
     #[test]
     fn release_trailing_slash_equivalence() {
         let (_dir, store) = setup_mesh();
-        store.join("A", None).unwrap();
-        store
-            .reserve("A", vec!["src/store/".into()], None)
-            .unwrap();
+        store.join(Some("A"), None).unwrap();
+        store.reserve("A", vec!["src/store/".into()], None).unwrap();
         // Release without trailing slash — should still match
         store.release("A", vec!["src/store".into()]).unwrap();
         let all = store.list_reservations().unwrap();
@@ -1157,7 +1325,7 @@ mod tests {
     #[test]
     fn leave_with_corrupt_reservations_preserves_registration() {
         let (_dir, store) = setup_mesh();
-        store.join("A", None).unwrap();
+        store.join(Some("A"), None).unwrap();
         fs::write(store.reservations_path(), "NOT VALID JSON").unwrap();
         // leave should fail due to corrupt reservations
         assert!(store.leave("A").is_err());
@@ -1173,27 +1341,21 @@ mod tests {
     #[test]
     fn list_agents_errors_on_corrupt_registry() {
         let (_dir, store) = setup_mesh();
-        store.join("good", None).unwrap();
+        store.join(Some("good"), None).unwrap();
         // Write corrupt registry entry
         fs::write(store.registration_path("bad"), "NOT VALID JSON").unwrap();
         let err = store.list_agents().unwrap_err();
-        assert!(matches!(
-            err,
-            crate::error::TakError::MeshCorruptFile(_, _)
-        ));
+        assert!(matches!(err, crate::error::TakError::MeshCorruptFile(_, _)));
     }
 
     #[test]
     fn inbox_errors_on_corrupt_message() {
         let (_dir, store) = setup_mesh();
-        store.join("A", None).unwrap();
+        store.join(Some("A"), None).unwrap();
         // Write corrupt message to inbox
         let inbox = store.agent_inbox_dir("A");
         fs::write(inbox.join("corrupt.json"), "NOT VALID JSON").unwrap();
         let err = store.inbox("A", false).unwrap_err();
-        assert!(matches!(
-            err,
-            crate::error::TakError::MeshCorruptFile(_, _)
-        ));
+        assert!(matches!(err, crate::error::TakError::MeshCorruptFile(_, _)));
     }
 }

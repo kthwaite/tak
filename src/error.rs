@@ -40,6 +40,9 @@ pub enum TakError {
     #[error("mesh: agent '{0}' not found in registry")]
     MeshAgentNotFound(String),
 
+    #[error("mesh: multiple matching agents found ({0}); specify --name")]
+    MeshAmbiguousAgent(String),
+
     #[error("mesh: agent name '{0}' is already registered")]
     MeshNameConflict(String),
 
@@ -51,6 +54,18 @@ pub enum TakError {
 
     #[error("mesh: corrupt file '{0}': {1}")]
     MeshCorruptFile(String, String),
+
+    #[error("blackboard: note {0} not found")]
+    BlackboardNoteNotFound(u64),
+
+    #[error("blackboard: agent name must be non-empty ASCII alphanumeric/hyphen/underscore")]
+    BlackboardInvalidName,
+
+    #[error("blackboard: message cannot be empty")]
+    BlackboardInvalidMessage,
+
+    #[error("blackboard: corrupt file '{0}': {1}")]
+    BlackboardCorruptFile(String, String),
 
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
@@ -77,10 +92,15 @@ impl TakError {
             Self::TaskInUse(_) => "task_in_use",
             Self::Locked(_) => "locked",
             Self::MeshAgentNotFound(_) => "mesh_agent_not_found",
+            Self::MeshAmbiguousAgent(_) => "mesh_ambiguous_agent",
             Self::MeshNameConflict(_) => "mesh_name_conflict",
             Self::MeshInvalidName => "mesh_invalid_name",
             Self::MeshReservationConflict(_, _) => "mesh_reservation_conflict",
             Self::MeshCorruptFile(_, _) => "mesh_corrupt_file",
+            Self::BlackboardNoteNotFound(_) => "blackboard_note_not_found",
+            Self::BlackboardInvalidName => "blackboard_invalid_name",
+            Self::BlackboardInvalidMessage => "blackboard_invalid_message",
+            Self::BlackboardCorruptFile(_, _) => "blackboard_corrupt_file",
             Self::Io(_) => "io_error",
             Self::Json(_) => "json_error",
             Self::Db(_) => "db_error",

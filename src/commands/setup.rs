@@ -12,15 +12,40 @@ const SKILL_TASK_MGMT: &str = include_str!("../../claude-plugin/skills/task-mana
 const SKILL_EPIC_PLAN: &str = include_str!("../../claude-plugin/skills/epic-planning/SKILL.md");
 const SKILL_TASK_EXEC: &str = include_str!("../../claude-plugin/skills/task-execution/SKILL.md");
 
-/// The hook entry tak injects into Claude Code settings.
-fn tak_hook_entry() -> Value {
+const REINDEX_HOOK_COMMAND: &str = "tak reindex 2>/dev/null || true";
+const MESH_JOIN_HOOK_COMMAND: &str =
+    "tak mesh join --format minimal >/dev/null 2>/dev/null || true";
+const MESH_LEAVE_HOOK_COMMAND: &str =
+    "tak mesh leave --format minimal >/dev/null 2>/dev/null || true";
+
+fn session_start_hook_entry() -> Value {
     json!({
         "matcher": "",
-        "hooks": [{
-            "type": "command",
-            "command": "tak reindex 2>/dev/null || true",
-            "timeout": 10
-        }]
+        "hooks": [
+            {
+                "type": "command",
+                "command": REINDEX_HOOK_COMMAND,
+                "timeout": 10
+            },
+            {
+                "type": "command",
+                "command": MESH_JOIN_HOOK_COMMAND,
+                "timeout": 10
+            }
+        ]
+    })
+}
+
+fn stop_hook_entry() -> Value {
+    json!({
+        "matcher": "",
+        "hooks": [
+            {
+                "type": "command",
+                "command": MESH_LEAVE_HOOK_COMMAND,
+                "timeout": 10
+            }
+        ]
     })
 }
 
@@ -98,16 +123,75 @@ fn write_settings(path: &Path, settings: &Map<String, Value>) -> Result<()> {
     Ok(())
 }
 
-/// Check if the tak hook entry already exists in a SessionStart array.
-fn has_tak_hook(session_start: &[Value]) -> bool {
-    let target = tak_hook_entry();
+fn is_tak_entry_with_command(entry: &Value, command: &str) -> bool {
+    let Some(obj) = entry.as_object() else {
+        return false;
+    };
+
+    if obj.get("matcher").and_then(Value::as_str) != Some("") {
+        return false;
+    }
+
+    let Some(hooks) = obj.get("hooks").and_then(Value::as_array) else {
+        return false;
+    };
+
+    hooks.iter().any(|hook| {
+        hook.get("type").and_then(Value::as_str) == Some("command")
+            && hook.get("command").and_then(Value::as_str) == Some(command)
+    })
+}
+
+fn is_tak_session_start_entry(entry: &Value) -> bool {
+    is_tak_entry_with_command(entry, REINDEX_HOOK_COMMAND)
+}
+
+fn is_tak_stop_entry(entry: &Value) -> bool {
+    is_tak_entry_with_command(entry, MESH_LEAVE_HOOK_COMMAND)
+}
+
+fn has_session_start_hook(session_start: &[Value]) -> bool {
+    let target = session_start_hook_entry();
     session_start.iter().any(|entry| entry == &target)
+}
+
+fn has_stop_hook(stop: &[Value]) -> bool {
+    let target = stop_hook_entry();
+    stop.iter().any(|entry| entry == &target)
+}
+
+fn upsert_hook_entry(
+    hooks_obj: &mut Map<String, Value>,
+    event: &str,
+    hook_entry: Value,
+    matcher: fn(&Value) -> bool,
+) -> bool {
+    let event_val = hooks_obj.entry(event).or_insert_with(|| json!([]));
+
+    let arr = match event_val.as_array_mut() {
+        Some(a) => a,
+        None => {
+            *event_val = json!([]);
+            event_val.as_array_mut().unwrap()
+        }
+    };
+
+    if arr.iter().any(|entry| entry == &hook_entry) {
+        return false; // already installed with current shape
+    }
+
+    if let Some(existing) = arr.iter_mut().find(|entry| matcher(entry)) {
+        // Migrate legacy tak hook entries in place.
+        *existing = hook_entry;
+        return true;
+    }
+
+    arr.push(hook_entry);
+    true
 }
 
 /// Install hook into settings.
 fn install_hook(settings: &mut Map<String, Value>) -> bool {
-    let hook_entry = tak_hook_entry();
-
     let hooks = settings.entry("hooks").or_insert_with(|| json!({}));
 
     let hooks_obj = match hooks.as_object_mut() {
@@ -118,49 +202,50 @@ fn install_hook(settings: &mut Map<String, Value>) -> bool {
         }
     };
 
-    let session_start = hooks_obj.entry("SessionStart").or_insert_with(|| json!([]));
-
-    let arr = match session_start.as_array_mut() {
-        Some(a) => a,
-        None => {
-            *session_start = json!([]);
-            session_start.as_array_mut().unwrap()
-        }
-    };
-
-    if has_tak_hook(arr) {
-        return false; // already installed
-    }
-
-    arr.push(hook_entry);
-    true
+    let mut changed = false;
+    changed |= upsert_hook_entry(
+        hooks_obj,
+        "SessionStart",
+        session_start_hook_entry(),
+        is_tak_session_start_entry,
+    );
+    changed |= upsert_hook_entry(hooks_obj, "Stop", stop_hook_entry(), is_tak_stop_entry);
+    changed
 }
 
 /// Remove tak hook entries from settings. Returns true if anything was removed.
 fn remove_hook(settings: &mut Map<String, Value>) -> bool {
-    let target = tak_hook_entry();
-
     let Some(hooks) = settings.get_mut("hooks") else {
         return false;
     };
     let Some(hooks_obj) = hooks.as_object_mut() else {
         return false;
     };
-    let Some(session_start) = hooks_obj.get_mut("SessionStart") else {
-        return false;
-    };
-    let Some(arr) = session_start.as_array_mut() else {
-        return false;
-    };
 
-    let before = arr.len();
-    arr.retain(|entry| entry != &target);
-    let removed = arr.len() < before;
+    let mut removed = false;
 
-    // Clean up empty arrays/objects
-    if arr.is_empty() {
-        hooks_obj.remove("SessionStart");
+    if let Some(session_start) = hooks_obj.get_mut("SessionStart")
+        && let Some(arr) = session_start.as_array_mut()
+    {
+        let before = arr.len();
+        arr.retain(|entry| !is_tak_session_start_entry(entry));
+        removed |= arr.len() < before;
+        if arr.is_empty() {
+            hooks_obj.remove("SessionStart");
+        }
     }
+
+    if let Some(stop) = hooks_obj.get_mut("Stop")
+        && let Some(arr) = stop.as_array_mut()
+    {
+        let before = arr.len();
+        arr.retain(|entry| !is_tak_stop_entry(entry));
+        removed |= arr.len() < before;
+        if arr.is_empty() {
+            hooks_obj.remove("Stop");
+        }
+    }
+
     if hooks_obj.is_empty() {
         settings.remove("hooks");
     }
@@ -170,28 +255,35 @@ fn remove_hook(settings: &mut Map<String, Value>) -> bool {
 
 /// Check whether hooks are installed. Returns Some("project") or Some("global") or None.
 pub fn check_hooks_installed() -> Option<&'static str> {
-    if settings_has_tak_hook(false) {
+    if settings_has_tak_hooks(false) {
         Some("project")
-    } else if settings_has_tak_hook(true) {
+    } else if settings_has_tak_hooks(true) {
         Some("global")
     } else {
         None
     }
 }
 
-/// Check if the settings file (project or global) contains the tak hook.
-fn settings_has_tak_hook(global: bool) -> bool {
+/// Check if the settings file (project or global) contains both tak hooks.
+fn settings_has_tak_hooks(global: bool) -> bool {
     let Ok(path) = settings_path(global) else {
         return false;
     };
     let Ok(settings) = read_settings(&path) else {
         return false;
     };
-    settings
-        .get("hooks")
-        .and_then(|h| h.get("SessionStart"))
-        .and_then(|ss| ss.as_array())
-        .is_some_and(|arr| has_tak_hook(arr))
+
+    let Some(hooks) = settings.get("hooks") else {
+        return false;
+    };
+    let Some(session_start) = hooks.get("SessionStart").and_then(Value::as_array) else {
+        return false;
+    };
+    let Some(stop) = hooks.get("Stop").and_then(Value::as_array) else {
+        return false;
+    };
+
+    has_session_start_hook(session_start) && has_stop_hook(stop)
 }
 
 /// Check whether plugin files exist and match embedded content.
@@ -430,6 +522,50 @@ mod tests {
     }
 
     #[test]
+    fn install_hook_migrates_legacy_entry() {
+        let mut settings = Map::new();
+        settings.insert(
+            "hooks".into(),
+            json!({
+                "SessionStart": [{
+                    "matcher": "",
+                    "hooks": [{
+                        "type": "command",
+                        "command": REINDEX_HOOK_COMMAND,
+                        "timeout": 10
+                    }]
+                }]
+            }),
+        );
+
+        assert!(install_hook(&mut settings));
+
+        let arr = settings["hooks"]["SessionStart"].as_array().unwrap();
+        assert_eq!(arr.len(), 1, "legacy hook should be replaced in-place");
+
+        let hooks = arr[0]["hooks"].as_array().unwrap();
+        assert!(
+            hooks
+                .iter()
+                .any(|h| h["command"] == json!(REINDEX_HOOK_COMMAND))
+        );
+        assert!(
+            hooks
+                .iter()
+                .any(|h| h["command"] == json!(MESH_JOIN_HOOK_COMMAND))
+        );
+
+        let stop = settings["hooks"]["Stop"].as_array().unwrap();
+        assert_eq!(stop.len(), 1, "stop hook should be added");
+        let stop_hooks = stop[0]["hooks"].as_array().unwrap();
+        assert!(
+            stop_hooks
+                .iter()
+                .any(|h| h["command"] == json!(MESH_LEAVE_HOOK_COMMAND))
+        );
+    }
+
+    #[test]
     fn remove_hook_cleans_up() {
         let mut settings = Map::new();
         install_hook(&mut settings);
@@ -498,6 +634,9 @@ mod tests {
 
         let arr = settings["hooks"]["SessionStart"].as_array().unwrap();
         assert_eq!(arr.len(), 2, "should have both the existing and new hook");
+
+        let stop = settings["hooks"]["Stop"].as_array().unwrap();
+        assert_eq!(stop.len(), 1, "stop hook should be added");
     }
 
     #[test]
