@@ -692,9 +692,15 @@ function formatTaskBadge(task: TakTask): string {
 	return `#${task.id} ${title}`;
 }
 
-function buildTakStatusBar(ctx: ExtensionContext, snapshot: TakStatusSnapshot, workLoop: WorkLoopState): string {
+function buildTakStatusBar(
+	ctx: ExtensionContext,
+	snapshot: TakStatusSnapshot,
+	workLoop: WorkLoopState,
+	agentName?: string,
+): string {
 	const theme = ctx.ui.theme;
 	const parts = [
+		theme.fg(agentName ? "accent" : "dim", `◉ agent ${agentName ?? "(unjoined)"}`),
 		buildStatusChip(theme, "●", "ready", snapshot.readyTasks.length, "success"),
 		buildStatusChip(theme, "◌", "blocked", snapshot.blockedTasks.length, "warning"),
 		buildStatusChip(theme, "◐", "active", snapshot.inProgressTasks.length, "accent"),
@@ -995,7 +1001,7 @@ export default function takPiExtension(pi: ExtensionAPI) {
 			currentTask,
 		};
 
-		ctx.ui.setStatus("tak", buildTakStatusBar(ctx, snapshot, workLoop));
+		ctx.ui.setStatus("tak", buildTakStatusBar(ctx, snapshot, workLoop, agentName));
 
 		if (
 			snapshot.readyTasks.length > 0 ||

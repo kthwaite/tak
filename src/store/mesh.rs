@@ -197,8 +197,7 @@ impl MeshStore {
     }
 
     fn generate_name() -> String {
-        let token = uuid::Uuid::new_v4().simple().to_string();
-        format!("agent-{}", &token[..8])
+        crate::agent::generated_fallback()
     }
 
     fn resolve_session_id(session_id: Option<&str>) -> String {
@@ -223,7 +222,7 @@ impl MeshStore {
 
     /// Register an agent in the mesh. Creates registry entry + inbox dir.
     ///
-    /// If `name` is omitted, a unique `agent-<token>` name is auto-generated.
+    /// If `name` is omitted, a unique adjective-animal codename is auto-generated.
     pub fn join(
         &self,
         name: Option<&str>,
@@ -961,10 +960,15 @@ mod tests {
     }
 
     #[test]
-    fn join_auto_generates_name() {
+    fn join_auto_generates_adjective_animal_name() {
         let (_dir, store) = setup_mesh();
         let reg = store.join(None, Some("sess-1")).unwrap();
-        assert!(reg.name.starts_with("agent-"));
+
+        let parts: Vec<&str> = reg.name.split('-').collect();
+        assert_eq!(parts.len(), 3);
+        assert_eq!(parts[2].len(), 4);
+        assert!(parts[2].chars().all(|c| c.is_ascii_hexdigit()));
+
         assert_eq!(reg.session_id, "sess-1");
         assert!(store.agent_inbox_dir(&reg.name).exists());
     }

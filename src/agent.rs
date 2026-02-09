@@ -6,10 +6,30 @@ pub fn resolve_agent() -> Option<String> {
     std::env::var("TAK_AGENT").ok().filter(|s| !s.is_empty())
 }
 
+const ADJECTIVES: &[&str] = &[
+    "brisk", "calm", "clever", "daring", "eager", "fierce", "gentle", "jolly", "keen", "lively",
+    "mellow", "nimble", "plucky", "quick", "spry", "vivid",
+];
+
+const ANIMALS: &[&str] = &[
+    "otter", "lynx", "falcon", "badger", "fox", "panda", "koala", "tiger", "yak", "heron", "orca",
+    "beaver", "raven", "gecko", "walrus", "cougar",
+];
+
+fn codename_from_uuid(id: uuid::Uuid) -> String {
+    let bytes = id.as_bytes();
+    let adjective = ADJECTIVES[(bytes[0] as usize) % ADJECTIVES.len()];
+    let animal = ANIMALS[(bytes[1] as usize) % ANIMALS.len()];
+    let suffix = format!("{:02x}{:02x}", bytes[2], bytes[3]);
+    format!("{adjective}-{animal}-{suffix}")
+}
+
 /// Auto-generated fallback for contexts that require an assignee (e.g. `claim`).
+///
+/// Uses a memorable adjective-animal codename with a short hex suffix,
+/// for example: `nimble-otter-7fa2`.
 pub fn generated_fallback() -> String {
-    let token = uuid::Uuid::new_v4().simple().to_string();
-    format!("agent-{}", &token[..8])
+    codename_from_uuid(uuid::Uuid::new_v4())
 }
 
 #[cfg(test)]
@@ -21,10 +41,20 @@ mod tests {
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
-    fn generated_fallback_is_nonempty() {
+    fn generated_fallback_uses_adjective_animal_style() {
         let f = generated_fallback();
-        assert!(f.starts_with("agent-"));
-        assert!(f.len() > 6);
+        let parts: Vec<&str> = f.split('-').collect();
+        assert_eq!(parts.len(), 3);
+        assert!(ADJECTIVES.contains(&parts[0]));
+        assert!(ANIMALS.contains(&parts[1]));
+        assert_eq!(parts[2].len(), 4);
+        assert!(parts[2].chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn codename_is_deterministic_for_uuid() {
+        let id = uuid::Uuid::parse_str("00010203-0000-0000-0000-000000000000").unwrap();
+        assert_eq!(codename_from_uuid(id), "brisk-lynx-0203");
     }
 
     #[test]
