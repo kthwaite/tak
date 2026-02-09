@@ -1,0 +1,17 @@
+{
+  "name": "tak-pi-plugin",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Pi integration for tak: task picking, mesh-aware coordination, and blackboard workflows.",
+  "keywords": ["pi-package", "tak", "task-management", "multi-agent", "mesh"],
+  "pi": {
+    "extensions": ["./extensions"],
+    "skills": ["./skills"]
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-ai": "*",
+    "@mariozechner/pi-coding-agent": "*",
+    "@mariozechner/pi-tui": "*",
+    "@sinclair/typebox": "*"
+  }
+}
