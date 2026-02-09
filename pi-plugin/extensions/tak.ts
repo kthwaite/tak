@@ -99,6 +99,16 @@ interface WorkLoopState {
 	processed: number;
 }
 
+interface TakStatusSnapshot {
+	readyTasks: TakTask[];
+	blockedTasks: TakTask[];
+	inProgressTasks: TakTask[];
+	openNotes: BlackboardNote[];
+	inboxCount: number;
+	peerCount: number;
+	currentTask?: TakTask;
+}
+
 interface TakExecResult {
 	ok: boolean;
 	code: number;
@@ -553,6 +563,51 @@ function formatWorkLoopStatus(workLoop: WorkLoopState): string {
 	return parts.join(" | ");
 }
 
+function truncateText(text: string, maxChars: number): string {
+	const normalized = text.replace(/\s+/g, " ").trim();
+	if (normalized.length <= maxChars) return normalized;
+	return `${normalized.slice(0, Math.max(1, maxChars - 1))}…`;
+}
+
+function buildStatusChip(
+	theme: ExtensionContext["ui"]["theme"],
+	icon: string,
+	label: string,
+	count: number,
+	activeColor: "success" | "warning" | "accent" | "muted",
+): string {
+	const tone = count > 0 ? activeColor : "dim";
+	return theme.fg(tone, `${icon} ${label} ${count}`);
+}
+
+function formatTaskBadge(task: TakTask): string {
+	const title = truncateText(task.title, 28);
+	return `#${task.id} ${title}`;
+}
+
+function buildTakStatusBar(ctx: ExtensionContext, snapshot: TakStatusSnapshot, workLoop: WorkLoopState): string {
+	const theme = ctx.ui.theme;
+	const parts = [
+		buildStatusChip(theme, "●", "ready", snapshot.readyTasks.length, "success"),
+		buildStatusChip(theme, "◌", "blocked", snapshot.blockedTasks.length, "warning"),
+		buildStatusChip(theme, "◐", "active", snapshot.inProgressTasks.length, "accent"),
+		buildStatusChip(theme, "◎", "peers", snapshot.peerCount, "muted"),
+		buildStatusChip(theme, "✉", "inbox", snapshot.inboxCount, "warning"),
+		buildStatusChip(theme, "⚑", "bb", snapshot.openNotes.length, "accent"),
+	];
+
+	if (snapshot.currentTask) {
+		parts.push(ctx.ui.theme.fg("accent", `▶ ${formatTaskBadge(snapshot.currentTask)}`));
+	}
+
+	if (workLoop.active) {
+		const mode = workLoop.currentTaskId ? `#${workLoop.currentTaskId}` : "idle";
+		parts.push(theme.fg("warning", `↻ work ${mode}`));
+	}
+
+	return parts.join(theme.fg("dim", "  "));
+}
+
 async function pickFromList(
 	ctx: ExtensionContext,
 	title: string,
@@ -781,13 +836,27 @@ export default function takPiExtension(pi: ExtensionAPI) {
 			return;
 		}
 
-		const readyResult = await runTak(pi, ["list", "--available"]);
-		const readyTasks = Array.isArray(readyResult.parsed) ? sortTasksUrgentThenOldest(readyResult.parsed as TakTask[]) : [];
-		const readyCount = readyTasks.length;
+		const [readyResult, blockedResult, inProgressResult, blackboardResult, meshListResult] = await Promise.all([
+			runTak(pi, ["list", "--available"]),
+			runTak(pi, ["list", "--blocked"]),
+			runTak(pi, ["list", "--status", "in_progress"]),
+			runTak(pi, ["blackboard", "list", "--status", "open"]),
+			runTak(pi, ["mesh", "list"]),
+		]);
 
-		const blackboardResult = await runTak(pi, ["blackboard", "list", "--status", "open"]);
+		const readyTasks = Array.isArray(readyResult.parsed) ? sortTasksUrgentThenOldest(readyResult.parsed as TakTask[]) : [];
+		const blockedTasks = Array.isArray(blockedResult.parsed)
+			? sortTasksUrgentThenOldest(blockedResult.parsed as TakTask[])
+			: [];
+		const inProgressTasks = Array.isArray(inProgressResult.parsed)
+			? sortTasksUrgentThenOldest(inProgressResult.parsed as TakTask[])
+			: [];
 		const openNotes = Array.isArray(blackboardResult.parsed) ? (blackboardResult.parsed as BlackboardNote[]) : [];
-		const openNoteCount = openNotes.length;
+
+		if (Array.isArray(meshListResult.parsed)) {
+			const agents = meshListResult.parsed as MeshAgent[];
+			peerCount = agents.filter((a) => a.name !== agentName).length;
+		}
 
 		let inboxCount = 0;
 		if (agentName) {
@@ -805,28 +874,56 @@ export default function takPiExtension(pi: ExtensionAPI) {
 			}
 		}
 
-		const meshListResult = await runTak(pi, ["mesh", "list"]);
-		if (Array.isArray(meshListResult.parsed)) {
-			const agents = meshListResult.parsed as MeshAgent[];
-			peerCount = agents.filter((a) => a.name !== agentName).length;
-		}
+		const currentTask = agentName
+			? inProgressTasks.find((task) => task.assignee === agentName)
+			: undefined;
 
-		const workStatus = workLoop.active
-			? ` · work ${workLoop.currentTaskId ? `#${workLoop.currentTaskId}` : "idle"}`
-			: "";
-		ctx.ui.setStatus(
-			"tak",
-			`tak ${readyCount} ready · peers ${peerCount} · inbox ${inboxCount} · bb ${openNoteCount}${workStatus}`,
-		);
+		const snapshot: TakStatusSnapshot = {
+			readyTasks,
+			blockedTasks,
+			inProgressTasks,
+			openNotes,
+			inboxCount,
+			peerCount,
+			currentTask,
+		};
 
-		if (readyTasks.length > 0 || workLoop.active) {
-			const lines = [
-				"tak ready queue (urgent → oldest):",
-				...readyTasks.slice(0, 3).map((t) => `  #${t.id} ${t.title}`),
+		ctx.ui.setStatus("tak", buildTakStatusBar(ctx, snapshot, workLoop));
+
+		if (
+			snapshot.readyTasks.length > 0 ||
+			snapshot.blockedTasks.length > 0 ||
+			snapshot.currentTask ||
+			snapshot.inboxCount > 0 ||
+			workLoop.active
+		) {
+			const lines: string[] = [
+				`tak board: ready ${snapshot.readyTasks.length} • blocked ${snapshot.blockedTasks.length} • active ${snapshot.inProgressTasks.length} • inbox ${snapshot.inboxCount} • bb ${snapshot.openNotes.length}`,
 			];
+
+			if (snapshot.currentTask) {
+				lines.push(
+					`my task: ${formatTaskBadge(snapshot.currentTask)} • ${snapshot.currentTask.status} • ${snapshot.currentTask.planning?.priority ?? "unprioritized"}`,
+				);
+			}
+
+			if (snapshot.readyTasks.length > 0) {
+				lines.push(
+					"",
+					"ready queue (urgent → oldest):",
+					...snapshot.readyTasks.slice(0, 3).map((task) => {
+						const priority = task.planning?.priority ?? "-";
+						return `  #${task.id} [${priority}] ${truncateText(task.title, 56)}`;
+					}),
+				);
+			} else {
+				lines.push("", "ready queue: empty");
+			}
+
 			if (workLoop.active) {
 				lines.push("", formatWorkLoopStatus(workLoop));
 			}
+
 			ctx.ui.setWidget("tak-ready", lines, { placement: "belowEditor" });
 		} else {
 			ctx.ui.setWidget("tak-ready", undefined);
