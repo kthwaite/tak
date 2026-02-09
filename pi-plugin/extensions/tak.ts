@@ -19,6 +19,7 @@ type TaskSource = "ready" | "all" | "blocked" | "in_progress" | "mine" | "blackb
 type Priority = "critical" | "high" | "medium" | "low";
 type TaskStatus = "pending" | "in_progress" | "done" | "cancelled";
 type VerifyMode = "isolated" | "local";
+type WorkCueMode = "editor" | "auto";
 type WorkAction = "start" | "stop" | "status";
 type TherapistAction = "offline" | "online" | "log";
 
@@ -94,6 +95,7 @@ interface TakFilters {
 	taskId?: number;
 	ackInbox?: boolean;
 	verifyMode?: VerifyMode;
+	workCueMode?: WorkCueMode;
 }
 
 interface ParsedTakCommand {
@@ -111,6 +113,7 @@ interface WorkLoopState {
 	tag?: string;
 	remaining?: number;
 	verifyMode: VerifyMode;
+	cueMode: WorkCueMode;
 	strictReservations: boolean;
 	currentTaskId?: number;
 	processed: number;
@@ -154,7 +157,7 @@ Task and coordination protocol:
 const TAK_HELP = `
 /tak [source] [filters]            Pick work from tak (default source: ready)
 /tak claim [tag:<tag>]             Atomically claim next task
-/tak work [tag:<tag>] [limit:<n>] [verify:isolated|local]
+/tak work [tag:<tag>] [limit:<n>] [verify:isolated|local] [auto|cue:auto|cue:editor]
                                    Start/resume autonomous work loop
 /tak work status|stop              Inspect or stop work loop
 /tak mesh                          Insert a mesh + blackboard summary in the editor
@@ -181,12 +184,15 @@ Filters (space-separated):
 - task:<id>         (for blackboard source)
 - ack               (for inbox source)
 - verify:<mode>     (for /tak work; mode = isolated | local)
+- cue:<mode>        (for /tak work; mode = auto | editor)
+- auto              (shorthand for cue:auto)
 - session:<id|path> (for /tak therapist online)
 - by:<name>         (for /tak therapist offline|online)
 
 Work mode notes:
 - Automatically claims the next available task for you.
 - When the current task is finished/handed off/cancelled, the next task is auto-claimed.
+- Cue mode defaults to editor prefill; use auto (or cue:auto) to push each claimed task as a user message.
 - In work mode, edits are blocked unless the path is reserved by your agent.
 - With verify:isolated (default), local build/test/check commands are blocked when peers hold reservations.
 `;
@@ -229,6 +235,9 @@ const COMPLETIONS = [
 	"session:",
 	"by:",
 	"ack",
+	"auto",
+	"cue:auto",
+	"cue:editor",
 	"verify:isolated",
 	"verify:local",
 ] as const;
@@ -378,6 +387,16 @@ function applyFilterToken(token: string, filters: TakFilters): void {
 		return;
 	}
 
+	if (normalized === "auto") {
+		filters.workCueMode = "auto";
+		return;
+	}
+
+	if (normalized === "editor" || normalized === "prompt") {
+		filters.workCueMode = "editor";
+		return;
+	}
+
 	const [rawKey, ...rawValueParts] = token.split(":");
 	if (!rawKey || rawValueParts.length === 0) return;
 
@@ -418,6 +437,13 @@ function applyFilterToken(token: string, filters: TakFilters): void {
 		case "verify":
 			if (value.toLowerCase() === "isolated" || value.toLowerCase() === "local") {
 				filters.verifyMode = value.toLowerCase() as VerifyMode;
+			}
+			break;
+		case "cue":
+			if (value.toLowerCase() === "auto") {
+				filters.workCueMode = "auto";
+			} else if (value.toLowerCase() === "editor" || value.toLowerCase() === "prompt") {
+				filters.workCueMode = "editor";
 			}
 			break;
 	}
@@ -624,6 +650,7 @@ function formatWorkLoopStatus(workLoop: WorkLoopState): string {
 	if (workLoop.tag) parts.push(`tag=${workLoop.tag}`);
 	if (workLoop.remaining !== undefined) parts.push(`remaining=${workLoop.remaining}`);
 	parts.push(`verify=${workLoop.verifyMode}`);
+	parts.push(`cue=${workLoop.cueMode}`);
 	parts.push(`processed=${workLoop.processed}`);
 	return parts.join(" | ");
 }
@@ -789,7 +816,7 @@ function buildTaskEditorText(
 	if (workLoop?.active) {
 		lines.push(
 			"",
-			`Work loop active (verify=${workLoop.verifyMode}).`,
+			`Work loop active (verify=${workLoop.verifyMode}, cue=${workLoop.cueMode}).`,
 			"- Finish with: tak finish <task-id>",
 			"- Blocked/unable: tak handoff <task-id> --summary \"...\" (or tak cancel --reason)",
 			"- Next task auto-claims on the next turn once this task is no longer in progress.",
@@ -828,6 +855,7 @@ export default function takPiExtension(pi: ExtensionAPI) {
 	let workLoop: WorkLoopState = {
 		active: false,
 		verifyMode: "isolated",
+		cueMode: "editor",
 		strictReservations: true,
 		processed: 0,
 	};
@@ -845,6 +873,7 @@ export default function takPiExtension(pi: ExtensionAPI) {
 		workLoop = {
 			active: false,
 			verifyMode: "isolated",
+			cueMode: "editor",
 			strictReservations: true,
 			processed: 0,
 			...overrides,
@@ -854,6 +883,26 @@ export default function takPiExtension(pi: ExtensionAPI) {
 	async function releaseOwnReservations(): Promise<void> {
 		if (!agentName) return;
 		await runTak(pi, ["mesh", "release", "--name", agentName, "--all"]);
+	}
+
+	function cueTaskForWorkLoop(ctx: ExtensionContext, task: TakTask, notes: BlackboardNote[]): void {
+		const cueText = buildTaskEditorText(task, agentName, notes, { workLoop });
+
+		if (workLoop.cueMode === "auto") {
+			try {
+				if (ctx.isIdle()) {
+					pi.sendUserMessage(cueText);
+				} else {
+					pi.sendUserMessage(cueText, { deliverAs: "followUp" });
+				}
+				return;
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				ctx.ui.notify(`Work-loop auto cue failed, using editor prefill instead: ${message}`, "warning");
+			}
+		}
+
+		ctx.ui.setEditorText(cueText);
 	}
 
 	async function claimNextWorkTask(ctx: ExtensionContext): Promise<boolean> {
@@ -877,7 +926,7 @@ export default function takPiExtension(pi: ExtensionAPI) {
 
 		const notesResult = await runTak(pi, ["blackboard", "list", "--status", "open", "--task", String(task.id)]);
 		const notes = Array.isArray(notesResult.parsed) ? (notesResult.parsed as BlackboardNote[]) : [];
-		ctx.ui.setEditorText(buildTaskEditorText(task, agentName, notes, { workLoop }));
+		cueTaskForWorkLoop(ctx, task, notes);
 		ctx.ui.notify(`Work loop claimed task #${task.id}: ${task.title}`, "info");
 		return true;
 	}
@@ -930,7 +979,7 @@ export default function takPiExtension(pi: ExtensionAPI) {
 					String(existing.id),
 				]);
 				const notes = Array.isArray(notesResult.parsed) ? (notesResult.parsed as BlackboardNote[]) : [];
-				ctx.ui.setEditorText(buildTaskEditorText(existing, agentName, notes, { workLoop }));
+				cueTaskForWorkLoop(ctx, existing, notes);
 				ctx.ui.notify(`Work loop attached to in-progress task #${existing.id}: ${existing.title}`, "info");
 				return;
 			}
@@ -1121,6 +1170,7 @@ export default function takPiExtension(pi: ExtensionAPI) {
 					tag: parsed.filters.tag,
 					remaining: parsed.filters.limit,
 					verifyMode: parsed.filters.verifyMode ?? "isolated",
+					cueMode: parsed.filters.workCueMode ?? "editor",
 					strictReservations: true,
 					processed: 0,
 				});

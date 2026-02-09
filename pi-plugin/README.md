@@ -9,7 +9,7 @@ Pi extension + skill bundle for tak.
   - ordering: **urgent first, oldest first**
 - `/tak work` loop mode
   - auto-claims next task, tracks current task, and auto-claims again after finish/handoff/cancel
-  - optional filters: `tag:<tag>`, `limit:<n>`, `verify:isolated|local`
+  - optional filters: `tag:<tag>`, `limit:<n>`, `verify:isolated|local`, `cue:auto|editor` (or shorthand `auto`)
 - `tak_cli` tool for structured tak command execution
 - Mesh + blackboard aware workflows (`/tak mesh`, `/tak inbox`, `/tak blackboard`)
 - Automatic session behavior in tak repos:
@@ -53,7 +53,8 @@ Then start pi in the repo and use:
 /tak inbox ack
 /tak claim
 /tak work
-/tak work tag:backend limit:2 verify:isolated
+/tak work auto
+/tak work tag:backend limit:2 verify:isolated cue:auto
 /tak work status
 /tak work stop
 /tak mesh
