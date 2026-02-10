@@ -345,6 +345,44 @@ mod tests {
     }
 
     #[test]
+    fn claim_next_skips_idea_tasks_by_default() {
+        let dir = setup_repo();
+        let idea_id = create_task(dir.path(), "idea-a", Kind::Idea, None, vec![]);
+        let task_id = create_task(dir.path(), "task-a", Kind::Task, None, vec![]);
+
+        let claimed = claim_next(
+            dir.path(),
+            "agent-1",
+            None,
+            WorkClaimStrategy::PriorityThenAge,
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(claimed.id, task_id);
+
+        let repo = Repo::open(dir.path()).unwrap();
+        let idea = repo.store.read(idea_id).unwrap();
+        assert_eq!(idea.status, Status::Pending);
+    }
+
+    #[test]
+    fn claim_next_returns_none_when_only_idea_tasks_are_pending() {
+        let dir = setup_repo();
+        let _ = create_task(dir.path(), "idea-a", Kind::Idea, None, vec![]);
+
+        let claimed = claim_next(
+            dir.path(),
+            "agent-1",
+            None,
+            WorkClaimStrategy::PriorityThenAge,
+        )
+        .unwrap();
+
+        assert!(claimed.is_none());
+    }
+
+    #[test]
     fn epic_closeout_prefers_oldest_epic_even_if_it_has_more_remaining_work() {
         let dir = setup_repo();
 

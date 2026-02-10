@@ -221,6 +221,10 @@ impl Index {
     }
 
     /// Return IDs of available (claimable) tasks.
+    ///
+    /// `kind=idea` items are intentionally excluded so default `next`/`claim`
+    /// flows don't execute raw ideas by accident.
+    ///
     /// If `assignee` is Some, also include tasks already assigned to that person.
     /// If `assignee` is None, only unassigned tasks.
     pub fn available(&self, assignee: Option<&str>) -> Result<Vec<TaskId>> {
@@ -228,6 +232,7 @@ impl Index {
             Some(_) => (
                 "SELECT t.id FROM tasks t
                  WHERE t.status = 'pending'
+                 AND t.kind != 'idea'
                  AND (t.assignee IS NULL OR t.assignee = ?1)
                  AND NOT EXISTS (
                      SELECT 1 FROM dependencies d
@@ -241,6 +246,7 @@ impl Index {
             None => (
                 "SELECT t.id FROM tasks t
                  WHERE t.status = 'pending'
+                 AND t.kind != 'idea'
                  AND t.assignee IS NULL
                  AND NOT EXISTS (
                      SELECT 1 FROM dependencies d
@@ -796,6 +802,33 @@ mod tests {
     }
 
     #[test]
+    fn available_excludes_idea_tasks_by_default() {
+        let idx = Index::open_memory().unwrap();
+
+        let mut idea = make_task(1, Status::Pending, vec![], None);
+        idea.kind = Kind::Idea;
+        let task = make_task(2, Status::Pending, vec![], None);
+
+        idx.rebuild(&[idea, task]).unwrap();
+        assert_eq!(idx.available(None).unwrap(), tids(&[2]));
+    }
+
+    #[test]
+    fn available_with_assignee_still_excludes_idea_tasks() {
+        let idx = Index::open_memory().unwrap();
+
+        let mut idea = make_task(1, Status::Pending, vec![], None);
+        idea.kind = Kind::Idea;
+        idea.assignee = Some("agent-idea".into());
+
+        let mut task = make_task(2, Status::Pending, vec![], None);
+        task.assignee = Some("agent-idea".into());
+
+        idx.rebuild(&[idea, task]).unwrap();
+        assert_eq!(idx.available(Some("agent-idea")).unwrap(), tids(&[2]));
+    }
+
+    #[test]
     fn cycle_detection() {
         let idx = Index::open_memory().unwrap();
         let tasks = vec![
@@ -868,8 +901,8 @@ mod tests {
         idx.upsert(&t1).unwrap();
         assert_eq!(idx.ids_by_kind("idea").unwrap(), tids(&[1, 3]));
 
-        // Availability ordering/query semantics should stay intact regardless of kind label.
-        assert_eq!(idx.available(None).unwrap(), tids(&[1, 2, 3]));
+        // Availability semantics should still include non-idea kinds and exclude ideas.
+        assert_eq!(idx.available(None).unwrap(), tids(&[2]));
     }
 
     #[test]
