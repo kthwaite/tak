@@ -66,6 +66,34 @@ Invalid edges return `TakError::InvalidTransition`.
 - Persists task + index upsert.
 - Appends history event: `finished` (best effort).
 
+### `work done [--assignee ...] [--pause]`
+
+- Reads per-agent work-loop state from `.tak/runtime/work/states/<agent>.json`.
+- If `current_task_id` points to an owned `in_progress` task, applies the same validated finish path as `finish TASK_ID` (including history + git provenance).
+- Always attempts reservation cleanup for the calling agent (`mesh release --all` semantics for that agent) and reports release status in output.
+- Emits a structured `done` report in JSON output with:
+  - `lifecycle_transition` (`finished`, `detached_without_finish`, or `no_current_task`)
+  - `finished_task_id` (when a task was actually finished)
+  - `reservation_release` (`released`, `paths`, optional `error`)
+  - `paused` and `loop_active`
+- `--pause` deactivates the loop after cleanup; without `--pause`, the loop remains active after successful finish.
+
+Practical examples:
+
+```bash
+# Finish current unit, release reservations, keep loop active
+tak work done --assignee agent-1
+
+# Finish + release + pause loop
+tak work done --assignee agent-1 --pause
+```
+
+Troubleshooting:
+
+- Re-running `tak work done` with no attached task is safe/idempotent (`lifecycle_transition = no_current_task`).
+- If loop state points to a stale/non-owned task, `lifecycle_transition = detached_without_finish` and the stale pointer is cleared.
+- If reservation release partially fails, inspect `done.reservation_release.error` in JSON output and retry `tak mesh release --name <agent> --all`.
+
 ### `cancel TASK_ID [--reason ...]`
 
 - Validates `pending/in_progress -> cancelled`.
@@ -135,3 +163,16 @@ In `tests/integration.rs`:
 - `test_cancel_with_reason_sets_last_error`
 - `test_handoff_records_summary_and_returns_to_pending`
 - `test_log_shows_lifecycle_history`
+
+In `tests/work_done_integration.rs`:
+
+- `work_done_finishes_current_task_and_releases_reservations_integration`
+- `work_done_pause_deactivates_loop_integration`
+- `work_done_is_idempotent_on_repeated_invocation_integration`
+- `work_done_detaches_stale_current_pointer_and_releases_reservations_integration`
+
+In `src/commands/work.rs` unit tests:
+
+- `done_finishes_current_task_releases_reservations_and_reports_subactions`
+- `done_reports_detached_transition_when_current_task_is_not_owned_in_progress`
+- `render_json_done_output_includes_subaction_report`

@@ -39,8 +39,27 @@ tak list --available
 # (default action is start/resume)
 tak work --assignee agent-1
 tak work status --assignee agent-1
+tak work done --assignee agent-1 --pause
 tak work stop --assignee agent-1
 ```
+
+### `tak work done` closeout helper
+
+Use `tak work done` when you want one command to close the current unit and clean up loop state.
+
+```bash
+# Finish current task + release your reservations, keep loop active for next claim
+tak work done --assignee agent-1
+
+# Finish + release + pause loop (no auto-claim until you restart)
+tak work done --assignee agent-1 --pause
+```
+
+Troubleshooting:
+
+- If no current task is attached, `tak work done` is idempotent and reports a `no_current_task` transition.
+- If loop state points at a stale/non-owned task, it reports `detached_without_finish`, clears the stale pointer, and still releases reservations.
+- If reservation release fails, JSON output includes `done.reservation_release.error` for follow-up.
 
 ## Stigmergic Coordination Model
 
@@ -67,7 +86,7 @@ In practice: claim work, reserve paths, post meaningful updates in shared channe
 | `tak show <task-id>` / `tak list` / `tak tree [task-id]` | Query tasks and hierarchy |
 | `tak edit <task-id>` | Update task metadata (`--title`, `--kind`, tags, contract/planning, `--pr`) |
 | `tak claim` / `tak start <task-id>` | Start work (atomic claim preferred in multi-agent mode) |
-| `tak work [start\|status\|stop]` | CLI-native work loop controller (resume/claim, inspect loop state, or stop loop) |
+| `tak work [start\|status\|stop\|done]` | CLI-native work loop controller (resume/claim, inspect state, stop loop, or finish+release with optional pause) |
 | `tak finish <task-id>` / `tak handoff <task-id>` / `tak cancel <task-id>` | Close, hand off, or cancel execution |
 | `tak reopen <task-id>` / `tak unassign <task-id>` | Reopen or clear assignment |
 | `tak depend` / `tak undepend` / `tak reparent` / `tak orphan` | Manage dependency + parent-child edges |
@@ -213,7 +232,7 @@ Tak ships as a Claude Code plugin. Enable it to get:
 
 - **Task management skill**: Full CLI + coordination reference (tasks, mesh, blackboard, learnings, therapist)
 - **Epic planning skill**: Guided decomposition of features into task hierarchies and dependency graphs
-- **Task execution skill**: Agent workflow for claiming/executing/completing tasks, centered on CLI-native `tak work`, `tak work status`, and `tak work stop` (with `/tak work*` chat aliases)
+- **Task execution skill**: Agent workflow for claiming/executing/completing tasks, centered on CLI-native `tak work`, `tak work status`, `tak work done`, and `tak work stop` (with `/tak work*` chat aliases)
 - **Session lifecycle hooks**: Auto-reindex + auto-join mesh on session start, auto-leave mesh on stop
 
 > Note: Prefer invoking `tak work` commands directly. Claude `/tak work*` prompts are shorthand that run the same CLI-first flow; pi additionally layers extension runtime guardrails.

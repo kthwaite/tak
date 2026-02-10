@@ -1458,6 +1458,49 @@ mod tests {
     }
 
     #[test]
+    fn done_reports_detached_transition_when_current_task_is_not_owned_in_progress() {
+        let dir = setup_repo();
+        let task_id = create_task(dir.path(), "detached-current-task");
+
+        let store = WorkStore::open(&dir.path().join(".tak"));
+        let mut state = store
+            .activate("agent-1", None, None, None, None, None)
+            .unwrap()
+            .state;
+        state.current_task_id = Some(task_id);
+        store.save(&state).unwrap();
+
+        let mesh = MeshStore::open(&dir.path().join(".tak"));
+        mesh.join(Some("agent-1"), Some("sid-1")).unwrap();
+        mesh.reserve(
+            "agent-1",
+            vec!["src/commands/work.rs".into()],
+            Some("test-work-done-detached"),
+        )
+        .unwrap();
+
+        let response = done_response(dir.path(), "agent-1".into(), false).unwrap();
+
+        assert_eq!(response.event, WorkEvent::Done);
+        let done = response.done.as_ref().unwrap();
+        assert_eq!(done.lifecycle_transition, "detached_without_finish");
+        assert!(done.finished_task_id.is_none());
+        assert!(done.reservation_release.released);
+        assert_eq!(done.reservation_release.paths, vec!["src/commands/work.rs"]);
+
+        let repo = Repo::open(dir.path()).unwrap();
+        let task = repo.store.read(task_id).unwrap();
+        assert_eq!(task.status, Status::Pending);
+
+        let reservations = mesh.list_reservations().unwrap();
+        assert!(
+            reservations
+                .iter()
+                .all(|reservation| reservation.agent != "agent-1")
+        );
+    }
+
+    #[test]
     fn stop_is_idempotent_and_releases_agent_reservations() {
         let dir = setup_repo();
         let mesh = MeshStore::open(&dir.path().join(".tak"));
