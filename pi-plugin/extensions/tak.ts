@@ -26,7 +26,7 @@ type TherapistAction = "offline" | "online" | "log";
 type CommandMode = "pick" | "claim" | "mesh" | "show" | "help" | "work" | "therapist";
 
 interface TakTask {
-	id: number;
+	id: string;
 	title: string;
 	status: TaskStatus;
 	kind: string;
@@ -40,11 +40,11 @@ interface TakTask {
 }
 
 interface BlackboardNote {
-	id: number;
+	id: string;
 	author: string;
 	message: string;
 	status: "open" | "closed";
-	task_ids?: number[];
+	task_ids?: string[];
 	tags?: string[];
 	updated_at?: string;
 }
@@ -100,7 +100,7 @@ interface TakFilters {
 	status?: TaskStatus;
 	assignee?: string;
 	limit?: number;
-	taskId?: number;
+	taskId?: string;
 	ackInbox?: boolean;
 	verifyMode?: VerifyMode;
 	workCueMode?: WorkCueMode;
@@ -109,7 +109,7 @@ interface TakFilters {
 interface ParsedTakCommand {
 	mode: CommandMode;
 	filters: TakFilters;
-	taskId?: number;
+	taskId?: string;
 	workAction?: WorkAction;
 	therapistAction?: TherapistAction;
 	therapistSession?: string;
@@ -123,7 +123,7 @@ interface WorkLoopState {
 	verifyMode: VerifyMode;
 	cueMode: WorkCueMode;
 	strictReservations: boolean;
-	currentTaskId?: number;
+	currentTaskId?: string;
 	processed: number;
 }
 
@@ -283,6 +283,218 @@ function parseSource(token?: string): TaskSource | undefined {
 	return undefined;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function normalizeTaskIdInput(token: string): string | undefined {
+	const trimmed = token.trim();
+	if (!trimmed) return undefined;
+	if (/^\d+$/.test(trimmed)) return trimmed;
+	if (/^[0-9a-fA-F]+$/.test(trimmed)) return trimmed.toLowerCase();
+	return undefined;
+}
+
+function canonicalTaskId(value: unknown): string | undefined {
+	if (typeof value === "string") {
+		const trimmed = value.trim();
+		if (!trimmed) return undefined;
+		if (/^[0-9a-fA-F]{16}$/.test(trimmed)) return trimmed.toLowerCase();
+		if (/^\d+$/.test(trimmed)) {
+			try {
+				return BigInt(trimmed).toString(16).padStart(16, "0");
+			} catch {
+				return undefined;
+			}
+		}
+		return undefined;
+	}
+
+	if (typeof value === "number") {
+		if (!Number.isFinite(value) || value < 0 || !Number.isInteger(value)) return undefined;
+		return BigInt(value).toString(16).padStart(16, "0");
+	}
+
+	if (typeof value === "bigint") {
+		if (value < 0n) return undefined;
+		return value.toString(16).padStart(16, "0");
+	}
+
+	return undefined;
+}
+
+function compareTaskIds(a: string, b: string): number {
+	if (a === b) return 0;
+	try {
+		const aBig = BigInt(`0x${a}`);
+		const bBig = BigInt(`0x${b}`);
+		if (aBig < bBig) return -1;
+		if (aBig > bBig) return 1;
+		return 0;
+	} catch {
+		return a.localeCompare(b);
+	}
+}
+
+function toStringArray(value: unknown): string[] {
+	if (!Array.isArray(value)) return [];
+	return value.filter((item): item is string => typeof item === "string");
+}
+
+function coerceTakTask(value: unknown): TakTask | null {
+	if (!isRecord(value)) return null;
+
+	const id = canonicalTaskId(value.id);
+	if (!id) return null;
+
+	const title = typeof value.title === "string" ? value.title : "";
+	const status =
+		value.status === "pending" || value.status === "in_progress" || value.status === "done" || value.status === "cancelled"
+			? (value.status as TaskStatus)
+			: "pending";
+	const kind = typeof value.kind === "string" ? value.kind : "task";
+
+	const assignee = typeof value.assignee === "string" ? value.assignee : undefined;
+	const tags = toStringArray(value.tags);
+
+	let planning: TakTask["planning"] | undefined;
+	if (isRecord(value.planning)) {
+		const rawPriority = value.planning.priority;
+		if (rawPriority === "critical" || rawPriority === "high" || rawPriority === "medium" || rawPriority === "low") {
+			planning = { priority: rawPriority };
+		}
+	}
+
+	return {
+		id,
+		title,
+		status,
+		kind,
+		assignee,
+		tags,
+		planning,
+		created_at: typeof value.created_at === "string" ? value.created_at : undefined,
+		updated_at: typeof value.updated_at === "string" ? value.updated_at : undefined,
+	};
+}
+
+function coerceTakTaskArray(value: unknown): TakTask[] {
+	if (!Array.isArray(value)) return [];
+	return value.map(coerceTakTask).filter((task): task is TakTask => task !== null);
+}
+
+function coerceBlackboardNote(value: unknown): BlackboardNote | null {
+	if (!isRecord(value)) return null;
+	const rawId = value.id;
+	const id =
+		typeof rawId === "string"
+			? rawId
+			: typeof rawId === "number" && Number.isFinite(rawId)
+				? String(Math.trunc(rawId))
+				: undefined;
+	if (!id) return null;
+
+	const taskIds = Array.isArray(value.task_ids)
+		? value.task_ids
+				.map((taskId) => canonicalTaskId(taskId))
+				.filter((taskId): taskId is string => Boolean(taskId))
+		: undefined;
+
+	const tags = toStringArray(value.tags);
+
+	return {
+		id,
+		author: typeof value.author === "string" ? value.author : "unknown",
+		message: typeof value.message === "string" ? value.message : "",
+		status: value.status === "closed" ? "closed" : "open",
+		task_ids: taskIds,
+		tags,
+		updated_at: typeof value.updated_at === "string" ? value.updated_at : undefined,
+	};
+}
+
+function coerceBlackboardNoteArray(value: unknown): BlackboardNote[] {
+	if (!Array.isArray(value)) return [];
+	return value.map(coerceBlackboardNote).filter((note): note is BlackboardNote => note !== null);
+}
+
+function isDigit(ch: string): boolean {
+	return ch >= "0" && ch <= "9";
+}
+
+function quoteIntegerLiterals(jsonText: string): string {
+	let out = "";
+	let i = 0;
+	let inString = false;
+	let escaping = false;
+
+	while (i < jsonText.length) {
+		const ch = jsonText[i]!;
+
+		if (inString) {
+			out += ch;
+			if (escaping) {
+				escaping = false;
+			} else if (ch === "\\") {
+				escaping = true;
+			} else if (ch === '"') {
+				inString = false;
+			}
+			i += 1;
+			continue;
+		}
+
+		if (ch === '"') {
+			inString = true;
+			out += ch;
+			i += 1;
+			continue;
+		}
+
+		if (ch === "-" || isDigit(ch)) {
+			let j = i;
+			if (jsonText[j] === "-") j += 1;
+			let sawDigit = false;
+			while (j < jsonText.length && isDigit(jsonText[j]!)) {
+				sawDigit = true;
+				j += 1;
+			}
+			if (!sawDigit) {
+				out += ch;
+				i += 1;
+				continue;
+			}
+
+			let integerOnly = true;
+			if (jsonText[j] === ".") {
+				integerOnly = false;
+				j += 1;
+				while (j < jsonText.length && isDigit(jsonText[j]!)) j += 1;
+			}
+			if (jsonText[j] === "e" || jsonText[j] === "E") {
+				integerOnly = false;
+				j += 1;
+				if (jsonText[j] === "+" || jsonText[j] === "-") j += 1;
+				while (j < jsonText.length && isDigit(jsonText[j]!)) j += 1;
+			}
+
+			const token = jsonText.slice(i, j);
+			out += integerOnly ? `"${token}"` : token;
+			i = j;
+			continue;
+		}
+
+		out += ch;
+		i += 1;
+	}
+
+	return out;
+}
+
+function parseTakJson(jsonText: string): unknown {
+	return JSON.parse(quoteIntegerLiterals(jsonText));
+}
+
 function parseTakCommandInput(rawArgs: string): ParsedTakCommand {
 	const tokens = rawArgs
 		.trim()
@@ -298,13 +510,15 @@ function parseTakCommandInput(rawArgs: string): ParsedTakCommand {
 		return { mode: "pick", filters };
 	}
 
-	const first = tokens[0]!.toLowerCase();
+	const rawFirst = tokens[0]!;
+	const first = rawFirst.toLowerCase();
 
-	if (/^\d+$/.test(first)) {
+	const firstTaskId = normalizeTaskIdInput(rawFirst);
+	if (firstTaskId) {
 		return {
 			mode: "show",
 			filters,
-			taskId: Number.parseInt(first, 10),
+			taskId: firstTaskId,
 		};
 	}
 
@@ -440,8 +654,8 @@ function applyFilterToken(token: string, filters: TakFilters): void {
 			break;
 		}
 		case "task": {
-			const parsed = Number.parseInt(value, 10);
-			if (Number.isFinite(parsed) && parsed > 0) filters.taskId = parsed;
+			const parsed = normalizeTaskIdInput(value);
+			if (parsed) filters.taskId = parsed;
 			break;
 		}
 		case "verify":
@@ -488,7 +702,7 @@ function sortTasksUrgentThenOldest(tasks: TakTask[]): TakTask[] {
 		const createdDiff = parseTimestamp(a.created_at) - parseTimestamp(b.created_at);
 		if (createdDiff !== 0) return createdDiff;
 
-		return a.id - b.id;
+		return compareTaskIds(a.id, b.id);
 	});
 }
 
@@ -523,7 +737,7 @@ async function runTak(
 	let parsed: unknown;
 	if (json && stdout) {
 		try {
-			parsed = JSON.parse(stdout);
+			parsed = parseTakJson(stdout);
 		} catch {
 			// Keep raw stdout when parsing fails.
 		}
@@ -1082,15 +1296,16 @@ export default function takPiExtension(pi: ExtensionAPI) {
 		}
 
 		const claimResult = await runTak(pi, claimArgs);
-		if (!claimResult.ok || !claimResult.parsed || typeof claimResult.parsed !== "object") {
+		if (!claimResult.ok) {
 			return false;
 		}
 
-		const task = claimResult.parsed as TakTask;
+		const task = coerceTakTask(claimResult.parsed);
+		if (!task) return false;
 		workLoop.currentTaskId = task.id;
 
-		const notesResult = await runTak(pi, ["blackboard", "list", "--status", "open", "--task", String(task.id)]);
-		const notes = Array.isArray(notesResult.parsed) ? (notesResult.parsed as BlackboardNote[]) : [];
+		const notesResult = await runTak(pi, ["blackboard", "list", "--status", "open", "--task", task.id]);
+		const notes = coerceBlackboardNoteArray(notesResult.parsed);
 		cueTaskForWorkLoop(ctx, task, notes);
 		ctx.ui.notify(`Work loop claimed task #${task.id}: ${task.title}`, "info");
 		return true;
@@ -1100,15 +1315,15 @@ export default function takPiExtension(pi: ExtensionAPI) {
 		if (!integrationEnabled() || !workLoop.active || !agentName) return;
 
 		if (workLoop.currentTaskId !== undefined) {
-			const showResult = await runTak(pi, ["show", String(workLoop.currentTaskId)]);
-			if (!showResult.ok || !showResult.parsed || typeof showResult.parsed !== "object") {
+			const showResult = await runTak(pi, ["show", workLoop.currentTaskId]);
+			const task = showResult.ok ? coerceTakTask(showResult.parsed) : null;
+			if (!task) {
 				ctx.ui.notify(
 					showResult.errorMessage ?? `Could not refresh work-loop task #${workLoop.currentTaskId}`,
 					"warning",
 				);
 				workLoop.currentTaskId = undefined;
 			} else {
-				const task = showResult.parsed as TakTask;
 				const stillMine = task.status === "in_progress" && task.assignee === agentName;
 				if (stillMine) {
 					return;
@@ -1131,8 +1346,8 @@ export default function takPiExtension(pi: ExtensionAPI) {
 
 		if (workLoop.currentTaskId === undefined) {
 			const inProgressResult = await runTak(pi, ["list", "--status", "in_progress", "--assignee", agentName]);
-			if (Array.isArray(inProgressResult.parsed) && inProgressResult.parsed.length > 0) {
-				const mine = sortTasksUrgentThenOldest(inProgressResult.parsed as TakTask[]);
+			const mine = sortTasksUrgentThenOldest(coerceTakTaskArray(inProgressResult.parsed));
+			if (mine.length > 0) {
 				const existing = mine[0]!;
 				workLoop.currentTaskId = existing.id;
 				const notesResult = await runTak(pi, [
@@ -1141,9 +1356,9 @@ export default function takPiExtension(pi: ExtensionAPI) {
 					"--status",
 					"open",
 					"--task",
-					String(existing.id),
+					existing.id,
 				]);
-				const notes = Array.isArray(notesResult.parsed) ? (notesResult.parsed as BlackboardNote[]) : [];
+				const notes = coerceBlackboardNoteArray(notesResult.parsed);
 				cueTaskForWorkLoop(ctx, existing, notes);
 				ctx.ui.notify(`Work loop attached to in-progress task #${existing.id}: ${existing.title}`, "info");
 				return;
@@ -1171,14 +1386,10 @@ export default function takPiExtension(pi: ExtensionAPI) {
 			runTak(pi, ["mesh", "list"]),
 		]);
 
-		const readyTasks = Array.isArray(readyResult.parsed) ? sortTasksUrgentThenOldest(readyResult.parsed as TakTask[]) : [];
-		const blockedTasks = Array.isArray(blockedResult.parsed)
-			? sortTasksUrgentThenOldest(blockedResult.parsed as TakTask[])
-			: [];
-		const inProgressTasks = Array.isArray(inProgressResult.parsed)
-			? sortTasksUrgentThenOldest(inProgressResult.parsed as TakTask[])
-			: [];
-		const openNotes = Array.isArray(blackboardResult.parsed) ? (blackboardResult.parsed as BlackboardNote[]) : [];
+		const readyTasks = sortTasksUrgentThenOldest(coerceTakTaskArray(readyResult.parsed));
+		const blockedTasks = sortTasksUrgentThenOldest(coerceTakTaskArray(blockedResult.parsed));
+		const inProgressTasks = sortTasksUrgentThenOldest(coerceTakTaskArray(inProgressResult.parsed));
+		const openNotes = coerceBlackboardNoteArray(blackboardResult.parsed);
 
 		if (Array.isArray(meshListResult.parsed)) {
 			const agents = meshListResult.parsed as MeshAgent[];
@@ -1388,14 +1599,14 @@ export default function takPiExtension(pi: ExtensionAPI) {
 					ctx.ui.notify("Task id missing", "error");
 					return;
 				}
-				const showResult = await runTak(pi, ["show", String(parsed.taskId)]);
-				if (!showResult.ok || !showResult.parsed || typeof showResult.parsed !== "object") {
+				const showResult = await runTak(pi, ["show", parsed.taskId]);
+				const task = showResult.ok ? coerceTakTask(showResult.parsed) : null;
+				if (!task) {
 					ctx.ui.notify(showResult.errorMessage ?? `Could not load task ${parsed.taskId}`, "error");
 					return;
 				}
-				const task = showResult.parsed as TakTask;
-				const notesResult = await runTak(pi, ["blackboard", "list", "--status", "open", "--task", String(task.id)]);
-				const notes = Array.isArray(notesResult.parsed) ? (notesResult.parsed as BlackboardNote[]) : [];
+				const notesResult = await runTak(pi, ["blackboard", "list", "--status", "open", "--task", task.id]);
+				const notes = coerceBlackboardNoteArray(notesResult.parsed);
 				ctx.ui.setEditorText(buildTaskEditorText(task, agentName, notes, { workLoop }));
 				ctx.ui.notify(`Loaded task #${task.id}`, "info");
 				await refreshStatus(ctx);
@@ -1412,13 +1623,18 @@ export default function takPiExtension(pi: ExtensionAPI) {
 				}
 
 				const claimResult = await runTak(pi, claimArgs);
-				if (!claimResult.ok || !claimResult.parsed || typeof claimResult.parsed !== "object") {
+				if (!claimResult.ok) {
 					ctx.ui.notify(claimResult.errorMessage ?? "No task claimed", "warning");
 					await refreshStatus(ctx);
 					return;
 				}
 
-				const task = claimResult.parsed as TakTask;
+				const task = coerceTakTask(claimResult.parsed);
+				if (!task) {
+					ctx.ui.notify("Claim returned an unexpected payload", "warning");
+					await refreshStatus(ctx);
+					return;
+				}
 				ctx.ui.setEditorText(buildTaskEditorText(task, agentName, undefined, { workLoop }));
 				ctx.ui.notify(`Claimed task #${task.id}: ${task.title}`, "info");
 				await refreshStatus(ctx);
@@ -1453,13 +1669,11 @@ export default function takPiExtension(pi: ExtensionAPI) {
 				}
 
 				const notesResult = await runTak(pi, ["blackboard", "list", "--status", "open", "--limit", "10"]);
-				if (Array.isArray(notesResult.parsed)) {
-					const notes = notesResult.parsed as BlackboardNote[];
-					lines.push("");
-					lines.push(`open blackboard notes (${notes.length}):`);
-					for (const note of notes.slice(0, 5)) {
-						lines.push(`- [B${note.id}] ${note.message}`);
-					}
+				const notes = coerceBlackboardNoteArray(notesResult.parsed);
+				lines.push("");
+				lines.push(`open blackboard notes (${notes.length}):`);
+				for (const note of notes.slice(0, 5)) {
+					lines.push(`- [B${note.id}] ${note.message}`);
 				}
 
 				ctx.ui.setEditorText(lines.join("\n"));
@@ -1475,12 +1689,12 @@ export default function takPiExtension(pi: ExtensionAPI) {
 				if (parsed.filters.limit) noteArgs.push("--limit", String(parsed.filters.limit));
 
 				const notesResult = await runTak(pi, noteArgs);
-				if (!notesResult.ok || !Array.isArray(notesResult.parsed)) {
+				if (!notesResult.ok) {
 					ctx.ui.notify(notesResult.errorMessage ?? "Could not load blackboard notes", "error");
 					return;
 				}
 
-				const notes = notesResult.parsed as BlackboardNote[];
+				const notes = coerceBlackboardNoteArray(notesResult.parsed);
 				if (notes.length === 0) {
 					ctx.ui.notify("No open blackboard notes for current filters", "info");
 					await refreshStatus(ctx);
@@ -1503,11 +1717,10 @@ export default function takPiExtension(pi: ExtensionAPI) {
 
 				const linkedTask = note.task_ids?.[0];
 				if (linkedTask) {
-					const showResult = await runTak(pi, ["show", String(linkedTask)]);
-					if (showResult.ok && showResult.parsed && typeof showResult.parsed === "object") {
-						ctx.ui.setEditorText(
-							buildTaskEditorText(showResult.parsed as TakTask, agentName, [note], { workLoop }),
-						);
+					const showResult = await runTak(pi, ["show", linkedTask]);
+					const linked = showResult.ok ? coerceTakTask(showResult.parsed) : null;
+					if (linked) {
+						ctx.ui.setEditorText(buildTaskEditorText(linked, agentName, [note], { workLoop }));
 						ctx.ui.notify(`Loaded task #${linkedTask} from blackboard note B${note.id}`, "info");
 					} else {
 						ctx.ui.setEditorText(`[B${note.id}] ${note.message}`);
@@ -1572,12 +1785,12 @@ export default function takPiExtension(pi: ExtensionAPI) {
 
 			const listArgs = buildTaskListArgs(parsed.filters, agentName);
 			const listResult = await runTak(pi, listArgs);
-			if (!listResult.ok || !Array.isArray(listResult.parsed)) {
+			if (!listResult.ok) {
 				ctx.ui.notify(listResult.errorMessage ?? "Could not load tasks", "error");
 				return;
 			}
 
-			let tasks = sortTasksUrgentThenOldest(listResult.parsed as TakTask[]);
+			let tasks = sortTasksUrgentThenOldest(coerceTakTaskArray(listResult.parsed));
 			if (parsed.filters.limit && tasks.length > parsed.filters.limit) {
 				tasks = tasks.slice(0, parsed.filters.limit);
 			}
@@ -1589,8 +1802,8 @@ export default function takPiExtension(pi: ExtensionAPI) {
 			}
 
 			const notesResult = await runTak(pi, ["blackboard", "list", "--status", "open"]);
-			const notes = Array.isArray(notesResult.parsed) ? (notesResult.parsed as BlackboardNote[]) : [];
-			const noteCountByTask = new Map<number, number>();
+			const notes = coerceBlackboardNoteArray(notesResult.parsed);
+			const noteCountByTask = new Map<string, number>();
 			for (const note of notes) {
 				for (const taskId of note.task_ids ?? []) {
 					noteCountByTask.set(taskId, (noteCountByTask.get(taskId) ?? 0) + 1);
