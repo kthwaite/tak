@@ -376,6 +376,7 @@ impl Task {
 mod tests {
     use super::*;
     use chrono::Utc;
+    use clap::ValueEnum;
 
     #[test]
     fn task_round_trips_json() {
@@ -421,6 +422,20 @@ mod tests {
     fn kind_meta_serializes_snake_case() {
         let json = serde_json::to_string(&Kind::Meta).unwrap();
         assert_eq!(json, r#""meta""#);
+    }
+
+    #[test]
+    fn kind_meta_display_renders_snake_case() {
+        assert_eq!(Kind::Meta.to_string(), "meta");
+    }
+
+    #[test]
+    fn kind_meta_round_trips_serde_and_value_enum() {
+        let parsed_from_json: Kind = serde_json::from_str(r#""meta""#).unwrap();
+        assert_eq!(parsed_from_json, Kind::Meta);
+
+        let parsed_from_value_enum = Kind::from_str("meta", true).unwrap();
+        assert_eq!(parsed_from_value_enum, Kind::Meta);
     }
 
     #[test]
