@@ -50,7 +50,7 @@ Tasks are JSON files in `.tak/tasks/` (the git-committed source of truth). A git
 - **`src/store/sidecars.rs`** — `SidecarStore`: manages per-task context notes (`.tak/context/{task_id}.md`), structured history logs (`.tak/history/{task_id}.jsonl`), verification results (`.tak/verification_results/{task_id}.json`), and artifact directories (`.tak/artifacts/{task_id}/`); supports legacy numeric path migration; defines `HistoryEvent` (timestamp/event/agent/detail), `VerificationResult` (timestamp/results/passed), `CommandResult` (command/exit_code/stdout/stderr/passed)
 - **`src/store/mesh.rs`** — `MeshStore`: manages `.tak/runtime/mesh/` — agent registry (join/leave/list), messaging (send/broadcast/inbox), file reservations (reserve/release), activity feed (append/read). Per-domain file locks via `lock.rs`. Auto-generates agent names when omitted.
 - **`src/store/blackboard.rs`** — `BlackboardStore`: shared coordination notes under `.tak/runtime/blackboard/` (`post/list/show/close/reopen`) with tags, task links, and close metadata.
-- **`src/store/therapist.rs`** — `TherapistStore`: append-only workflow observations under `.tak/therapist/log.jsonl` (`offline`/`online` diagnosis artifacts).
+- **`src/store/therapist.rs`** — `TherapistStore`: append-only workflow observations under `.tak/therapist/observations.jsonl` (`offline`/`online` diagnosis artifacts).
 - **`src/store/repo.rs`** — `Repo`: wraps FileStore + Index + SidecarStore + LearningStore. Walks up from CWD to find `.tak/`. Auto-rebuilds index on open if missing or stale (file fingerprint mismatch). Also auto-rebuilds learnings index via separate fingerprint.
 - **`src/commands/`** — One file per command group. Most take `&Path` (repo root) and return `Result<()>`. `doctor` doesn't require a repo; `setup` supports global mode anywhere but project-scoped setup requires a git repo root.
 - **`src/commands/mesh.rs`** — 9 mesh subcommand handlers: join, leave, list, send, broadcast, inbox, reserve, release, feed
@@ -174,7 +174,7 @@ Errors are structured JSON on stderr when `--format json`: `{"error":"<code>","m
 - Feed events are best-effort: failures never break primary operations
 - All mesh runtime state is gitignored (ephemeral per-session data)
 - `BlackboardStore` persists shared notes in `.tak/runtime/blackboard/notes.json` with lock-protected ID allocation and lifecycle transitions (`open`/`closed`)
-- `TherapistStore` appends JSONL observations to `.tak/therapist/log.jsonl`; `offline` analyzes mesh+blackboard signals, `online` resumes pi RPC sessions for interviews
+- `TherapistStore` appends JSONL observations to `.tak/therapist/observations.jsonl`; `offline` analyzes mesh+blackboard signals, `online` resumes pi RPC sessions for interviews
 
 ### On-Disk Layout
 

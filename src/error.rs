@@ -87,6 +87,18 @@ pub enum TakError {
     #[error("blackboard: corrupt file '{0}': {1}")]
     BlackboardCorruptFile(String, String),
 
+    #[error("therapist: session '{0}' not found")]
+    TherapistSessionNotFound(String),
+
+    #[error("therapist: session selector '{selector}' is ambiguous; matches: {matches}")]
+    TherapistSessionAmbiguous { selector: String, matches: String },
+
+    #[error("therapist rpc timeout: {0}")]
+    TherapistRpcTimeout(String),
+
+    #[error("therapist rpc protocol error: {0}")]
+    TherapistRpcProtocol(String),
+
     #[error("wait: specify exactly one of --path or --on-task")]
     WaitInvalidTarget,
 
@@ -137,6 +149,10 @@ impl TakError {
             Self::BlackboardInvalidName => "blackboard_invalid_name",
             Self::BlackboardInvalidMessage => "blackboard_invalid_message",
             Self::BlackboardCorruptFile(_, _) => "blackboard_corrupt_file",
+            Self::TherapistSessionNotFound(_) => "therapist_session_not_found",
+            Self::TherapistSessionAmbiguous { .. } => "therapist_session_ambiguous",
+            Self::TherapistRpcTimeout(_) => "therapist_rpc_timeout",
+            Self::TherapistRpcProtocol(_) => "therapist_rpc_protocol",
             Self::WaitInvalidTarget => "wait_invalid_target",
             Self::WaitTimeout(_) => "wait_timeout",
             Self::WorkInvalidAgentName(_) => "work_invalid_agent_name",

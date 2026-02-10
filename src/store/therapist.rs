@@ -88,19 +88,29 @@ impl TherapistStore {
 
     /// List observations, newest-first.
     pub fn list(&self, limit: Option<usize>) -> Result<Vec<TherapistObservation>> {
-        let path = self.log_path();
-        if !path.exists() {
-            return Ok(vec![]);
-        }
+        self.ensure_dirs()?;
 
-        let content = fs::read_to_string(path)?;
+        let path = self.log_path();
+        let lock = lock::acquire_lock(&self.lock_path())?;
+        let content = fs::read_to_string(&path)?;
+        lock::release_lock(lock)?;
+
         let mut rows = Vec::new();
-        for line in content.lines() {
+        for (idx, line) in content.lines().enumerate() {
             if line.trim().is_empty() {
                 continue;
             }
-            let row: TherapistObservation = serde_json::from_str(line)?;
-            rows.push(row);
+
+            match serde_json::from_str::<TherapistObservation>(line) {
+                Ok(row) => rows.push(row),
+                Err(err) => {
+                    eprintln!(
+                        "warning: therapist log parse error at {}:{} ({err}); skipping malformed line",
+                        path.display(),
+                        idx + 1
+                    );
+                }
+            }
         }
 
         if let Some(limit) = limit {
@@ -180,6 +190,27 @@ mod tests {
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].id, "3");
         assert_eq!(rows[1].id, "2");
+    }
+
+    #[test]
+    fn list_skips_malformed_lines_in_log() {
+        let (_dir, store) = setup();
+
+        store
+            .append(&obs("good-1", TherapistMode::Offline))
+            .unwrap();
+        fs::OpenOptions::new()
+            .append(true)
+            .open(store.log_path())
+            .unwrap()
+            .write_all(b"{not-json}\n")
+            .unwrap();
+        store.append(&obs("good-2", TherapistMode::Online)).unwrap();
+
+        let rows = store.list(None).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].id, "good-2");
+        assert_eq!(rows[1].id, "good-1");
     }
 
     #[test]

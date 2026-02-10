@@ -1,9 +1,10 @@
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, ChildStdout, Command, Stdio};
+use std::sync::mpsc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use colored::Colorize;
@@ -15,6 +16,10 @@ use crate::output::Format;
 use crate::store::blackboard::{BlackboardNote, BlackboardStore};
 use crate::store::mesh::{FeedEvent, MeshStore};
 use crate::store::therapist::{TherapistMode, TherapistObservation, TherapistStore};
+
+const DEFAULT_RPC_PHASE_TIMEOUT_MS: u64 = 30_000;
+const DEFAULT_RPC_TOTAL_TIMEOUT_MS: u64 = 120_000;
+const DEFAULT_STORED_INTERVIEW_MAX_CHARS: usize = 1_200;
 
 pub fn offline(
     repo_root: &Path,
@@ -96,8 +101,20 @@ pub fn online(
         .map(|line| truncate(line, 180))
         .unwrap_or_else(|| "Online therapist interview completed.".into());
 
+    let stored_interview = sanitize_interview_for_storage(&interview);
+
     let mut metrics = serde_json::Map::new();
     metrics.insert("interview_chars".into(), json!(interview.chars().count()));
+    metrics.insert("interview_redacted".into(), json!(true));
+    metrics.insert(
+        "stored_interview_chars".into(),
+        json!(
+            stored_interview
+                .as_deref()
+                .map(|v| v.chars().count())
+                .unwrap_or(0)
+        ),
+    );
     if let Some(stats) = &session_stats {
         metrics.insert("work_loop_mentions".into(), json!(stats.work_loop_mentions));
         metrics.insert("tak_mentions".into(), json!(stats.tak_mentions));
@@ -112,7 +129,7 @@ pub fn online(
         summary,
         findings,
         recommendations,
-        interview: Some(interview),
+        interview: stored_interview,
         metrics,
     };
 
@@ -311,8 +328,9 @@ fn resolve_session_root(session_dir: Option<&str>) -> Result<PathBuf> {
         return Ok(PathBuf::from(dir));
     }
 
-    let home = std::env::var("HOME")
-        .map_err(|_| therapist_error("HOME not set; provide --session-dir"))?;
+    let home = std::env::var("HOME").map_err(|_| {
+        TakError::TherapistRpcProtocol("HOME not set; provide --session-dir".into())
+    })?;
     Ok(PathBuf::from(home)
         .join(".pi")
         .join("agent")
@@ -329,26 +347,36 @@ fn resolve_session_target(
             return Ok((direct.display().to_string(), Some(direct)));
         }
 
-        if let Some(path) = find_session_by_prefix(session_root, session)? {
-            return Ok((path.display().to_string(), Some(path)));
+        let mut matches = find_sessions_by_selector(session_root, session)?;
+        if matches.is_empty() {
+            return Err(TakError::TherapistSessionNotFound(session.to_string()));
         }
 
-        return Ok((session.to_string(), None));
+        if matches.len() > 1 {
+            return Err(TakError::TherapistSessionAmbiguous {
+                selector: session.to_string(),
+                matches: format_session_matches(&matches),
+            });
+        }
+
+        let path = matches.pop().expect("len checked to be 1");
+        return Ok((path.display().to_string(), Some(path)));
     }
 
     let candidate = find_latest_work_loop_session(session_root)?.ok_or_else(|| {
-        therapist_error(
-            "No recent session with `/tak work` markers found. Pass --session <id|path> explicitly.",
+        TakError::TherapistSessionNotFound(
+            "latest session with `/tak work` markers (provide --session <id|path>)".into(),
         )
     })?;
 
     Ok((candidate.display().to_string(), Some(candidate)))
 }
 
-fn find_session_by_prefix(root: &Path, prefix: &str) -> Result<Option<PathBuf>> {
+fn find_sessions_by_selector(root: &Path, selector: &str) -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();
     collect_session_files(root, &mut files)?;
 
+    let selector = selector.trim();
     let mut matches = files
         .into_iter()
         .filter(|path| {
@@ -360,7 +388,11 @@ fn find_session_by_prefix(root: &Path, prefix: &str) -> Result<Option<PathBuf>> 
                 .file_stem()
                 .and_then(|n| n.to_str())
                 .unwrap_or_default();
-            name.contains(prefix) || stem.starts_with(prefix)
+
+            name == selector
+                || stem == selector
+                || name.starts_with(selector)
+                || stem.starts_with(selector)
         })
         .collect::<Vec<_>>();
 
@@ -370,8 +402,18 @@ fn find_session_by_prefix(root: &Path, prefix: &str) -> Result<Option<PathBuf>> 
             .ok()
             .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
     });
+    matches.reverse();
 
-    Ok(matches.pop())
+    Ok(matches)
+}
+
+fn format_session_matches(matches: &[PathBuf]) -> String {
+    matches
+        .iter()
+        .take(5)
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn find_latest_work_loop_session(root: &Path) -> Result<Option<PathBuf>> {
@@ -479,9 +521,134 @@ fn therapist_pi_binary() -> String {
         .unwrap_or_else(|| "pi".to_string())
 }
 
+fn therapist_timeout_from_env(var: &str, default_ms: u64) -> Duration {
+    std::env::var(var)
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .map(Duration::from_millis)
+        .unwrap_or_else(|| Duration::from_millis(default_ms))
+}
+
+fn rpc_phase_timeout() -> Duration {
+    therapist_timeout_from_env(
+        "TAK_THERAPIST_RPC_PHASE_TIMEOUT_MS",
+        DEFAULT_RPC_PHASE_TIMEOUT_MS,
+    )
+}
+
+fn rpc_total_timeout() -> Duration {
+    therapist_timeout_from_env(
+        "TAK_THERAPIST_RPC_TOTAL_TIMEOUT_MS",
+        DEFAULT_RPC_TOTAL_TIMEOUT_MS,
+    )
+}
+
+fn bounded_deadline(total_deadline: Instant, phase_timeout: Duration) -> Instant {
+    let phase_deadline = Instant::now() + phase_timeout;
+    if phase_deadline < total_deadline {
+        phase_deadline
+    } else {
+        total_deadline
+    }
+}
+
+struct RpcChildGuard {
+    child: Child,
+}
+
+impl RpcChildGuard {
+    fn new(child: Child) -> Self {
+        Self { child }
+    }
+
+    fn child_mut(&mut self) -> &mut Child {
+        &mut self.child
+    }
+
+    fn wait_briefly(&mut self) {
+        for _ in 0..20 {
+            if self.child.try_wait().ok().flatten().is_some() {
+                return;
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+    }
+}
+
+impl Drop for RpcChildGuard {
+    fn drop(&mut self) {
+        if self.child.try_wait().ok().flatten().is_none() {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+    }
+}
+
+fn spawn_rpc_reader(stdout: ChildStdout) -> mpsc::Receiver<std::io::Result<String>> {
+    let (tx, rx) = mpsc::channel();
+
+    thread::spawn(move || {
+        let mut reader = BufReader::new(stdout);
+        let mut line = String::new();
+
+        loop {
+            line.clear();
+            match reader.read_line(&mut line) {
+                Ok(0) => break,
+                Ok(_) => {
+                    let normalized = line
+                        .trim_end_matches('\n')
+                        .trim_end_matches('\r')
+                        .to_string();
+                    if tx.send(Ok(normalized)).is_err() {
+                        break;
+                    }
+                }
+                Err(err) => {
+                    let _ = tx.send(Err(err));
+                    break;
+                }
+            }
+        }
+    });
+
+    rx
+}
+
+fn recv_rpc_line(
+    rx: &mpsc::Receiver<std::io::Result<String>>,
+    deadline: Instant,
+    stage: &str,
+) -> Result<Option<String>> {
+    let now = Instant::now();
+    if now >= deadline {
+        return Err(TakError::TherapistRpcTimeout(format!(
+            "{stage}: exceeded deadline"
+        )));
+    }
+
+    let remaining = deadline - now;
+    match rx.recv_timeout(remaining) {
+        Ok(Ok(line)) => Ok(Some(line)),
+        Ok(Err(err)) => Err(TakError::TherapistRpcProtocol(format!(
+            "{stage}: stream read failed: {err}"
+        ))),
+        Err(mpsc::RecvTimeoutError::Timeout) => Err(TakError::TherapistRpcTimeout(format!(
+            "{stage}: timed out after {}ms",
+            remaining.as_millis()
+        ))),
+        Err(mpsc::RecvTimeoutError::Disconnected) => Ok(None),
+    }
+}
+
 fn run_rpc_interview(session: &str, prompt: &str) -> Result<String> {
+    let phase_timeout = rpc_phase_timeout();
+    let total_timeout = rpc_total_timeout();
+    let total_deadline = Instant::now() + total_timeout;
+
     let pi_bin = therapist_pi_binary();
-    let mut child = Command::new(&pi_bin)
+    let child = Command::new(&pi_bin)
         .arg("--mode")
         .arg("rpc")
         .arg("--session")
@@ -491,17 +658,18 @@ fn run_rpc_interview(session: &str, prompt: &str) -> Result<String> {
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
-        .map_err(|e| therapist_error(format!("failed to spawn `{pi_bin}` in rpc mode: {e}")))?;
+        .map_err(|e| {
+            TakError::TherapistRpcProtocol(format!("failed to spawn `{pi_bin}` in rpc mode: {e}"))
+        })?;
+    let mut child = RpcChildGuard::new(child);
 
-    let mut stdin = child
-        .stdin
-        .take()
-        .ok_or_else(|| therapist_error("failed to open stdin for pi rpc process"))?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| therapist_error("failed to open stdout for pi rpc process"))?;
-    let mut reader = BufReader::new(stdout);
+    let mut stdin = child.child_mut().stdin.take().ok_or_else(|| {
+        TakError::TherapistRpcProtocol("failed to open stdin for pi rpc process".into())
+    })?;
+    let stdout = child.child_mut().stdout.take().ok_or_else(|| {
+        TakError::TherapistRpcProtocol("failed to open stdout for pi rpc process".into())
+    })?;
+    let rx = spawn_rpc_reader(stdout);
 
     writeln!(
         stdin,
@@ -510,17 +678,16 @@ fn run_rpc_interview(session: &str, prompt: &str) -> Result<String> {
     )?;
     stdin.flush()?;
 
-    let mut line = String::new();
+    let prompt_deadline = bounded_deadline(total_deadline, phase_timeout);
     let mut saw_agent_end = false;
 
-    while reader.read_line(&mut line)? > 0 {
-        let raw = line.trim().to_string();
-        line.clear();
+    while let Some(raw) = recv_rpc_line(&rx, prompt_deadline, "waiting for prompt response")? {
+        let raw = raw.trim();
         if raw.is_empty() {
             continue;
         }
 
-        let Ok(event) = serde_json::from_str::<Value>(&raw) else {
+        let Ok(event) = serde_json::from_str::<Value>(raw) else {
             continue;
         };
 
@@ -535,7 +702,9 @@ fn run_rpc_interview(session: &str, prompt: &str) -> Result<String> {
                 .get("error")
                 .and_then(Value::as_str)
                 .unwrap_or("prompt failed");
-            return Err(therapist_error(format!("pi rpc prompt failed: {message}")));
+            return Err(TakError::TherapistRpcProtocol(format!(
+                "pi rpc prompt failed: {message}"
+            )));
         }
 
         if event.get("type").and_then(Value::as_str) == Some("agent_end") {
@@ -545,8 +714,8 @@ fn run_rpc_interview(session: &str, prompt: &str) -> Result<String> {
     }
 
     if !saw_agent_end {
-        return Err(therapist_error(
-            "pi rpc stream ended before the therapist interview completed",
+        return Err(TakError::TherapistRpcProtocol(
+            "pi rpc stream ended before the therapist interview completed".into(),
         ));
     }
 
@@ -557,16 +726,16 @@ fn run_rpc_interview(session: &str, prompt: &str) -> Result<String> {
     )?;
     stdin.flush()?;
 
+    let response_deadline = bounded_deadline(total_deadline, phase_timeout);
     let mut interview_text: Option<String> = None;
-    line.clear();
-    while reader.read_line(&mut line)? > 0 {
-        let raw = line.trim().to_string();
-        line.clear();
+
+    while let Some(raw) = recv_rpc_line(&rx, response_deadline, "waiting for interview text")? {
+        let raw = raw.trim();
         if raw.is_empty() {
             continue;
         }
 
-        let Ok(event) = serde_json::from_str::<Value>(&raw) else {
+        let Ok(event) = serde_json::from_str::<Value>(raw) else {
             continue;
         };
 
@@ -586,7 +755,7 @@ fn run_rpc_interview(session: &str, prompt: &str) -> Result<String> {
                 .get("error")
                 .and_then(Value::as_str)
                 .unwrap_or("get_last_assistant_text failed");
-            return Err(therapist_error(format!(
+            return Err(TakError::TherapistRpcProtocol(format!(
                 "pi rpc failed to fetch interview text: {message}"
             )));
         }
@@ -601,19 +770,114 @@ fn run_rpc_interview(session: &str, prompt: &str) -> Result<String> {
     }
 
     drop(stdin);
+    child.wait_briefly();
 
-    for _ in 0..20 {
-        if child.try_wait()?.is_some() {
-            break;
+    interview_text.ok_or_else(|| {
+        TakError::TherapistRpcProtocol("pi rpc interview returned empty assistant text".into())
+    })
+}
+
+fn sanitize_interview_for_storage(interview: &str) -> Option<String> {
+    let redacted = redact_sensitive_tokens(interview).trim().to_string();
+    if redacted.is_empty() {
+        return None;
+    }
+
+    Some(truncate(&redacted, DEFAULT_STORED_INTERVIEW_MAX_CHARS))
+}
+
+fn redact_sensitive_tokens(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut token = String::new();
+
+    for ch in text.chars() {
+        if ch.is_whitespace() {
+            if !token.is_empty() {
+                out.push_str(&redact_token_if_needed(&token));
+                token.clear();
+            }
+            out.push(ch);
+        } else {
+            token.push(ch);
         }
-        thread::sleep(Duration::from_millis(25));
-    }
-    if child.try_wait()?.is_none() {
-        let _ = child.kill();
-        let _ = child.wait();
     }
 
-    interview_text.ok_or_else(|| therapist_error("pi rpc interview returned empty assistant text"))
+    if !token.is_empty() {
+        out.push_str(&redact_token_if_needed(&token));
+    }
+
+    out
+}
+
+fn redact_token_if_needed(token: &str) -> String {
+    let trim_chars = |c: char| {
+        c == ','
+            || c == '.'
+            || c == ';'
+            || c == ':'
+            || c == '('
+            || c == ')'
+            || c == '['
+            || c == ']'
+            || c == '{'
+            || c == '}'
+            || c == '<'
+            || c == '>'
+            || c == '"'
+            || c == '\''
+    };
+
+    let core = token.trim_matches(trim_chars);
+    if core.is_empty() {
+        return token.to_string();
+    }
+
+    if !looks_sensitive_token(core) {
+        return token.to_string();
+    }
+
+    let prefix_len = token.find(core).unwrap_or(0);
+    let suffix_len = token.len().saturating_sub(prefix_len + core.len());
+    let prefix = &token[..prefix_len];
+    let suffix = &token[token.len().saturating_sub(suffix_len)..];
+
+    format!("{prefix}<redacted>{suffix}")
+}
+
+fn looks_sensitive_token(token: &str) -> bool {
+    let lower = token.to_lowercase();
+
+    if token.len() >= 16 && (token.starts_with("sk-") || token.starts_with("AKIA")) {
+        return true;
+    }
+
+    if looks_like_jwt(token) {
+        return true;
+    }
+
+    let credential_like = token.len() >= 32
+        && token.chars().all(|ch| {
+            ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == '=' || ch == '.'
+        })
+        && !lower.contains("/tak")
+        && !token.starts_with("http://")
+        && !token.starts_with("https://");
+
+    credential_like
+}
+
+fn looks_like_jwt(token: &str) -> bool {
+    let parts = token.split('.').collect::<Vec<_>>();
+    if parts.len() != 3 {
+        return false;
+    }
+
+    parts.iter().all(|part| {
+        part.len() >= 8
+            && part
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+    })
 }
 
 fn extract_recommendations(interview: &str) -> Vec<String> {
@@ -681,10 +945,6 @@ fn truncate(text: &str, max_len: usize) -> String {
         .collect::<String>();
     truncated.push('…');
     truncated
-}
-
-fn therapist_error(message: impl Into<String>) -> TakError {
-    TakError::Io(std::io::Error::other(message.into()))
 }
 
 fn print_single(observation: &TherapistObservation, log_path: &Path, format: Format) -> Result<()> {
@@ -809,6 +1069,34 @@ mod tests {
         let recs = extract_recommendations("plain narrative without explicit action verbs");
         assert_eq!(recs.len(), 1);
         assert!(recs[0].contains("extract top 2-3 workflow experiments"));
+    }
+
+    #[test]
+    fn sanitize_interview_for_storage_redacts_sensitive_tokens() {
+        let raw = "API key sk-1234567890abcdefghijklmnop and jwt eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signaturePart";
+        let stored = sanitize_interview_for_storage(raw).expect("sanitized interview");
+
+        assert!(stored.contains("<redacted>"));
+        assert!(!stored.contains("sk-1234567890abcdefghijklmnop"));
+        assert!(!stored.contains("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"));
+    }
+
+    #[test]
+    fn resolve_session_target_rejects_ambiguous_selector() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("alpha-one.jsonl"), "{}\n").unwrap();
+        fs::write(dir.path().join("alpha-two.jsonl"), "{}\n").unwrap();
+
+        let err = resolve_session_target(Some("alpha"), dir.path()).unwrap_err();
+        assert!(matches!(err, TakError::TherapistSessionAmbiguous { .. }));
+    }
+
+    #[test]
+    fn resolve_session_target_rejects_missing_selector() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let err = resolve_session_target(Some("missing"), dir.path()).unwrap_err();
+        assert!(matches!(err, TakError::TherapistSessionNotFound(_)));
     }
 
     #[test]

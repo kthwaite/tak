@@ -185,7 +185,7 @@ Blocked state is derived from dependencies (not persisted as status).
 - `.tak/artifacts/{id}/` — task artifacts
 - `.tak/runtime/mesh/*` — mesh state (registry/inbox/reservations/feed)
 - `.tak/runtime/blackboard/*` — blackboard notes + counter
-- `.tak/therapist/log.jsonl` — append-only therapist observations
+- `.tak/therapist/observations.jsonl` — append-only therapist observations
 
 ## Practical workflow
 

@@ -132,7 +132,7 @@ Adding `--rekey-random` remaps all task IDs (including already-canonical reposit
   migrations/task-id-map-*.json       # ID migration audit logs (written by migrate-ids --apply)
   runtime/mesh/*                      # Agent registry/inbox/reservations/feed (gitignored)
   runtime/blackboard/*                # Shared note board (gitignored)
-  therapist/log.jsonl                 # Workflow observations (committed)
+  therapist/observations.jsonl        # Workflow observations (committed)
   index.db                            # SQLite index (gitignored, rebuilt on demand)
 ```
 

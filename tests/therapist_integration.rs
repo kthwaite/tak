@@ -3,6 +3,7 @@
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use tempfile::tempdir;
 
@@ -19,6 +20,14 @@ struct EnvVarGuard {
 
 impl EnvVarGuard {
     fn set_path(key: &'static str, value: &std::path::Path) -> Self {
+        let previous = std::env::var(key).ok();
+        unsafe {
+            std::env::set_var(key, value);
+        }
+        Self { key, previous }
+    }
+
+    fn set_value(key: &'static str, value: &str) -> Self {
         let previous = std::env::var(key).ok();
         unsafe {
             std::env::set_var(key, value);
@@ -151,6 +160,48 @@ done"#,
     .unwrap_err();
 
     assert!(err.to_string().contains("mock prompt failure"));
+
+    let store = TherapistStore::open(&dir.path().join(".tak"));
+    assert!(store.list(None).unwrap().is_empty());
+}
+
+#[test]
+fn therapist_online_times_out_when_rpc_never_replies() {
+    let _lock = ENV_LOCK.lock().unwrap();
+
+    let dir = tempdir().unwrap();
+    FileStore::init(dir.path()).unwrap();
+
+    let session_path = dir.path().join("timeout-session.jsonl");
+    fs::write(
+        &session_path,
+        "{\"type\":\"user\",\"text\":\"/tak work\"}\n",
+    )
+    .unwrap();
+
+    let mock_pi = write_mock_pi_script(
+        dir.path(),
+        r#"while IFS= read -r _line; do
+  sleep 2
+done"#,
+    );
+
+    let _pi = EnvVarGuard::set_path("TAK_THERAPIST_PI_BIN", &mock_pi);
+    let _phase_timeout = EnvVarGuard::set_value("TAK_THERAPIST_RPC_PHASE_TIMEOUT_MS", "120");
+    let _total_timeout = EnvVarGuard::set_value("TAK_THERAPIST_RPC_TOTAL_TIMEOUT_MS", "240");
+
+    let started = Instant::now();
+    let err = tak::commands::therapist::online(
+        dir.path(),
+        Some(session_path.display().to_string()),
+        None,
+        Some("agent-timeout".into()),
+        Format::Json,
+    )
+    .unwrap_err();
+
+    assert!(err.to_string().contains("timed out") || err.to_string().contains("timeout"));
+    assert!(started.elapsed() < Duration::from_secs(2));
 
     let store = TherapistStore::open(&dir.path().join(".tak"));
     assert!(store.list(None).unwrap().is_empty());
