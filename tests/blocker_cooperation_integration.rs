@@ -162,3 +162,80 @@ fn cli_only_blocker_cooperation_flow_times_out_then_unblocks_and_claims_next_tas
     let closed = board.get(note_id).unwrap();
     assert_eq!(closed.status, BlackboardStatus::Closed);
 }
+
+#[test]
+fn overlap_wait_flow_covers_pass_block_unblock_outcomes() {
+    let dir = tempdir().unwrap();
+    let repo_root = dir.path();
+    FileStore::init(repo_root).unwrap();
+
+    tak::commands::mesh::join(
+        repo_root,
+        Some("owner-agent"),
+        Some("sid-owner"),
+        Format::Json,
+    )
+    .unwrap();
+    tak::commands::mesh::join(
+        repo_root,
+        Some("helper-agent"),
+        Some("sid-helper"),
+        Format::Json,
+    )
+    .unwrap();
+
+    tak::commands::mesh::reserve(
+        repo_root,
+        "owner-agent",
+        vec!["src/store/".into()],
+        Some("task-verify-owner"),
+        Format::Json,
+    )
+    .unwrap();
+
+    // Pass: non-overlapping scope should not be blocked.
+    tak::commands::wait::run(
+        repo_root,
+        Some("src/commands/work.rs".into()),
+        None,
+        Some(0),
+        Format::Json,
+    )
+    .unwrap();
+
+    // Block: overlapping scope should report deterministic blocker metadata.
+    let blocked = tak::commands::wait::run(
+        repo_root,
+        Some("src/store/mesh.rs".into()),
+        None,
+        Some(0),
+        Format::Json,
+    )
+    .unwrap_err();
+    assert!(matches!(
+        blocked,
+        TakError::WaitTimeout(msg)
+            if msg.contains("owner-agent")
+                && msg.contains("src/store/")
+                && msg.contains("reason: task-verify-owner")
+    ));
+
+    // Unblock: wait in queue/window mode until overlap is released.
+    let release_root = repo_root.to_path_buf();
+    let releaser = thread::spawn(move || {
+        thread::sleep(Duration::from_millis(250));
+        tak::commands::mesh::release(&release_root, "owner-agent", vec![], true, Format::Json)
+            .unwrap();
+    });
+
+    tak::commands::wait::run(
+        repo_root,
+        Some("src/store/mesh.rs".into()),
+        None,
+        Some(2),
+        Format::Json,
+    )
+    .unwrap();
+
+    releaser.join().unwrap();
+}
