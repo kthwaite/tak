@@ -3171,6 +3171,269 @@ fn test_work_resolution_does_not_mutate_other_agent_state_in_ambiguous_mesh_cont
 }
 
 #[test]
+fn test_work_resume_after_handoff_releases_reservations_when_no_matching_work() {
+    let dir = tempdir().unwrap();
+    let store = FileStore::init(dir.path()).unwrap();
+
+    let task = store
+        .create(
+            "Handoff candidate".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![],
+            vec!["lane-a".into()],
+            Contract::default(),
+            Planning::default(),
+        )
+        .unwrap();
+
+    let idx = Index::open(&store.root().join("index.db")).unwrap();
+    idx.rebuild(&store.list_all().unwrap()).unwrap();
+
+    tak::commands::work::start_or_resume(
+        dir.path(),
+        Some("agent-1".into()),
+        Some("lane-a".into()),
+        None,
+        None,
+        Format::Json,
+    )
+    .unwrap();
+
+    tak::commands::mesh::join(
+        dir.path(),
+        Some("agent-1"),
+        Some("sid-agent-1"),
+        Format::Json,
+    )
+    .unwrap();
+    tak::commands::mesh::reserve(
+        dir.path(),
+        "agent-1",
+        vec!["src/commands/work.rs".into()],
+        Some("handoff-test"),
+        Format::Json,
+    )
+    .unwrap();
+
+    tak::commands::lifecycle::handoff(
+        dir.path(),
+        task.id,
+        "Pausing for teammate handoff".into(),
+        Format::Json,
+    )
+    .unwrap();
+
+    tak::commands::work::start_or_resume(
+        dir.path(),
+        Some("agent-1".into()),
+        Some("lane-b".into()),
+        None,
+        None,
+        Format::Json,
+    )
+    .unwrap();
+
+    let work_store = tak::store::work::WorkStore::open(&dir.path().join(".tak"));
+    let state = work_store.status("agent-1").unwrap();
+    assert!(!state.active);
+    assert!(state.current_task_id.is_none());
+    assert_eq!(state.processed, 1);
+
+    let repo = Repo::open(dir.path()).unwrap();
+    let handed_off = repo.store.read(task.id).unwrap();
+    assert_eq!(handed_off.status, Status::Pending);
+    assert!(handed_off.assignee.is_none());
+
+    let mesh = tak::store::mesh::MeshStore::open(&dir.path().join(".tak"));
+    let reservations = mesh.list_reservations().unwrap();
+    assert!(
+        reservations
+            .iter()
+            .all(|reservation| reservation.agent != "agent-1")
+    );
+}
+
+#[test]
+fn test_work_resume_after_finish_honors_limit_and_cleans_reservations() {
+    let dir = tempdir().unwrap();
+    let store = FileStore::init(dir.path()).unwrap();
+
+    store
+        .create(
+            "Finishable item A".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![],
+            vec!["lane-finish".into()],
+            Contract::default(),
+            Planning::default(),
+        )
+        .unwrap();
+    store
+        .create(
+            "Finishable item B".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![],
+            vec!["lane-finish".into()],
+            Contract::default(),
+            Planning::default(),
+        )
+        .unwrap();
+
+    let idx = Index::open(&store.root().join("index.db")).unwrap();
+    idx.rebuild(&store.list_all().unwrap()).unwrap();
+
+    tak::commands::work::start_or_resume(
+        dir.path(),
+        Some("agent-2".into()),
+        Some("lane-finish".into()),
+        Some(1),
+        None,
+        Format::Json,
+    )
+    .unwrap();
+
+    let repo = Repo::open(dir.path()).unwrap();
+    let claimed = repo
+        .store
+        .list_all()
+        .unwrap()
+        .into_iter()
+        .find(|task| {
+            task.status == Status::InProgress && task.assignee.as_deref() == Some("agent-2")
+        })
+        .expect("expected a claimed in-progress task for agent-2");
+
+    tak::commands::mesh::join(
+        dir.path(),
+        Some("agent-2"),
+        Some("sid-agent-2"),
+        Format::Json,
+    )
+    .unwrap();
+    tak::commands::mesh::reserve(
+        dir.path(),
+        "agent-2",
+        vec!["src/commands/work.rs".into()],
+        Some("finish-limit-test"),
+        Format::Json,
+    )
+    .unwrap();
+
+    tak::commands::lifecycle::finish(dir.path(), claimed.id, Format::Json).unwrap();
+
+    tak::commands::work::start_or_resume(
+        dir.path(),
+        Some("agent-2".into()),
+        None,
+        None,
+        None,
+        Format::Json,
+    )
+    .unwrap();
+
+    let work_store = tak::store::work::WorkStore::open(&dir.path().join(".tak"));
+    let state = work_store.status("agent-2").unwrap();
+    assert!(!state.active);
+    assert_eq!(state.remaining, Some(0));
+    assert_eq!(state.processed, 1);
+    assert!(state.current_task_id.is_none());
+
+    let repo = Repo::open(dir.path()).unwrap();
+    let tasks = repo.store.list_all().unwrap();
+    assert!(
+        tasks
+            .iter()
+            .any(|task| task.id == claimed.id && task.status == Status::Done)
+    );
+    assert!(tasks.iter().any(|task| task.status == Status::Pending));
+
+    let mesh = tak::store::mesh::MeshStore::open(&dir.path().join(".tak"));
+    let reservations = mesh.list_reservations().unwrap();
+    assert!(
+        reservations
+            .iter()
+            .all(|reservation| reservation.agent != "agent-2")
+    );
+}
+
+#[test]
+fn test_work_status_and_stop_commands_are_idempotent_integration() {
+    let dir = tempdir().unwrap();
+    let store = FileStore::init(dir.path()).unwrap();
+
+    let task = store
+        .create(
+            "Stop semantics task".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![],
+            vec![],
+            Contract::default(),
+            Planning::default(),
+        )
+        .unwrap();
+
+    let idx = Index::open(&store.root().join("index.db")).unwrap();
+    idx.rebuild(&store.list_all().unwrap()).unwrap();
+
+    tak::commands::work::start_or_resume(
+        dir.path(),
+        Some("agent-3".into()),
+        None,
+        None,
+        None,
+        Format::Json,
+    )
+    .unwrap();
+
+    tak::commands::mesh::join(
+        dir.path(),
+        Some("agent-3"),
+        Some("sid-agent-3"),
+        Format::Json,
+    )
+    .unwrap();
+    tak::commands::mesh::reserve(
+        dir.path(),
+        "agent-3",
+        vec!["src/commands/work.rs".into()],
+        Some("stop-idempotent-test"),
+        Format::Json,
+    )
+    .unwrap();
+
+    tak::commands::work::status(dir.path(), Some("agent-3".into()), Format::Json).unwrap();
+    tak::commands::work::stop(dir.path(), Some("agent-3".into()), Format::Json).unwrap();
+    tak::commands::work::status(dir.path(), Some("agent-3".into()), Format::Json).unwrap();
+    tak::commands::work::stop(dir.path(), Some("agent-3".into()), Format::Json).unwrap();
+
+    let work_store = tak::store::work::WorkStore::open(&dir.path().join(".tak"));
+    let state = work_store.status("agent-3").unwrap();
+    assert!(!state.active);
+    assert!(state.current_task_id.is_none());
+
+    let repo = Repo::open(dir.path()).unwrap();
+    let claimed = repo.store.read(task.id).unwrap();
+    assert_eq!(claimed.status, Status::InProgress);
+    assert_eq!(claimed.assignee.as_deref(), Some("agent-3"));
+
+    let mesh = tak::store::mesh::MeshStore::open(&dir.path().join(".tak"));
+    let reservations = mesh.list_reservations().unwrap();
+    assert!(
+        reservations
+            .iter()
+            .all(|reservation| reservation.agent != "agent-3")
+    );
+}
+
+#[test]
 fn test_learn_index_auto_rebuild() {
     let dir = tempdir().unwrap();
     let store = FileStore::init(dir.path()).unwrap();

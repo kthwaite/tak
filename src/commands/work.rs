@@ -314,9 +314,9 @@ fn validate_identity(agent: String) -> Result<String> {
     Ok(agent)
 }
 
-fn print_response(response: WorkResponse, format: Format) -> Result<()> {
-    match format {
-        Format::Json => println!("{}", serde_json::to_string(&response)?),
+fn render_response(response: &WorkResponse, format: Format) -> Result<String> {
+    let rendered = match format {
+        Format::Json => serde_json::to_string(response)?,
         Format::Pretty => {
             let active = if response.state.active {
                 "active".green().to_string()
@@ -335,32 +335,28 @@ fn print_response(response: WorkResponse, format: Format) -> Result<()> {
                 .map(|v| v.to_string())
                 .unwrap_or_else(|| "-".to_string());
 
-            println!(
-                "{} {} ({})",
+            format!(
+                "{} {} ({})\n  {} {}\n  {} {}\n  {} {}\n  {} {}\n  {} {}\n  {} {}\n  {} {}\n  {} {}",
                 "work".cyan().bold(),
                 response.event.as_str().bold(),
-                response.agent.cyan()
-            );
-            println!("  {} {}", "state:".dimmed(), active);
-            println!("  {} {}", "task:".dimmed(), task_label);
-            println!("  {} {}", "tag:".dimmed(), tag);
-            println!("  {} {}", "remaining:".dimmed(), remaining);
-            println!("  {} {}", "processed:".dimmed(), response.state.processed);
-            println!(
-                "  {} {}",
+                response.agent.cyan(),
+                "state:".dimmed(),
+                active,
+                "task:".dimmed(),
+                task_label,
+                "tag:".dimmed(),
+                tag,
+                "remaining:".dimmed(),
+                remaining,
+                "processed:".dimmed(),
+                response.state.processed,
                 "verify:".dimmed(),
-                response.state.verify_mode.to_string()
-            );
-            println!(
-                "  {} {}",
+                response.state.verify_mode,
                 "strategy:".dimmed(),
-                response.state.claim_strategy.to_string()
-            );
-            println!(
-                "  {} {}",
+                response.state.claim_strategy,
                 "verbosity:".dimmed(),
-                response.state.coordination_verbosity.to_string()
-            );
+                response.state.coordination_verbosity
+            )
         }
         Format::Minimal => {
             let state = if response.state.active {
@@ -373,16 +369,21 @@ fn print_response(response: WorkResponse, format: Format) -> Result<()> {
                 .as_ref()
                 .map(|task| TaskId::from(task.id).to_string())
                 .unwrap_or_else(|| "-".to_string());
-            println!(
+            format!(
                 "{}\t{}\t{}\t{}",
                 response.event.as_str(),
                 response.agent,
                 state,
                 task_id
-            );
+            )
         }
-    }
+    };
 
+    Ok(rendered)
+}
+
+fn print_response(response: WorkResponse, format: Format) -> Result<()> {
+    println!("{}", render_response(&response, format)?);
     Ok(())
 }
 
@@ -390,6 +391,7 @@ fn print_response(response: WorkResponse, format: Format) -> Result<()> {
 mod tests {
     use super::*;
     use crate::model::{Contract, Kind, Planning};
+    use crate::store::mesh::MeshStore;
     use chrono::Utc;
     use std::fs;
     use std::sync::Mutex;
@@ -642,5 +644,203 @@ mod tests {
         unsafe {
             std::env::remove_var("TAK_AGENT");
         }
+    }
+
+    #[test]
+    fn status_reports_active_state_and_current_task_payload() {
+        let dir = setup_repo();
+        let task_id = create_task(dir.path(), "status-current-task");
+        mutate_task(dir.path(), task_id, |task| {
+            task.status = Status::InProgress;
+            task.assignee = Some("agent-1".into());
+        });
+
+        let store = WorkStore::open(&dir.path().join(".tak"));
+        let mut state = store
+            .activate("agent-1", None, None, None, None, None)
+            .unwrap()
+            .state;
+        state.current_task_id = Some(task_id);
+        store.save(&state).unwrap();
+
+        let response = status_response(dir.path(), "agent-1".into()).unwrap();
+
+        assert_eq!(response.event, WorkEvent::Status);
+        assert!(response.state.active);
+        assert_eq!(response.state.current_task_id, Some(task_id));
+        assert_eq!(
+            response.current_task.as_ref().map(|task| task.id),
+            Some(task_id)
+        );
+    }
+
+    #[test]
+    fn stop_is_idempotent_and_releases_agent_reservations() {
+        let dir = setup_repo();
+        let mesh = MeshStore::open(&dir.path().join(".tak"));
+        mesh.join(Some("agent-1"), Some("sid-1")).unwrap();
+        mesh.reserve(
+            "agent-1",
+            vec!["src/commands/work.rs".into()],
+            Some("test-stop"),
+        )
+        .unwrap();
+
+        let first = stop_response(dir.path(), "agent-1".into()).unwrap();
+        assert_eq!(first.event, WorkEvent::Stopped);
+        assert!(!first.state.active);
+
+        let reservations = mesh.list_reservations().unwrap();
+        assert!(
+            reservations
+                .iter()
+                .all(|reservation| reservation.agent != "agent-1")
+        );
+
+        let second = stop_response(dir.path(), "agent-1".into()).unwrap();
+        assert_eq!(second.event, WorkEvent::Stopped);
+        assert!(!second.state.active);
+    }
+
+    #[test]
+    fn reconcile_releases_reservations_when_current_task_is_completed() {
+        let dir = setup_repo();
+        let finished_task_id = create_task(dir.path(), "completed-current-task");
+        mutate_task(dir.path(), finished_task_id, |task| {
+            task.status = Status::Done;
+            task.assignee = Some("agent-1".into());
+        });
+
+        let store = WorkStore::open(&dir.path().join(".tak"));
+        let mut state = store
+            .activate("agent-1", None, None, None, None, None)
+            .unwrap()
+            .state;
+        state.current_task_id = Some(finished_task_id);
+        store.save(&state).unwrap();
+
+        let mesh = MeshStore::open(&dir.path().join(".tak"));
+        mesh.join(Some("agent-1"), Some("sid-1")).unwrap();
+        mesh.reserve(
+            "agent-1",
+            vec!["src/commands/work.rs".into()],
+            Some("test-reconcile-release"),
+        )
+        .unwrap();
+
+        let response =
+            reconcile_start_or_resume(dir.path(), "agent-1".into(), None, None, None, None, None)
+                .unwrap();
+
+        assert!(matches!(
+            response.event,
+            WorkEvent::NoWork | WorkEvent::Claimed
+        ));
+        assert!(response.state.current_task_id != Some(finished_task_id));
+
+        let reservations = mesh.list_reservations().unwrap();
+        assert!(
+            reservations
+                .iter()
+                .all(|reservation| reservation.agent != "agent-1")
+        );
+    }
+
+    fn strip_ansi(input: &str) -> String {
+        let mut out = String::with_capacity(input.len());
+        let mut chars = input.chars().peekable();
+
+        while let Some(ch) = chars.next() {
+            if ch == '\u{1b}'
+                && let Some('[') = chars.peek()
+            {
+                chars.next();
+                for code in chars.by_ref() {
+                    if code.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+                continue;
+            }
+
+            out.push(ch);
+        }
+
+        out
+    }
+
+    #[test]
+    fn render_json_output_contract_contains_expected_fields() {
+        let dir = setup_repo();
+        let task_id = create_task(dir.path(), "render-json");
+
+        let response =
+            reconcile_start_or_resume(dir.path(), "agent-1".into(), None, None, None, None, None)
+                .unwrap();
+
+        let rendered = render_response(&response, Format::Json).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+
+        assert_eq!(value.get("event").and_then(|v| v.as_str()), Some("claimed"));
+        assert_eq!(value.get("agent").and_then(|v| v.as_str()), Some("agent-1"));
+
+        let loop_state = value.get("loop").and_then(|v| v.as_object()).unwrap();
+        assert_eq!(
+            loop_state.get("active").and_then(|v| v.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            loop_state.get("current_task_id").and_then(|v| v.as_u64()),
+            Some(task_id)
+        );
+
+        let current_task = value
+            .get("current_task")
+            .and_then(|v| v.as_object())
+            .unwrap();
+        assert_eq!(
+            current_task.get("id").and_then(|v| v.as_u64()),
+            Some(task_id)
+        );
+    }
+
+    #[test]
+    fn render_pretty_output_is_action_oriented_and_stable() {
+        let dir = setup_repo();
+        let task_id = create_task(dir.path(), "render-pretty");
+
+        let response =
+            reconcile_start_or_resume(dir.path(), "agent-1".into(), None, None, None, None, None)
+                .unwrap();
+
+        let rendered = render_response(&response, Format::Pretty).unwrap();
+        let plain = strip_ansi(&rendered);
+
+        assert!(plain.contains("work claimed (agent-1)"));
+        assert!(plain.contains("state: active"));
+        assert!(plain.contains(&format!("task: {} render-pretty", TaskId::from(task_id))));
+        assert!(plain.contains("tag: -"));
+        assert!(plain.contains("verify: isolated"));
+        assert!(plain.contains("strategy: priority_then_age"));
+        assert!(plain.contains("verbosity: medium"));
+    }
+
+    #[test]
+    fn render_minimal_output_is_tab_separated_and_script_friendly() {
+        let dir = setup_repo();
+        let task_id = create_task(dir.path(), "render-minimal");
+
+        let response =
+            reconcile_start_or_resume(dir.path(), "agent-1".into(), None, None, None, None, None)
+                .unwrap();
+
+        let rendered = render_response(&response, Format::Minimal).unwrap();
+        let parts = rendered.split('\t').collect::<Vec<_>>();
+
+        assert_eq!(parts.len(), 4);
+        assert_eq!(parts[0], "claimed");
+        assert_eq!(parts[1], "agent-1");
+        assert_eq!(parts[2], "active");
+        assert_eq!(parts[3], TaskId::from(task_id).to_string());
     }
 }
