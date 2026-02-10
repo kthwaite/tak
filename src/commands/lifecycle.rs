@@ -192,7 +192,7 @@ pub fn start(repo_root: &Path, id: u64, assignee: Option<String>, format: Format
     Ok(())
 }
 
-pub fn finish(repo_root: &Path, id: u64, format: Format) -> Result<()> {
+pub(crate) fn finish_task(repo_root: &Path, id: u64) -> Result<model::Task> {
     let repo = Repo::open(repo_root)?;
     let mut task = repo.store.read(id)?;
 
@@ -227,6 +227,11 @@ pub fn finish(repo_root: &Path, id: u64, format: Format) -> Result<()> {
     };
     let _ = repo.sidecars.append_history(id, &evt);
 
+    Ok(task)
+}
+
+pub fn finish(repo_root: &Path, id: u64, format: Format) -> Result<()> {
+    let task = finish_task(repo_root, id)?;
     output::print_task(&task, format)?;
     Ok(())
 }

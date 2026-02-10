@@ -366,7 +366,7 @@ enum Commands {
         #[arg(long)]
         timeout: Option<u64>,
     },
-    /// Manage CLI-native work-loop runtime state (`tak work`, `tak work status`, `tak work stop`)
+    /// Manage CLI-native work-loop runtime state (`tak work`, `tak work status`, `tak work stop`, `tak work done`)
     Work {
         /// Optional action (default: start/resume)
         #[arg(value_enum)]
@@ -392,6 +392,9 @@ enum Commands {
         /// Bypass safe-resume anti-thrash gate and allow immediate reclaim attempt
         #[arg(long)]
         force_reclaim: bool,
+        /// Pause/deactivate the loop after `tak work done`
+        #[arg(long)]
+        pause: bool,
     },
 }
 
@@ -401,6 +404,7 @@ enum WorkAction {
     Start,
     Status,
     Stop,
+    Done,
 }
 
 #[derive(Subcommand)]
@@ -1072,6 +1076,7 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
             strategy,
             verbosity,
             force_reclaim,
+            pause,
         } => match action.unwrap_or(WorkAction::Start) {
             WorkAction::Start => tak::commands::work::start_or_resume_with_strategy_force(
                 &root,
@@ -1086,6 +1091,7 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
             ),
             WorkAction::Status => tak::commands::work::status(&root, assignee, format),
             WorkAction::Stop => tak::commands::work::stop(&root, assignee, format),
+            WorkAction::Done => tak::commands::work::done(&root, assignee, pause, format),
         },
         Commands::Verify { id } => {
             tak::commands::verify::run(&root, resolve_task_id_arg(&root, id)?, format)
@@ -1799,6 +1805,7 @@ mod tests {
                 strategy,
                 verbosity,
                 force_reclaim,
+                pause,
             } => {
                 assert!(action.is_none());
                 assert!(assignee.is_none());
@@ -1808,6 +1815,7 @@ mod tests {
                 assert!(strategy.is_none());
                 assert!(verbosity.is_none());
                 assert!(!force_reclaim);
+                assert!(!pause);
             }
             _ => panic!("expected work command"),
         }
@@ -1826,6 +1834,7 @@ mod tests {
                 strategy,
                 verbosity,
                 force_reclaim,
+                pause,
             } => {
                 assert_eq!(action, Some(WorkAction::Start));
                 assert!(assignee.is_none());
@@ -1835,6 +1844,7 @@ mod tests {
                 assert!(strategy.is_none());
                 assert!(verbosity.is_none());
                 assert!(!force_reclaim);
+                assert!(!pause);
             }
             _ => panic!("expected work command"),
         }
@@ -1853,6 +1863,7 @@ mod tests {
                 strategy,
                 verbosity,
                 force_reclaim,
+                pause,
             } => {
                 assert_eq!(action, Some(WorkAction::Start));
                 assert!(assignee.is_none());
@@ -1862,6 +1873,7 @@ mod tests {
                 assert_eq!(strategy, Some(WorkClaimStrategy::EpicCloseout));
                 assert!(verbosity.is_none());
                 assert!(!force_reclaim);
+                assert!(!pause);
             }
             _ => panic!("expected work command"),
         }
@@ -1880,6 +1892,7 @@ mod tests {
                 strategy,
                 verbosity,
                 force_reclaim,
+                pause,
             } => {
                 assert_eq!(action, Some(WorkAction::Start));
                 assert!(assignee.is_none());
@@ -1889,6 +1902,7 @@ mod tests {
                 assert!(strategy.is_none());
                 assert_eq!(verbosity, Some(WorkCoordinationVerbosity::High));
                 assert!(!force_reclaim);
+                assert!(!pause);
             }
             _ => panic!("expected work command"),
         }
@@ -1907,6 +1921,7 @@ mod tests {
                 strategy,
                 verbosity,
                 force_reclaim,
+                pause,
             } => {
                 assert_eq!(action, Some(WorkAction::Start));
                 assert!(assignee.is_none());
@@ -1916,6 +1931,7 @@ mod tests {
                 assert!(strategy.is_none());
                 assert!(verbosity.is_none());
                 assert!(force_reclaim);
+                assert!(!pause);
             }
             _ => panic!("expected work command"),
         }
@@ -1934,6 +1950,7 @@ mod tests {
                 strategy,
                 verbosity,
                 force_reclaim,
+                pause,
             } => {
                 assert_eq!(action, Some(WorkAction::Status));
                 assert_eq!(assignee.as_deref(), Some("agent-1"));
@@ -1943,6 +1960,7 @@ mod tests {
                 assert!(strategy.is_none());
                 assert!(verbosity.is_none());
                 assert!(!force_reclaim);
+                assert!(!pause);
             }
             _ => panic!("expected work command"),
         }
@@ -1961,6 +1979,7 @@ mod tests {
                 strategy,
                 verbosity,
                 force_reclaim,
+                pause,
             } => {
                 assert_eq!(action, Some(WorkAction::Stop));
                 assert!(assignee.is_none());
@@ -1970,6 +1989,36 @@ mod tests {
                 assert!(strategy.is_none());
                 assert!(verbosity.is_none());
                 assert!(!force_reclaim);
+                assert!(!pause);
+            }
+            _ => panic!("expected work command"),
+        }
+    }
+
+    #[test]
+    fn parse_work_done_action_with_pause() {
+        let cli = Cli::parse_from(["tak", "work", "done", "--pause", "--assignee", "agent-1"]);
+        match cli.command {
+            Commands::Work {
+                action,
+                assignee,
+                tag,
+                limit,
+                verify,
+                strategy,
+                verbosity,
+                force_reclaim,
+                pause,
+            } => {
+                assert_eq!(action, Some(WorkAction::Done));
+                assert_eq!(assignee.as_deref(), Some("agent-1"));
+                assert!(tag.is_none());
+                assert!(limit.is_none());
+                assert!(verify.is_none());
+                assert!(strategy.is_none());
+                assert!(verbosity.is_none());
+                assert!(!force_reclaim);
+                assert!(pause);
             }
             _ => panic!("expected work command"),
         }

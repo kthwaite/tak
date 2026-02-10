@@ -19,6 +19,7 @@ enum WorkEvent {
     Continued,
     Attached,
     Claimed,
+    Done,
     NoWork,
     LimitReached,
     Status,
@@ -31,6 +32,7 @@ impl WorkEvent {
             Self::Continued => "continued",
             Self::Attached => "attached",
             Self::Claimed => "claimed",
+            Self::Done => "done",
             Self::NoWork => "no_work",
             Self::LimitReached => "limit_reached",
             Self::Status => "status",
@@ -59,6 +61,27 @@ struct WorkResponse {
     #[serde(default)]
     blockers: Vec<String>,
     suggested_action: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    done: Option<WorkDoneSummary>,
+}
+
+#[derive(Debug, Serialize)]
+struct ReservationReleaseSummary {
+    released: bool,
+    #[serde(default)]
+    paths: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct WorkDoneSummary {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    finished_task_id: Option<u64>,
+    lifecycle_transition: String,
+    reservation_release: ReservationReleaseSummary,
+    paused: bool,
+    loop_active: bool,
 }
 
 const RESUME_GATE_EXTENSION_KEY: &str = "resume_gate";
@@ -220,6 +243,7 @@ fn build_response(
         ephemeral_identity: false,
         state,
         current_task,
+        done: None,
     }
 }
 
@@ -303,6 +327,13 @@ pub fn status(repo_root: &Path, assignee: Option<String>, format: Format) -> Res
 pub fn stop(repo_root: &Path, assignee: Option<String>, format: Format) -> Result<()> {
     let resolved = resolve_agent_identity(assignee)?;
     let mut response = stop_response(repo_root, resolved.name)?;
+    response.ephemeral_identity = resolved.ephemeral;
+    print_response(response, format)
+}
+
+pub fn done(repo_root: &Path, assignee: Option<String>, pause: bool, format: Format) -> Result<()> {
+    let resolved = resolve_agent_identity(assignee)?;
+    let mut response = done_response(repo_root, resolved.name, pause)?;
     response.ephemeral_identity = resolved.ephemeral;
     print_response(response, format)
 }
@@ -564,6 +595,70 @@ fn stop_response(repo_root: &Path, agent: String) -> Result<WorkResponse> {
     ))
 }
 
+fn done_response(repo_root: &Path, agent: String, pause: bool) -> Result<WorkResponse> {
+    let work_store = WorkStore::open(&repo_root.join(".tak"));
+    let mut state = work_store.status(&agent)?;
+    let repo = Repo::open(repo_root)?;
+
+    let mut finished_task_id = None;
+    let lifecycle_transition =
+        if let Some(task) = load_current_owned_task(&repo, &agent, state.current_task_id)? {
+            crate::commands::lifecycle::finish_task(repo_root, task.id)?;
+            state.current_task_id = None;
+            mark_previous_unit_processed(&mut state);
+            finished_task_id = Some(task.id);
+            "finished".to_string()
+        } else if state.current_task_id.is_some() {
+            state.current_task_id = None;
+            "detached_without_finish".to_string()
+        } else {
+            "no_current_task".to_string()
+        };
+
+    store_resume_gate(&mut state, None);
+
+    let release_summary = release_agent_reservations(repo_root, &agent);
+
+    if pause {
+        state.active = false;
+    } else if finished_task_id.is_some() {
+        state.active = true;
+    }
+
+    if !state.active {
+        state.current_task_id = None;
+    }
+
+    let state = work_store.save(&state)?;
+
+    let suggested_action = if pause {
+        "loop paused; run `tak work start` when ready".to_string()
+    } else if state.active {
+        "run `tak work` to claim the next task".to_string()
+    } else {
+        "run `tak work start` to activate loop".to_string()
+    };
+
+    let mut response = build_response(
+        repo_root,
+        WorkEvent::Done,
+        agent,
+        state,
+        None,
+        vec![],
+        suggested_action,
+    );
+    response.done = Some(WorkDoneSummary {
+        finished_task_id,
+        lifecycle_transition,
+        reservation_release: release_summary,
+        paused: pause,
+        loop_active: response.state.active,
+    });
+
+    Ok(response)
+}
+
 fn load_current_owned_task(
     repo: &Repo,
     agent: &str,
@@ -614,17 +709,38 @@ fn load_task_if_exists(repo_root: &Path, task_id: Option<u64>) -> Result<Option<
     }
 }
 
-fn release_reservations_best_effort(repo_root: &Path, agent: &str) {
+fn release_agent_reservations(repo_root: &Path, agent: &str) -> ReservationReleaseSummary {
     let mesh = MeshStore::open(&repo_root.join(".tak"));
     if !mesh.exists() {
-        return;
+        return ReservationReleaseSummary {
+            released: true,
+            paths: vec![],
+            error: None,
+        };
     }
 
-    if let Err(err) = mesh.release(agent, vec![])
-        && !matches!(err, TakError::MeshAgentNotFound(_))
-    {
-        // best-effort cleanup only
+    let paths = list_agent_reservations_best_effort(repo_root, agent);
+    match mesh.release(agent, vec![]) {
+        Ok(_) => ReservationReleaseSummary {
+            released: true,
+            paths,
+            error: None,
+        },
+        Err(TakError::MeshAgentNotFound(_)) => ReservationReleaseSummary {
+            released: true,
+            paths: vec![],
+            error: None,
+        },
+        Err(err) => ReservationReleaseSummary {
+            released: false,
+            paths,
+            error: Some(err.to_string()),
+        },
     }
+}
+
+fn release_reservations_best_effort(repo_root: &Path, agent: &str) {
+    let _ = release_agent_reservations(repo_root, agent);
 }
 
 /// Resolved agent identity with provenance metadata.
@@ -731,6 +847,39 @@ fn render_response(response: &WorkResponse, format: Format) -> Result<String> {
                 "next:".dimmed(),
                 response.suggested_action
             );
+            if let Some(done) = response.done.as_ref() {
+                let finished = done
+                    .finished_task_id
+                    .map(TaskId::from)
+                    .map(|id| id.to_string())
+                    .unwrap_or_else(|| "-".to_string());
+                let released = if done.reservation_release.paths.is_empty() {
+                    "-".to_string()
+                } else {
+                    done.reservation_release.paths.join(", ")
+                };
+                let release_status = if done.reservation_release.released {
+                    "ok".green().to_string()
+                } else {
+                    "failed".red().to_string()
+                };
+                out.push_str(&format!(
+                    "\n  {} {}\n  {} {}\n  {} {}\n  {} {}\n  {} {}",
+                    "lifecycle:".dimmed(),
+                    done.lifecycle_transition,
+                    "finished task:".dimmed(),
+                    finished,
+                    "release:".dimmed(),
+                    release_status,
+                    "released paths:".dimmed(),
+                    released,
+                    "paused:".dimmed(),
+                    done.paused
+                ));
+                if let Some(error) = done.reservation_release.error.as_ref() {
+                    out.push_str(&format!("\n  {} {}", "release error:".red().bold(), error));
+                }
+            }
             if response.ephemeral_identity {
                 out.push_str(&format!(
                     "\n  {} {}",
@@ -1210,6 +1359,105 @@ mod tests {
     }
 
     #[test]
+    fn done_finishes_current_task_releases_reservations_and_reports_subactions() {
+        let dir = setup_repo();
+        let task_id = create_task(dir.path(), "done-current-task");
+        mutate_task(dir.path(), task_id, |task| {
+            task.status = Status::InProgress;
+            task.assignee = Some("agent-1".into());
+        });
+
+        let store = WorkStore::open(&dir.path().join(".tak"));
+        let mut state = store
+            .activate("agent-1", None, None, None, None, None)
+            .unwrap()
+            .state;
+        state.current_task_id = Some(task_id);
+        store.save(&state).unwrap();
+
+        let mesh = MeshStore::open(&dir.path().join(".tak"));
+        mesh.join(Some("agent-1"), Some("sid-1")).unwrap();
+        mesh.reserve(
+            "agent-1",
+            vec!["src/commands/work.rs".into()],
+            Some("test-work-done"),
+        )
+        .unwrap();
+
+        let response = done_response(dir.path(), "agent-1".into(), false).unwrap();
+
+        assert_eq!(response.event, WorkEvent::Done);
+        assert!(response.state.active);
+        assert!(response.state.current_task_id.is_none());
+        assert_eq!(response.state.processed, 1);
+
+        let done = response.done.as_ref().unwrap();
+        assert_eq!(done.finished_task_id, Some(task_id));
+        assert_eq!(done.lifecycle_transition, "finished");
+        assert!(done.reservation_release.released);
+        assert_eq!(done.reservation_release.paths, vec!["src/commands/work.rs"]);
+        assert!(!done.paused);
+        assert!(done.loop_active);
+
+        let repo = Repo::open(dir.path()).unwrap();
+        let finished_task = repo.store.read(task_id).unwrap();
+        assert_eq!(finished_task.status, Status::Done);
+
+        let reservations = mesh.list_reservations().unwrap();
+        assert!(
+            reservations
+                .iter()
+                .all(|reservation| reservation.agent != "agent-1")
+        );
+    }
+
+    #[test]
+    fn done_with_pause_deactivates_loop() {
+        let dir = setup_repo();
+        let task_id = create_task(dir.path(), "done-pause");
+        mutate_task(dir.path(), task_id, |task| {
+            task.status = Status::InProgress;
+            task.assignee = Some("agent-1".into());
+        });
+
+        let store = WorkStore::open(&dir.path().join(".tak"));
+        let mut state = store
+            .activate("agent-1", None, None, None, None, None)
+            .unwrap()
+            .state;
+        state.current_task_id = Some(task_id);
+        store.save(&state).unwrap();
+
+        let response = done_response(dir.path(), "agent-1".into(), true).unwrap();
+
+        assert_eq!(response.event, WorkEvent::Done);
+        assert!(!response.state.active);
+        let done = response.done.as_ref().unwrap();
+        assert!(done.paused);
+        assert!(!done.loop_active);
+    }
+
+    #[test]
+    fn done_is_idempotent_when_no_current_task_is_attached() {
+        let dir = setup_repo();
+
+        let store = WorkStore::open(&dir.path().join(".tak"));
+        store
+            .activate("agent-1", None, None, None, None, None)
+            .unwrap();
+
+        let first = done_response(dir.path(), "agent-1".into(), false).unwrap();
+        let second = done_response(dir.path(), "agent-1".into(), false).unwrap();
+
+        for response in [first, second] {
+            assert_eq!(response.event, WorkEvent::Done);
+            let done = response.done.as_ref().unwrap();
+            assert_eq!(done.lifecycle_transition, "no_current_task");
+            assert!(done.finished_task_id.is_none());
+        }
+    }
+
+    #[test]
     fn stop_is_idempotent_and_releases_agent_reservations() {
         let dir = setup_repo();
         let mesh = MeshStore::open(&dir.path().join(".tak"));
@@ -1349,6 +1597,50 @@ mod tests {
         assert_eq!(
             value.get("suggested_action").and_then(|v| v.as_str()),
             Some(expected.as_str())
+        );
+    }
+
+    #[test]
+    fn render_json_done_output_includes_subaction_report() {
+        let now = Utc::now();
+        let response = WorkResponse {
+            event: WorkEvent::Done,
+            agent: "agent-1".into(),
+            ephemeral_identity: false,
+            state: WorkState::inactive("agent-1", now),
+            current_task: None,
+            reservations: vec![],
+            blockers: vec![],
+            suggested_action: "run `tak work` to claim the next task".into(),
+            done: Some(WorkDoneSummary {
+                finished_task_id: Some(42),
+                lifecycle_transition: "finished".into(),
+                reservation_release: ReservationReleaseSummary {
+                    released: true,
+                    paths: vec!["src/commands/work.rs".into()],
+                    error: None,
+                },
+                paused: false,
+                loop_active: true,
+            }),
+        };
+
+        let rendered = render_response(&response, Format::Json).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+
+        let done = value.get("done").and_then(|v| v.as_object()).unwrap();
+        assert_eq!(
+            done.get("lifecycle_transition").and_then(|v| v.as_str()),
+            Some("finished")
+        );
+        assert_eq!(
+            done.get("finished_task_id").and_then(|v| v.as_u64()),
+            Some(42)
+        );
+        assert_eq!(done.get("paused").and_then(|v| v.as_bool()), Some(false));
+        assert_eq!(
+            done.get("loop_active").and_then(|v| v.as_bool()),
+            Some(true)
         );
     }
 
