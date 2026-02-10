@@ -87,18 +87,15 @@ fn cli_only_blocker_cooperation_flow_times_out_then_unblocks_and_claims_next_tas
     )
     .unwrap();
 
+    let blocked_id = format!("{:016x}", blocked.id);
+
     let db = CoordinationDb::from_repo(repo_root).unwrap();
     let notes = db
-        .list_notes(
-            Some("open"),
-            Some("blocker"),
-            Some(&blocked.id.to_string()),
-            None,
-        )
+        .list_notes(Some("open"), Some("blocker"), Some(&blocked_id), None)
         .unwrap();
     assert_eq!(notes.len(), 1);
     assert!(notes[0].message.contains("template: blocker"));
-    assert_eq!(notes[0].task_ids, vec![blocked.id.to_string()]);
+    assert_eq!(notes[0].task_ids, vec![blocked_id.clone()]);
 
     let note_id = notes[0].id as u64;
 
