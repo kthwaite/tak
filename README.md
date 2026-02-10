@@ -234,8 +234,16 @@ Option semantics:
 - Default window is the last 30 days (`--to` defaults to today, `--from` defaults to 30 days earlier).
 - `--include-cancelled` is supported for `metrics burndown` and `metrics tui`; `metrics completion-time --include-cancelled` is rejected with `metrics_invalid_query`.
 - `--from` must be on or before `--to`; invalid combinations return structured `metrics_invalid_query` errors.
+- `--children-of` is direct-child filtering (non-recursive).
 
-All commands output JSON by default. Use `--format pretty` for human-readable output or `--format minimal` for tabular summaries.
+Interpretation quick guide:
+- **Burndown** uses lifecycle deltas (`created +1`, `finished -1`, `cancelled -1`, `reopened +1`) to produce `actual` remaining and a linear `ideal` overlay.
+- **Scope overlays** help distinguish throughput from scope movement (`scope_added`, `scope_removed`, `reopened_in_window`).
+- **Completion-time** buckets by finish date and reports `avg/p50/p90`; `--metric cycle` measures active execution episodes, while `--metric lead` measures end-to-end from task creation.
+- **Data quality** counters (`missing_history_tasks`, `inferred_samples`) indicate when reports had to infer lifecycle points or drop invalid samples.
+- `tak metrics tui` controls: `q` quit, `r` refresh, `b` bucket toggle, `m` metric toggle, `[`/`]` shrink/expand window start, `?` help.
+
+All commands output JSON by default. Use `--format pretty` for human-readable output or `--format minimal` for tabular summaries. For full semantics/caveats, see [`docs/how/metrics.md`](./docs/how/metrics.md).
 
 ### Epic close hygiene gate (tak source repository)
 

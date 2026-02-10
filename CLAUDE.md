@@ -205,7 +205,13 @@ Errors are structured JSON on stderr when `--format json`: `{"error":"<code>","m
 - `context` command reads/writes free-form context notes; `--set` overwrites, `--clear` deletes
 - `log` command displays history log; JSON mode returns array of lines, pretty mode prints raw
 - `verify` command runs `contract.verification` commands via `sh -c` from repo root; reports pass/fail per command; exits 1 if any fail
-- Metrics queries default to a 30-day window (`--to` defaults today, `--from` defaults 30 days prior), reject inverted windows, and currently reject `metrics completion-time --include-cancelled`.
+- Metrics queries default to a 30-day window (`--to` defaults today, `--from` defaults 30 days prior), reject inverted windows, and enforce bucket span limits (day <= 366, week <= 520 buckets).
+- `metrics completion-time --include-cancelled` is rejected (`metrics_invalid_query`); cancelled inclusion is supported for burndown/TUI only.
+- Burndown interpretation: remaining moves via lifecycle deltas (`created +1`, `finished -1`, `cancelled -1`, `reopened +1`), with `scope_added`/`scope_removed` overlays and an `ideal` linear burn line.
+- Completion-time interpretation: `cycle` uses completion episodes (started/claimed/reopened -> finished), `lead` uses task creation -> finish; reopened tasks can produce multiple samples.
+- Weekly bucket caveat: burndown week buckets are anchored to query `--from`, while completion-time week labels are ISO `YYYY-Www`.
+- Metrics `data_quality` captures missing history sidecars and inferred/dropped samples; treat high values as a confidence warning.
+- `tak metrics tui` controls: `q` quit, `r` refresh, `b` bucket toggle, `m` metric toggle, `[`/`]` adjust window start, `?` help.
 - `delete` cleans up all sidecar files (context + history + verification results + artifacts) after removing the task file and index entry
 - `Learning` struct: id/title/description/category/tags/task_ids/timestamps; stored as `.tak/learnings/{id}.json` with separate counter.json ID sequence
 - `LearningCategory` enum: insight/pitfall/pattern/tool/process (default: insight)
