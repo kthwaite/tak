@@ -1,4 +1,5 @@
 pub mod agent;
+pub mod build_info;
 pub mod commands;
 pub mod error;
 pub mod git;

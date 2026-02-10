@@ -82,6 +82,16 @@ In practice: claim work, reserve paths, post meaningful updates in shared channe
 
 All commands output JSON by default. Use `--format pretty` for human-readable output or `--format minimal` for tabular summaries.
 
+### Epic close hygiene gate (tak source repository)
+
+When finishing an **epic** in the tak source repository and the epic's commit range changes tak functionality (`src/`, `pi-plugin/`, `claude-plugin/`, `Cargo.toml`/`Cargo.lock`), `tak finish` enforces a close-out gate:
+
+- docs were updated in-range (`README.md`, `CLAUDE.md`, `docs/`, or skill docs),
+- the running `tak` binary is built from current `HEAD`,
+- project-local `.pi` integration is synced with `pi-plugin/`.
+
+If blocked, follow the guided actions from the error (typically `cargo install --path .` and `tak setup --pi`) before retrying `tak finish`.
+
 ## Task IDs and Migration
 
 Canonical task IDs are 16-character lowercase hex strings (for example `000000000000002a`).

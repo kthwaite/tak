@@ -1,3 +1,4 @@
+use crate::build_info;
 use crate::error::{Result, TakError};
 use crate::model::Status;
 use crate::output::{self, Format};
@@ -26,6 +27,122 @@ fn handoff_links_from_summary(summary: &str) -> CoordinationLinks {
     let mut links = derive_links_from_text(summary);
     links.normalize();
     links
+}
+
+fn is_tak_source_repo(repo_root: &Path) -> bool {
+    repo_root.join("Cargo.toml").exists()
+        && repo_root.join("src/main.rs").exists()
+        && repo_root.join("pi-plugin/extensions/tak.ts").exists()
+        && repo_root
+            .join("claude-plugin/skills/task-execution/SKILL.md")
+            .exists()
+}
+
+fn is_tak_functionality_path(path: &str) -> bool {
+    path == "Cargo.toml"
+        || path == "Cargo.lock"
+        || path.starts_with("src/")
+        || path.starts_with("pi-plugin/")
+        || path.starts_with("claude-plugin/")
+}
+
+fn is_docs_path(path: &str) -> bool {
+    path == "README.md"
+        || path == "CLAUDE.md"
+        || path.starts_with("docs/")
+        || path.starts_with("claude-plugin/skills/")
+        || path == "pi-plugin/README.md"
+}
+
+fn short_sha(sha: &str) -> String {
+    sha.chars().take(7).collect()
+}
+
+fn collect_epic_finish_hygiene_issues(
+    changed_paths: &[String],
+    head_sha: &str,
+    binary_git_sha: Option<&str>,
+    embedded_assets_match_repo: Option<bool>,
+    project_pi_status: Option<&str>,
+) -> Vec<String> {
+    if !changed_paths
+        .iter()
+        .any(|path| is_tak_functionality_path(path))
+    {
+        return vec![];
+    }
+
+    let mut issues = Vec::new();
+
+    if !changed_paths.iter().any(|path| is_docs_path(path)) {
+        issues.push(
+            "docs are not updated in this epic commit range (expected README.md, CLAUDE.md, docs/, or skill docs changes)".to_string(),
+        );
+    }
+
+    match binary_git_sha {
+        Some(binary_sha) if binary_sha == head_sha => {}
+        Some(binary_sha) => issues.push(format!(
+            "tak binary is out of sync with HEAD (binary={}, head={}); run `cargo install --path .`",
+            short_sha(binary_sha),
+            short_sha(head_sha)
+        )),
+        None => issues.push(
+            "tak binary lacks build git metadata; reinstall with `cargo install --path .`"
+                .to_string(),
+        ),
+    }
+
+    match embedded_assets_match_repo {
+        Some(true) => {}
+        Some(false) => issues.push(
+            "this tak binary embeds outdated pi assets relative to `pi-plugin/`; rebuild with `cargo install --path .`".to_string(),
+        ),
+        None => issues.push(
+            "unable to compare embedded pi assets against repository source".to_string(),
+        ),
+    }
+
+    if project_pi_status.is_some_and(|status| status != "installed") {
+        issues.push("project .pi integration is not synced; run `tak setup --pi`".to_string());
+    }
+
+    issues
+}
+
+fn enforce_epic_finish_hygiene(repo_root: &Path, task: &model::Task) -> Result<()> {
+    if !matches!(task.kind, model::Kind::Epic) || !is_tak_source_repo(repo_root) {
+        return Ok(());
+    }
+
+    let Some(start_commit) = task.git.start_commit.as_deref() else {
+        return Ok(());
+    };
+    let Some(head_info) = git::current_head_info(repo_root) else {
+        return Ok(());
+    };
+
+    let changed_paths = git::changed_files_since(repo_root, start_commit, &head_info.sha);
+
+    let embedded_assets_match_repo =
+        crate::commands::setup::embedded_pi_assets_match_repo_source(repo_root).ok();
+    let project_pi_status = Some(crate::commands::setup::check_project_pi_installed(
+        repo_root,
+    ));
+
+    let issues = collect_epic_finish_hygiene_issues(
+        &changed_paths,
+        &head_info.sha,
+        build_info::git_sha(),
+        embedded_assets_match_repo,
+        project_pi_status,
+    );
+
+    if issues.is_empty() {
+        Ok(())
+    } else {
+        Err(TakError::EpicFinishHygiene(issues.join("; ")))
+    }
 }
 
 pub fn start(repo_root: &Path, id: u64, assignee: Option<String>, format: Format) -> Result<()> {
@@ -81,6 +198,8 @@ pub fn finish(repo_root: &Path, id: u64, format: Format) -> Result<()> {
 
     transition(task.status, Status::Done)
         .map_err(|(from, to)| TakError::InvalidTransition(from, to))?;
+
+    enforce_epic_finish_hygiene(repo_root, &task)?;
 
     task.status = Status::Done;
 
@@ -246,5 +365,65 @@ mod tests {
             links.mesh_message_ids,
             vec!["550e8400-e29b-41d4-a716-446655440000"]
         );
+    }
+
+    #[test]
+    fn hygiene_issues_are_empty_when_non_functional_changes_only() {
+        let changed = vec!["docs/how/channel-contract.md".to_string()];
+        let issues = collect_epic_finish_hygiene_issues(
+            &changed,
+            "abcdef0123456789",
+            Some("abcdef0123456789"),
+            Some(true),
+            Some("installed"),
+        );
+        assert!(issues.is_empty());
+    }
+
+    #[test]
+    fn hygiene_issues_include_docs_binary_and_pi_actions_when_missing() {
+        let changed = vec!["src/commands/work.rs".to_string()];
+        let issues = collect_epic_finish_hygiene_issues(
+            &changed,
+            "abcdef0123456789",
+            Some("1234567890abcdef"),
+            Some(false),
+            Some("outdated"),
+        );
+
+        assert!(
+            issues
+                .iter()
+                .any(|issue| issue.contains("docs are not updated"))
+        );
+        assert!(
+            issues
+                .iter()
+                .any(|issue| issue.contains("tak binary is out of sync"))
+        );
+        assert!(
+            issues
+                .iter()
+                .any(|issue| issue.contains("embeds outdated pi assets"))
+        );
+        assert!(
+            issues
+                .iter()
+                .any(|issue| issue.contains("run `tak setup --pi`"))
+        );
+    }
+
+    #[test]
+    fn docs_change_satisfies_docs_check_for_functional_epic() {
+        let changed = vec!["src/commands/work.rs".to_string(), "README.md".to_string()];
+        let issues = collect_epic_finish_hygiene_issues(
+            &changed,
+            "abcdef0123456789",
+            Some("abcdef0123456789"),
+            Some(true),
+            Some("installed"),
+        );
+
+        assert!(issues.is_empty());
     }
 }

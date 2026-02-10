@@ -111,6 +111,9 @@ pub enum TakError {
     #[error("work: corrupt file '{0}': {1}")]
     WorkCorruptFile(String, String),
 
+    #[error("epic finish blocked by tak hygiene checks: {0}")]
+    EpicFinishHygiene(String),
+
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 
@@ -157,6 +160,7 @@ impl TakError {
             Self::WaitTimeout(_) => "wait_timeout",
             Self::WorkInvalidAgentName(_) => "work_invalid_agent_name",
             Self::WorkCorruptFile(_, _) => "work_corrupt_file",
+            Self::EpicFinishHygiene(_) => "epic_finish_hygiene",
             Self::Io(_) => "io_error",
             Self::Json(_) => "json_error",
             Self::Db(_) => "db_error",

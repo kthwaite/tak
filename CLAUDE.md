@@ -76,7 +76,7 @@ For task-taking commands, `TASK_ID` accepts canonical 16-hex IDs, unique hex pre
 | `list` | Query tasks (`--status`, `--kind`, `--tag`, `--assignee`, `--available`, `--blocked`, `--children-of`, `--priority`) |
 | `edit TASK_ID` | Update fields (`--title`, `-d`, `--kind`, `--tag`, `--objective`, `--verify`, `--constraint`, `--criterion`, `--priority`, `--estimate`, `--skill`, `--risk`, `--pr`) |
 | `start TASK_ID` | Pending -> in_progress (`--assignee`); auto-captures git branch + HEAD SHA; appends history log |
-| `finish TASK_ID` | In_progress -> done; auto-captures end commit SHA + commit range; appends history log |
+| `finish TASK_ID` | In_progress -> done; auto-captures end commit SHA + commit range; appends history log (epic close hygiene gate enforced for tak source changes) |
 | `cancel TASK_ID` | Pending/in_progress -> cancelled (`--reason`); appends history log |
 | `handoff TASK_ID` | In_progress -> pending, record summary (`--summary`, required); appends history log |
 | `claim` | Atomic next+start with file lock (`--assignee`, `--tag`); appends history log |
@@ -149,6 +149,7 @@ Errors are structured JSON on stderr when `--format json`: `{"error":"<code>","m
 - SQLite `tasks` table carries `priority INTEGER` (rank 0-3), `estimate TEXT`, and `attempt_count INTEGER` columns; `skills` junction table for required_skills
 - `Task.git: GitInfo` — auto-populated provenance: `branch` + `start_commit` on `start`, `end_commit` + `commits` on `finish`, `pr` via `edit --pr`; omitted from JSON when empty
 - `start` captures git info only on first start (idempotent on restart after reopen); `finish` collects commit summaries via `git::commits_since()` revwalk
+- `finish` applies an epic close hygiene gate in the tak source repo when functionality changed: requires docs updates, binary-at-HEAD, and synced project `.pi` integration
 - `src/git.rs` uses git2 to discover the repo, read HEAD, and walk revisions; all functions degrade gracefully outside a git repo
 - `Task.execution: Execution` — runtime metadata with `attempt_count` (incremented on start/claim), `last_error` (set by cancel --reason), `handoff_summary` (set by handoff), `blocked_reason` (human context); omitted from JSON when empty
 - `start` and `claim` both increment `execution.attempt_count` to track retry attempts

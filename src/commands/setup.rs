@@ -282,6 +282,23 @@ pub fn check_pi_installed(global: bool) -> &'static str {
     check_pi_installed_at(&base)
 }
 
+/// Check project-local pi integration status at an explicit repo root.
+pub fn check_project_pi_installed(repo_root: &Path) -> &'static str {
+    check_pi_installed_at(&repo_root.join(".pi"))
+}
+
+/// Check whether this binary's embedded pi assets match the repository source files.
+///
+/// Returns `Ok(false)` when source files exist but content differs from embedded assets.
+pub fn embedded_pi_assets_match_repo_source(repo_root: &Path) -> Result<bool> {
+    let source_extension = fs::read_to_string(repo_root.join("pi-plugin/extensions/tak.ts"))?;
+    let source_skill =
+        fs::read_to_string(repo_root.join("pi-plugin/skills/tak-coordination/SKILL.md"))?;
+
+    Ok(source_extension.trim() == PI_EXTENSION_TAK.trim()
+        && source_skill.trim() == PI_SKILL_COORDINATION.trim())
+}
+
 fn write_pi_files(global: bool, format: Format) -> Result<bool> {
     let base = pi_base_path(global)?;
     let mut changed = false;

@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use git2::Repository;
+use git2::{Oid, Repository};
 
 /// Information about the current HEAD: branch name and commit SHA.
 pub struct HeadInfo {
@@ -29,10 +29,10 @@ pub fn commits_since(repo_root: &Path, start_sha: &str, end_sha: &str) -> Vec<St
     let Ok(repo) = Repository::discover(repo_root) else {
         return vec![];
     };
-    let Ok(start_oid) = git2::Oid::from_str(start_sha) else {
+    let Ok(start_oid) = Oid::from_str(start_sha) else {
         return vec![];
     };
-    let Ok(end_oid) = git2::Oid::from_str(end_sha) else {
+    let Ok(end_oid) = Oid::from_str(end_sha) else {
         return vec![];
     };
     let Ok(mut revwalk) = repo.revwalk() else {
@@ -56,4 +56,51 @@ pub fn commits_since(repo_root: &Path, start_sha: &str, end_sha: &str) -> Vec<St
         summaries.push(format!("{short} {summary}"));
     }
     summaries
+}
+
+/// Return normalized file paths changed between `start_sha` and `end_sha`.
+///
+/// Paths are repo-relative and use forward slashes. Returns an empty vec on
+/// any failure (missing commits, non-git repo, etc.).
+pub fn changed_files_since(repo_root: &Path, start_sha: &str, end_sha: &str) -> Vec<String> {
+    let Ok(repo) = Repository::discover(repo_root) else {
+        return vec![];
+    };
+    let Ok(start_oid) = Oid::from_str(start_sha) else {
+        return vec![];
+    };
+    let Ok(end_oid) = Oid::from_str(end_sha) else {
+        return vec![];
+    };
+
+    let Ok(start_commit) = repo.find_commit(start_oid) else {
+        return vec![];
+    };
+    let Ok(end_commit) = repo.find_commit(end_oid) else {
+        return vec![];
+    };
+    let Ok(start_tree) = start_commit.tree() else {
+        return vec![];
+    };
+    let Ok(end_tree) = end_commit.tree() else {
+        return vec![];
+    };
+
+    let Ok(diff) = repo.diff_tree_to_tree(Some(&start_tree), Some(&end_tree), None) else {
+        return vec![];
+    };
+
+    let mut paths = diff
+        .deltas()
+        .filter_map(|delta| {
+            delta
+                .new_file()
+                .path()
+                .or_else(|| delta.old_file().path())
+                .map(|path| path.to_string_lossy().replace('\\', "/"))
+        })
+        .collect::<Vec<_>>();
+    paths.sort();
+    paths.dedup();
+    paths
 }
