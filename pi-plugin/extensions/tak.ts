@@ -3064,8 +3064,8 @@ export default function takPiExtension(pi: ExtensionAPI) {
 				lines.push(`agent: ${agentName ?? "(not joined)"}`);
 
 				const agentsResult = await runTak(pi, ["mesh", "list"]);
-				if (Array.isArray(agentsResult.parsed)) {
-					const agents = agentsResult.parsed as MeshAgent[];
+				const agents = coerceMeshAgentArray(agentsResult.parsed);
+				if (agents.length > 0) {
 					lines.push(`agents (${agents.length}):`);
 					for (const agent of agents) {
 						const suffix = agent.name === agentName ? " (you)" : "";
@@ -3278,13 +3278,36 @@ export default function takPiExtension(pi: ExtensionAPI) {
 		await runTak(pi, ["reindex"], { json: false, timeoutMs: 20000 });
 		await runTak(pi, ["mesh", "cleanup", "--stale"], { json: false, timeoutMs: 20000 });
 
+		const sessionId = ctx.sessionManager.getSessionId();
+		const meshListBeforeJoin = await runTak(pi, ["mesh", "list"]);
+		const danglingAgents = findReloadDanglingAgents(
+			coerceMeshAgentArray(meshListBeforeJoin.parsed),
+			sessionId,
+			ctx.cwd,
+		);
+		for (const dangling of danglingAgents) {
+			await runTak(pi, ["mesh", "leave", "--name", dangling.name], {
+				json: false,
+				timeoutMs: 10000,
+			});
+		}
+		if (danglingAgents.length > 0) {
+			ctx.ui.notify(
+				`Cleaned ${danglingAgents.length} stale mesh registration(s) before join`,
+				"info",
+			);
+		}
+
 		const envAgent = process.env.TAK_AGENT?.trim();
 		const joinArgs = ["mesh", "join"];
 		if (envAgent) joinArgs.push("--name", envAgent);
+		if (sessionId) joinArgs.push("--session-id", sessionId);
 
 		let joinResult = await runTak(pi, joinArgs);
 		if (!joinResult.ok && envAgent) {
-			joinResult = await runTak(pi, ["mesh", "join"]);
+			const fallbackJoinArgs = ["mesh", "join"];
+			if (sessionId) fallbackJoinArgs.push("--session-id", sessionId);
+			joinResult = await runTak(pi, fallbackJoinArgs);
 		}
 
 		if (joinResult.ok && joinResult.parsed && typeof joinResult.parsed === "object") {
@@ -3305,8 +3328,13 @@ export default function takPiExtension(pi: ExtensionAPI) {
 	});
 
 	pi.on("session_shutdown", async () => {
-		if (!integrationEnabled() || !meshJoined || !agentName) return;
-		await runTak(pi, ["mesh", "leave", "--name", agentName]);
+		if (!meshJoined || !agentName) return;
+		await runTak(pi, ["mesh", "leave", "--name", agentName], {
+			json: false,
+			timeoutMs: 10000,
+		});
+		meshJoined = false;
+		agentName = undefined;
 	});
 
 	pi.on("turn_end", async (_event, ctx) => {
