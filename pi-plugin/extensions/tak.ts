@@ -11,7 +11,7 @@ import {
 	type ExtensionAPI,
 	type ExtensionContext,
 } from "@mariozechner/pi-coding-agent";
-import { Container, type SelectItem, SelectList, Text } from "@mariozechner/pi-tui";
+import { Container, matchesKey, type SelectItem, SelectList, Text } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
 
 type TaskSource = "ready" | "all" | "blocked" | "in_progress" | "mine" | "blackboard" | "inbox";
@@ -28,10 +28,13 @@ type CommandMode = "pick" | "claim" | "mesh" | "show" | "help" | "work" | "thera
 interface TakTask {
 	id: string;
 	title: string;
+	description?: string;
 	status: TaskStatus;
 	kind: string;
 	assignee?: string;
 	tags?: string[];
+	parent?: string;
+	depends_on?: string[];
 	planning?: {
 		priority?: Priority;
 	};
@@ -203,6 +206,10 @@ Work mode notes:
 - Cue mode defaults to editor prefill; use auto (or cue:auto) to push each claimed task as a user message.
 - In work mode, edits are blocked unless the path is reserved by your agent.
 - With verify:isolated (default), local build/test/check commands are blocked only when reservation scope overlaps (or when scope is undefined while peers hold reservations).
+
+Picker notes:
+- Task picker rows show wider task metadata by default.
+- Press d in the task picker to toggle details for the highlighted task.
 `;
 
 const COMPLETIONS = [
@@ -341,6 +348,24 @@ function toStringArray(value: unknown): string[] {
 	return value.filter((item): item is string => typeof item === "string");
 }
 
+function toDependencyIdArray(value: unknown): string[] {
+	if (!Array.isArray(value)) return [];
+
+	const ids: string[] = [];
+	for (const item of value) {
+		if (isRecord(item)) {
+			const depId = canonicalTaskId(item.id);
+			if (depId) ids.push(depId);
+			continue;
+		}
+
+		const depId = canonicalTaskId(item);
+		if (depId) ids.push(depId);
+	}
+
+	return ids;
+}
+
 function coerceTakTask(value: unknown): TakTask | null {
 	if (!isRecord(value)) return null;
 
@@ -354,8 +379,11 @@ function coerceTakTask(value: unknown): TakTask | null {
 			: "pending";
 	const kind = typeof value.kind === "string" ? value.kind : "task";
 
+	const description = typeof value.description === "string" ? value.description : undefined;
 	const assignee = typeof value.assignee === "string" ? value.assignee : undefined;
 	const tags = toStringArray(value.tags);
+	const parent = canonicalTaskId(value.parent);
+	const depends_on = toDependencyIdArray(value.depends_on);
 
 	let planning: TakTask["planning"] | undefined;
 	if (isRecord(value.planning)) {
@@ -368,10 +396,13 @@ function coerceTakTask(value: unknown): TakTask | null {
 	return {
 		id,
 		title,
+		description,
 		status,
 		kind,
 		assignee,
 		tags,
+		parent,
+		depends_on,
 		planning,
 		created_at: typeof value.created_at === "string" ? value.created_at : undefined,
 		updated_at: typeof value.updated_at === "string" ? value.updated_at : undefined,
@@ -712,6 +743,165 @@ function taskAgeLabel(task: TakTask): string {
 	const days = Math.floor((Date.now() - ts) / (1000 * 60 * 60 * 24));
 	if (days <= 0) return "age:<1d";
 	return `age:${days}d`;
+}
+
+function taskStatusGlyph(status: TaskStatus): string {
+	switch (status) {
+		case "pending":
+			return "○";
+		case "in_progress":
+			return "▶";
+		case "done":
+			return "✓";
+		case "cancelled":
+			return "✕";
+		default:
+			return "•";
+	}
+}
+
+function taskPriorityLabel(task: TakTask): string {
+	return task.planning?.priority ?? "unprioritized";
+}
+
+interface TaskPickerItem extends SelectItem {
+	task: TakTask;
+	noteCount: number;
+}
+
+function buildTaskPickerItems(tasks: TakTask[], noteCountByTask: Map<string, number>): TaskPickerItem[] {
+	return tasks.map((task) => {
+		const noteCount = noteCountByTask.get(task.id) ?? 0;
+		const notePart = noteCount > 0 ? ` • bb:${noteCount}` : "";
+		const assigneePart = task.assignee ? ` • @${task.assignee}` : " • unassigned";
+		return {
+			value: String(task.id),
+			label: `${taskStatusGlyph(task.status)} #${task.id}`,
+			description: `${task.title} • ${taskPriorityLabel(task)} • ${taskAgeLabel(task)}${assigneePart}${notePart}`,
+			task,
+			noteCount,
+		};
+	});
+}
+
+function formatTaskPickerDetail(task: TakTask, noteCount: number): string {
+	const tags = task.tags?.length ? task.tags.join(", ") : "-";
+	const dependsOn = task.depends_on?.length ? task.depends_on.join(", ") : "-";
+	const description = task.description?.trim() ? truncateText(task.description, 700) : "(no description)";
+
+	const lines = [
+		`#${task.id} ${task.title}`,
+		`status: ${task.status} | kind: ${task.kind} | priority: ${taskPriorityLabel(task)}`,
+		`assignee: ${task.assignee ?? "unassigned"} | ${taskAgeLabel(task)} | blackboard:${noteCount}`,
+		`tags: ${tags}`,
+		`depends_on: ${dependsOn}`,
+	];
+
+	if (task.parent) {
+		lines.push(`parent: ${task.parent}`);
+	}
+
+	lines.push("", "description:", description);
+	return lines.join("\n");
+}
+
+async function pickTaskFromList(
+	ctx: ExtensionContext,
+	title: string,
+	tasks: TakTask[],
+	noteCountByTask: Map<string, number>,
+): Promise<string | null> {
+	const taskItems = buildTaskPickerItems(tasks, noteCountByTask);
+	if (taskItems.length === 0) return null;
+
+	return ctx.ui.custom<string | null>((tui, theme, _kb, done) => {
+		const container = new Container();
+		container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+		container.addChild(new Text(theme.fg("accent", theme.bold(title))));
+
+		const list = new SelectList(taskItems, Math.min(Math.max(taskItems.length, 6), 18), {
+			selectedPrefix: (t) => theme.fg("accent", t),
+			selectedText: (t) => theme.fg("accent", t),
+			description: (t) => theme.fg("muted", t),
+			scrollInfo: (t) => theme.fg("dim", t),
+			noMatch: (t) => theme.fg("warning", t),
+		});
+
+		const detailHeader = new Text("", 0, 0);
+		const detailBody = new Text("", 0, 0);
+		const footer = new Text("", 0, 0);
+		let detailsVisible = false;
+
+		const selectedTaskItem = () => {
+			const selected = list.getSelectedItem();
+			if (!selected) return null;
+			return taskItems.find((item) => item.value === selected.value) ?? null;
+		};
+
+		const updateDetails = () => {
+			if (!detailsVisible) {
+				detailHeader.setText("");
+				detailBody.setText("");
+				return;
+			}
+
+			const selected = selectedTaskItem();
+			if (!selected) {
+				detailHeader.setText(theme.fg("warning", "No task selected."));
+				detailBody.setText("");
+				return;
+			}
+
+			detailHeader.setText(theme.fg("accent", theme.bold("Task detail")));
+			detailBody.setText(theme.fg("muted", formatTaskPickerDetail(selected.task, selected.noteCount)));
+		};
+
+		const updateFooter = () => {
+			footer.setText(
+				theme.fg(
+					"dim",
+					`↑↓ navigate • enter select • d ${detailsVisible ? "hide" : "show"} detail • esc cancel`,
+				),
+			);
+		};
+
+		list.onSelect = (item) => done(String(item.value));
+		list.onCancel = () => done(null);
+		list.onSelectionChange = () => {
+			updateDetails();
+			tui.requestRender();
+		};
+
+		container.addChild(list);
+		container.addChild(detailHeader);
+		container.addChild(detailBody);
+		container.addChild(footer);
+		container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+		updateFooter();
+
+		return {
+			render: (w: number) => container.render(w),
+			invalidate: () => {
+				container.invalidate();
+				updateDetails();
+				updateFooter();
+			},
+			handleInput(data: string) {
+				if (matchesKey(data, "d") || data === "D") {
+					detailsVisible = !detailsVisible;
+					updateDetails();
+					updateFooter();
+					tui.requestRender();
+					return;
+				}
+
+				list.handleInput(data);
+				updateDetails();
+				updateFooter();
+				tui.requestRender();
+			},
+		};
+	});
 }
 
 async function runTak(
@@ -1810,18 +2000,11 @@ export default function takPiExtension(pi: ExtensionAPI) {
 				}
 			}
 
-			const selectedId = await pickFromList(
+			const selectedId = await pickTaskFromList(
 				ctx,
 				`/tak ${parsed.filters.source} (urgent → oldest)`,
-				tasks.map((task) => {
-					const noteCount = noteCountByTask.get(task.id) ?? 0;
-					const notePart = noteCount > 0 ? ` • bb:${noteCount}` : "";
-					return {
-						value: String(task.id),
-						label: `#${task.id} ${task.title}`,
-						description: `${task.status} • ${task.planning?.priority ?? "unprioritized"} • ${taskAgeLabel(task)}${notePart}`,
-					};
-				}),
+				tasks,
+				noteCountByTask,
 			);
 
 			if (!selectedId) return;
