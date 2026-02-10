@@ -315,6 +315,20 @@ enum Commands {
         #[arg(long)]
         assignee: Option<String>,
     },
+    /// Transfer an in-progress task from a stale owner to a new assignee
+    Takeover {
+        /// Task ID to take over
+        id: String,
+        /// New assignee (`--assignee` > `TAK_AGENT` > generated fallback)
+        #[arg(long)]
+        assignee: Option<String>,
+        /// Minimum owner inactivity threshold in seconds before takeover is allowed
+        #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
+        inactive_secs: Option<u64>,
+        /// Override stale-owner checks and force takeover immediately
+        #[arg(long)]
+        force: bool,
+    },
     /// Diagnose /tak workflow friction and record therapist observations
     Therapist {
         #[command(subcommand)]
@@ -983,6 +997,24 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
                 &root,
                 resolve_task_id_arg(&root, id)?,
                 assignee,
+                format,
+            )
+        }
+        Commands::Takeover {
+            id,
+            assignee,
+            inactive_secs,
+            force,
+        } => {
+            let assignee = assignee
+                .or_else(tak::agent::resolve_agent)
+                .unwrap_or_else(tak::agent::generated_fallback);
+            tak::commands::takeover::run(
+                &root,
+                resolve_task_id_arg(&root, id)?,
+                assignee,
+                inactive_secs,
+                force,
                 format,
             )
         }
@@ -1789,6 +1821,53 @@ mod tests {
                 assert!(timeout.is_none());
             }
             _ => panic!("expected wait command"),
+        }
+    }
+
+    #[test]
+    fn parse_takeover_defaults() {
+        let cli = Cli::parse_from(["tak", "takeover", "123"]);
+        match cli.command {
+            Commands::Takeover {
+                id,
+                assignee,
+                inactive_secs,
+                force,
+            } => {
+                assert_eq!(id, "123");
+                assert!(assignee.is_none());
+                assert!(inactive_secs.is_none());
+                assert!(!force);
+            }
+            _ => panic!("expected takeover command"),
+        }
+    }
+
+    #[test]
+    fn parse_takeover_with_options() {
+        let cli = Cli::parse_from([
+            "tak",
+            "takeover",
+            "123",
+            "--assignee",
+            "agent-1",
+            "--inactive-secs",
+            "1800",
+            "--force",
+        ]);
+        match cli.command {
+            Commands::Takeover {
+                id,
+                assignee,
+                inactive_secs,
+                force,
+            } => {
+                assert_eq!(id, "123");
+                assert_eq!(assignee.as_deref(), Some("agent-1"));
+                assert_eq!(inactive_secs, Some(1800));
+                assert!(force);
+            }
+            _ => panic!("expected takeover command"),
         }
     }
 
