@@ -371,6 +371,7 @@ fn style_kind_cell(kind: Kind, padded: String) -> String {
         Kind::Task => padded,
         Kind::Bug => padded.red().to_string(),
         Kind::Meta => padded.cyan().to_string(),
+        Kind::Idea => padded.yellow().to_string(),
     }
 }
 

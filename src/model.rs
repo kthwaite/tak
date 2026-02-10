@@ -23,6 +23,7 @@ pub enum Kind {
     Task,
     Bug,
     Meta,
+    Idea,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
@@ -351,6 +352,7 @@ impl std::fmt::Display for Kind {
             Self::Task => write!(f, "task"),
             Self::Bug => write!(f, "bug"),
             Self::Meta => write!(f, "meta"),
+            Self::Idea => write!(f, "idea"),
         }
     }
 }
@@ -436,6 +438,26 @@ mod tests {
 
         let parsed_from_value_enum = Kind::from_str("meta", true).unwrap();
         assert_eq!(parsed_from_value_enum, Kind::Meta);
+    }
+
+    #[test]
+    fn kind_idea_serializes_snake_case() {
+        let json = serde_json::to_string(&Kind::Idea).unwrap();
+        assert_eq!(json, r#""idea""#);
+    }
+
+    #[test]
+    fn kind_idea_display_renders_snake_case() {
+        assert_eq!(Kind::Idea.to_string(), "idea");
+    }
+
+    #[test]
+    fn kind_idea_round_trips_serde_and_value_enum() {
+        let parsed_from_json: Kind = serde_json::from_str(r#""idea""#).unwrap();
+        assert_eq!(parsed_from_json, Kind::Idea);
+
+        let parsed_from_value_enum = Kind::from_str("idea", true).unwrap();
+        assert_eq!(parsed_from_value_enum, Kind::Idea);
     }
 
     #[test]

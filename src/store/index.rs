@@ -848,25 +848,28 @@ mod tests {
     }
 
     #[test]
-    fn ids_by_kind_supports_meta_rows_without_regressing_availability_queries() {
+    fn ids_by_kind_support_meta_and_idea_without_regressing_availability_queries() {
         let idx = Index::open_memory().unwrap();
 
         let mut t1 = make_task(1, Status::Pending, vec![], None);
         let mut t2 = make_task(2, Status::Pending, vec![], None);
+        let mut t3 = make_task(3, Status::Pending, vec![], None);
         t2.kind = Kind::Meta;
+        t3.kind = Kind::Idea;
 
-        idx.rebuild(&[t1.clone(), t2]).unwrap();
+        idx.rebuild(&[t1.clone(), t2, t3]).unwrap();
         assert_eq!(idx.ids_by_kind("meta").unwrap(), tids(&[2]));
+        assert_eq!(idx.ids_by_kind("idea").unwrap(), tids(&[3]));
         assert_eq!(idx.ids_by_kind("task").unwrap(), tids(&[1]));
         assert!(idx.ids_by_kind("Meta").unwrap().is_empty());
 
         // Verify upsert also persists kind changes.
-        t1.kind = Kind::Meta;
+        t1.kind = Kind::Idea;
         idx.upsert(&t1).unwrap();
-        assert_eq!(idx.ids_by_kind("meta").unwrap(), tids(&[1, 2]));
+        assert_eq!(idx.ids_by_kind("idea").unwrap(), tids(&[1, 3]));
 
         // Availability ordering/query semantics should stay intact regardless of kind label.
-        assert_eq!(idx.available(None).unwrap(), tids(&[1, 2]));
+        assert_eq!(idx.available(None).unwrap(), tids(&[1, 2, 3]));
     }
 
     #[test]
