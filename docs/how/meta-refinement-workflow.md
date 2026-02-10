@@ -70,7 +70,8 @@ tak context <meta-id> --set "Open questions, assumptions, and candidate decompos
 
 ```bash
 # Example: create feature + implementation tasks
-tak create "Selective sync API" --kind feature --parent <epic-id>
+# Link execution tasks to refinement inputs so traceability fields are derived.
+tak create "Selective sync API" --kind feature --parent <epic-id> --depends-on <meta-id>
 tak create "Server endpoint for selective sync" --kind task --parent <feature-id>
 tak create "Client integration for selective sync" --kind task --parent <feature-id>
 
@@ -134,9 +135,10 @@ tak finish <meta-id>
 
 ## Code pointers
 
-- `src/model.rs` (`Kind::Meta` and task schema)
+- `src/model.rs` (`Kind::Meta` and reserved traceability extension helpers)
 - `src/main.rs` (CLI parsing for `--kind meta`)
 - `src/output.rs` (`meta` rendering in pretty/minimal output)
+- `src/commands/create.rs` (traceability derivation from parent/dependency links)
 - `src/commands/lifecycle.rs` (start/handoff/finish behavior)
 
 ## Test pointers

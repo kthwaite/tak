@@ -123,10 +123,10 @@ Promotion result should be one of:
 
 Every promoted execution item should keep a trace back to the source idea and refinement steps.
 
-Implementation options (phased):
+Implementation status/options (phased):
 
-- **Phase 1:** enforce via tags + references in descriptions/blackboard notes.
-- **Phase 2:** add explicit structured linkage fields (e.g., `origin_idea_id`, `refinement_task_ids`).
+- **Current baseline:** reserve structured traceability fields via task extensions (`origin_idea_id`, `refinement_task_ids`) and derive them from parent/dependency links during `tak create`.
+- **Future hardening:** graduate these into fully typed first-class schema fields if/when stricter validation/migration is needed.
 
 ## 5) Scheduling behavior
 
@@ -195,7 +195,7 @@ This RFC does not require all helper commands in one release; policy and core ki
 
 1. Should promotion create new tasks only, or optionally mutate an idea into a feature/task?
 2. Should idea items ever be startable directly, or always require promotion?
-3. Should traceability fields be first-class schema now, or staged via extension fields first?
+3. When should traceability extension fields be promoted to strict first-class schema with migrations?
 4. Should there be policy checks/lints that warn when execution tasks are created without idea/refinement linkage?
 
 ---

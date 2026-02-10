@@ -53,9 +53,16 @@ Every active idea should end each refinement pass in one explicit state:
 - **Defer:** keep idea pending with explicit revisit trigger/date in context.
 - **Reject:** cancel idea with a reason so the decision is auditable.
 
-### 5) Traceability minimum (until structured fields are expanded)
+### 5) Traceability minimum and structured linkage fields
 
-At minimum, keep origin links through:
+Promotion traceability now has reserved top-level extension fields on tasks:
+
+- `origin_idea_id` — the source idea task ID
+- `refinement_task_ids` — ordered/deduplicated list of contributing meta task IDs
+
+When creating non-idea tasks, `tak create` derives these fields from linked tasks (`--parent` and `--depends-on`) when those links reference idea/meta work or already-traceable promoted tasks.
+
+Keep supporting context through:
 - task references (`--parent`, `depend`, related IDs in descriptions/context),
 - blackboard notes tied to idea/meta IDs,
 - handoff summaries that mention promotion/defer/reject rationale.
@@ -80,8 +87,10 @@ tak start <meta-id> --assignee planner-1
 **Promote:**
 
 ```bash
-tak create "Selective sync rollout" --kind epic
-# create feature/task children and dependency edges
+# create execution work linked to refinement inputs
+# (origin_idea_id/refinement_task_ids are derived from parent/depends-on links)
+tak create "Selective sync rollout" --kind epic --depends-on <meta-id>
+tak create "Selective sync API" --kind feature --parent <epic-id> --depends-on <meta-id>
 ```
 
 **Defer:**
@@ -101,6 +110,8 @@ tak cancel <idea-id> --reason "Rejected: complexity outweighs expected benefit"
 - Availability filtering (claim/next source): `src/store/index.rs` (`Index::available`)
 - Claim command behavior: `src/commands/claim.rs`
 - Next command behavior: `src/commands/next.rs`
+- Traceability extension helpers: `src/model.rs` (`origin_idea_id`, `refinement_task_ids`)
+- Traceability derivation during creation: `src/commands/create.rs`
 
 ## Test pointers
 
@@ -110,4 +121,7 @@ tak cancel <idea-id> --reason "Rejected: complexity outweighs expected benefit"
 - `src/commands/claim.rs` tests:
   - `claim_next_skips_idea_tasks_by_default`
   - `claim_next_returns_none_when_only_idea_tasks_are_pending`
+- `tests/idea_traceability_integration.rs`:
+  - `meta_task_captures_origin_idea_from_dependency`
+  - `promoted_execution_tasks_capture_and_inherit_traceability_links`
 - Existing integration suites validating kind parsing/output remain relevant for idea/meta visibility.
