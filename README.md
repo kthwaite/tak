@@ -1,8 +1,8 @@
 # tak
 
-Git-native task manager for agentic workflows.
+Git-native **stigmergic** task manager for agentic workflows.
 
-Tasks live as JSON files in `.tak/tasks/`, committed alongside your code. A gitignored SQLite index provides fast queries. Designed for multi-agent AI coordination via CLI.
+Tak is built around a **bottom-up, society-of-agents** model: specialized workers coordinate through shared artifacts (tasks, dependencies, reservations, and coordination notes) instead of waiting on a central planner. Tasks live as JSON files in `.tak/tasks/`, committed alongside your code. A gitignored SQLite index provides fast queries, while mesh + blackboard runtime data supports live multi-agent coordination.
 
 ## Install
 
@@ -34,6 +34,22 @@ tak finish 0000000000000001
 # Check what's unblocked
 tak list --available
 ```
+
+## Stigmergic Coordination Model
+
+Tak is optimized for **coordination through shared state** in a Minsky-style "society of mind": many narrow specialists, one shared memory.
+
+- **Tasks + dependencies** (`.tak/tasks/*.json`) are the durable plan and execution truth.
+- **Mesh runtime** (`tak mesh ...`) handles live presence, short-lived signals, and file-path reservations.
+- **Blackboard notes** (`tak blackboard ...`) capture durable team-level context, blockers, and handoffs.
+- **Task sidecars** (`tak context`, `tak log`) preserve local implementation context and lifecycle history.
+
+Bottom-up principles:
+- **Local decisions first:** agents choose and execute the next viable move from current context.
+- **Global order emerges:** priority + dependencies + availability produce system-level flow.
+- **Coordination is environmental:** progress signals live in artifacts, not in a central conductor.
+
+In practice: claim work, reserve paths, post meaningful updates in shared channels, then finish/handoff and release reservations.
 
 ## Commands
 
@@ -122,28 +138,30 @@ Adding `--rekey-random` remaps all task IDs (including already-canonical reposit
 
 Task files are the source of truth. The SQLite index is derived and rebuilt automatically when missing (e.g., after a fresh clone).
 
-## Multi-Agent Workflow
+## Stigmergic Multi-Agent Workflow
 
-Use `tak claim` for atomic task acquisition. It holds an exclusive file lock while finding and starting the next available task, preventing two agents from claiming the same work.
+The default loop is bottom-up and stigmergic: agents coordinate through shared task state, reservations, and notes instead of ad-hoc direct pings or top-down command routing.
 
 ```bash
-# Agent 1: atomically claim work
-tak claim --assignee agent-1           # → finds and starts task 0000000000000003
+# 1) Claim next available work (ordered by priority, then age)
+tak claim --assignee agent-1
 
-# Agent 2: atomically claim different work
-tak claim --assignee agent-2           # → finds and starts task 0000000000000005 (0000000000000003 is taken)
+# 2) Reserve the paths you will touch before major edits
+tak mesh reserve --name agent-1 --path src/store/mesh.rs --reason task-0000000000000003
 
-# Agent 1: finish and check for unblocked tasks
+# 3) Publish durable team context / blockers
+tak blackboard post --from agent-1 --task 0000000000000003 --tag coordination --message "Implementing reservation conflict diagnostics"
+
+# 4) Keep task-local notes close to execution
+tak context 0000000000000003 --set "Need overlap checks for parent/child paths"
+
+# 5) Finish (or handoff), then release reservations
 tak finish 0000000000000003
-tak list --available                   # tasks blocked by 0000000000000003 are now available
-
-# After pulling changes from other agents
-git pull
-tak reindex
-tak list --available
+# tak handoff 0000000000000003 --summary "Parser done; tests remain"
+tak mesh release --name agent-1 --path src/store/mesh.rs
 ```
 
-Note: `tak next` + `tak start` is subject to TOCTOU races — another agent can claim the same task between the two commands. Prefer `tak claim` for concurrent workflows.
+`tak claim` is atomic and avoids TOCTOU races that can happen with `tak next` + `tak start`. For concurrent work, prefer claim-first execution plus explicit reservation management.
 
 ## Claude Code Integration
 
