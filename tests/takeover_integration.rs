@@ -55,7 +55,8 @@ fn takeover_succeeds_for_stale_owner_integration() {
     let task_id = create_in_progress_task(dir.path(), "takeover-stale-owner", "owner-1");
 
     let db = CoordinationDb::from_repo(dir.path()).unwrap();
-    db.join_agent("owner-1", "sid-owner", "/tmp", None, None).unwrap();
+    db.join_agent("owner-1", "sid-owner", "/tmp", None, None)
+        .unwrap();
     set_registration_last_seen(dir.path(), "owner-1", 3600);
 
     takeover::run(
@@ -85,7 +86,8 @@ fn takeover_rejects_active_owner_integration() {
     let task_id = create_in_progress_task(dir.path(), "takeover-active-owner", "owner-1");
 
     let db = CoordinationDb::from_repo(dir.path()).unwrap();
-    db.join_agent("owner-1", "sid-owner", "/tmp", None, None).unwrap();
+    db.join_agent("owner-1", "sid-owner", "/tmp", None, None)
+        .unwrap();
 
     let err = takeover::run(
         dir.path(),
@@ -115,9 +117,12 @@ fn takeover_concurrent_attempts_allow_single_winner_integration() {
     let task_id = create_in_progress_task(dir.path(), "takeover-race", "owner-1");
 
     let db = CoordinationDb::from_repo(dir.path()).unwrap();
-    db.join_agent("owner-1", "sid-owner", "/tmp", None, None).unwrap();
-    db.join_agent("agent-a", "sid-a", "/tmp", None, None).unwrap();
-    db.join_agent("agent-b", "sid-b", "/tmp", None, None).unwrap();
+    db.join_agent("owner-1", "sid-owner", "/tmp", None, None)
+        .unwrap();
+    db.join_agent("agent-a", "sid-a", "/tmp", None, None)
+        .unwrap();
+    db.join_agent("agent-b", "sid-b", "/tmp", None, None)
+        .unwrap();
     set_registration_last_seen(dir.path(), "owner-1", 3600);
 
     let repo_root = Arc::new(dir.path().to_path_buf());

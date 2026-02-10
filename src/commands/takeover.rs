@@ -8,8 +8,8 @@ use crate::error::{Result, TakError};
 use crate::model::Status;
 use crate::output::Format;
 use crate::store::coordination::CoordinationLinks;
-use crate::store::lock;
 use crate::store::coordination_db::CoordinationDb;
+use crate::store::lock;
 use crate::store::repo::Repo;
 use crate::store::sidecars::HistoryEvent;
 use crate::store::work::WorkStore;
@@ -197,7 +197,10 @@ fn owner_activity(repo_root: &Path, owner: &str) -> Result<OwnerActivity> {
     let agents = db.list_agents()?;
     let now = Utc::now();
     if let Some(reg) = agents.into_iter().find(|reg| reg.name == owner) {
-        let inactive = now.signed_duration_since(reg.updated_at).num_seconds().max(0);
+        let inactive = now
+            .signed_duration_since(reg.updated_at)
+            .num_seconds()
+            .max(0);
         Ok(OwnerActivity::InactiveFor(inactive))
     } else {
         Ok(OwnerActivity::OwnerNotRegistered)
@@ -315,7 +318,8 @@ mod tests {
         let task_id = create_in_progress_task(dir.path(), "takeover-active-owner", "owner-1");
 
         let db = CoordinationDb::from_repo(dir.path()).unwrap();
-        db.join_agent("owner-1", "sid-owner", "/tmp", None, None).unwrap();
+        db.join_agent("owner-1", "sid-owner", "/tmp", None, None)
+            .unwrap();
 
         let err =
             takeover_response(dir.path(), task_id, "agent-2".into(), Some(600), false).unwrap_err();
@@ -336,7 +340,8 @@ mod tests {
         let task_id = create_in_progress_task(dir.path(), "takeover-inactive-owner", "owner-1");
 
         let db = CoordinationDb::from_repo(dir.path()).unwrap();
-        db.join_agent("owner-1", "sid-owner", "/tmp", None, None).unwrap();
+        db.join_agent("owner-1", "sid-owner", "/tmp", None, None)
+            .unwrap();
         set_registration_last_seen(dir.path(), "owner-1", 3600);
 
         let response =
@@ -357,7 +362,8 @@ mod tests {
         let task_id = create_in_progress_task(dir.path(), "takeover-force", "owner-1");
 
         let db = CoordinationDb::from_repo(dir.path()).unwrap();
-        db.join_agent("owner-1", "sid-owner", "/tmp", None, None).unwrap();
+        db.join_agent("owner-1", "sid-owner", "/tmp", None, None)
+            .unwrap();
 
         let response =
             takeover_response(dir.path(), task_id, "agent-2".into(), Some(600), true).unwrap();
@@ -374,7 +380,8 @@ mod tests {
             create_in_progress_task(dir.path(), "takeover-owner-not-registered", "owner-1");
 
         let db = CoordinationDb::from_repo(dir.path()).unwrap();
-        db.join_agent("someone-else", "sid-other", "/tmp", None, None).unwrap();
+        db.join_agent("someone-else", "sid-other", "/tmp", None, None)
+            .unwrap();
 
         let response =
             takeover_response(dir.path(), task_id, "agent-2".into(), Some(600), false).unwrap();

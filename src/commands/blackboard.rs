@@ -6,8 +6,8 @@ use colored::Colorize;
 
 use crate::error::{Result, TakError};
 use crate::output::Format;
-use crate::store::blackboard::BlackboardStatus;
 use crate::store::coordination::{CoordinationLinks, derive_links_from_text};
+use crate::store::coordination_db::BlackboardStatus;
 use crate::store::coordination_db::{CoordinationDb, DbNote};
 use crate::store::repo::Repo;
 
