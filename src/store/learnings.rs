@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -10,6 +11,12 @@ use crate::store::lock;
 /// File-based storage for learnings in `.tak/learnings/*.json`.
 pub struct LearningStore {
     root: PathBuf,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct LearningTaskLinkMigrationReport {
+    pub learnings_updated: usize,
+    pub task_links_rewritten: usize,
 }
 
 impl LearningStore {
@@ -145,6 +152,45 @@ impl LearningStore {
             .into_iter()
             .map(|id| self.read(id))
             .collect()
+    }
+
+    pub fn migrate_task_links(
+        &self,
+        id_map: &HashMap<u64, u64>,
+        dry_run: bool,
+    ) -> Result<LearningTaskLinkMigrationReport> {
+        let mut report = LearningTaskLinkMigrationReport::default();
+        if id_map.is_empty() {
+            return Ok(report);
+        }
+
+        for id in self.list_ids()? {
+            let mut learning = self.read(id)?;
+            let mut rewrites = 0usize;
+
+            for task_id in &mut learning.task_ids {
+                if let Some(new_id) = id_map.get(task_id)
+                    && *task_id != *new_id
+                {
+                    *task_id = *new_id;
+                    rewrites += 1;
+                }
+            }
+
+            if rewrites == 0 {
+                continue;
+            }
+
+            report.learnings_updated += 1;
+            report.task_links_rewritten += rewrites;
+
+            if !dry_run {
+                learning.updated_at = Utc::now();
+                self.write(&mut learning)?;
+            }
+        }
+
+        Ok(report)
     }
 
     /// Compute a fingerprint from learning file metadata (id, size, mtime).
@@ -341,5 +387,55 @@ mod tests {
         let read = store.read(1).unwrap();
         assert_eq!(read.tags, vec!["a", "z"]);
         assert_eq!(read.task_ids, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn migrate_task_links_rewrites_ids_on_apply() {
+        let (_dir, store) = setup();
+        store
+            .create(
+                "Migrate links".into(),
+                None,
+                LearningCategory::Insight,
+                vec![],
+                vec![1, 2, 5],
+            )
+            .unwrap();
+
+        let mut mapping = HashMap::new();
+        mapping.insert(1, 101);
+        mapping.insert(2, 202);
+
+        let report = store.migrate_task_links(&mapping, false).unwrap();
+        assert_eq!(report.learnings_updated, 1);
+        assert_eq!(report.task_links_rewritten, 2);
+
+        let migrated = store.read(1).unwrap();
+        assert_eq!(migrated.task_ids, vec![5, 101, 202]);
+    }
+
+    #[test]
+    fn migrate_task_links_dry_run_reports_without_writing() {
+        let (_dir, store) = setup();
+        let learning = store
+            .create(
+                "Dry run links".into(),
+                None,
+                LearningCategory::Insight,
+                vec![],
+                vec![1, 2],
+            )
+            .unwrap();
+
+        let mut mapping = HashMap::new();
+        mapping.insert(1, 9);
+
+        let report = store.migrate_task_links(&mapping, true).unwrap();
+        assert_eq!(report.learnings_updated, 1);
+        assert_eq!(report.task_links_rewritten, 1);
+
+        let read = store.read(learning.id).unwrap();
+        assert_eq!(read.task_ids, vec![1, 2]);
+        assert_eq!(read.updated_at, learning.updated_at);
     }
 }

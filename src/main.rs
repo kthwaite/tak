@@ -33,10 +33,10 @@ enum Commands {
         kind: Kind,
         /// Parent task ID (creates a child relationship)
         #[arg(long)]
-        parent: Option<u64>,
+        parent: Option<String>,
         /// Task IDs this task depends on (comma-separated)
         #[arg(long, value_delimiter = ',')]
-        depends_on: Vec<u64>,
+        depends_on: Vec<String>,
         /// Task description
         #[arg(long, short)]
         description: Option<String>,
@@ -71,7 +71,7 @@ enum Commands {
     /// Delete a task by ID
     Delete {
         /// Task ID to delete
-        id: u64,
+        id: String,
         /// Cascade: orphan children and remove incoming dependencies
         #[arg(long)]
         force: bool,
@@ -79,7 +79,7 @@ enum Commands {
     /// Display a single task
     Show {
         /// Task ID to show
-        id: u64,
+        id: String,
     },
     /// List and filter tasks
     List {
@@ -103,7 +103,7 @@ enum Commands {
         blocked: bool,
         /// Show only children of this task ID
         #[arg(long)]
-        children_of: Option<u64>,
+        children_of: Option<String>,
         /// Filter by priority
         #[arg(long, value_enum)]
         priority: Option<Priority>,
@@ -111,7 +111,7 @@ enum Commands {
     /// Edit task fields
     Edit {
         /// Task ID to edit
-        id: u64,
+        id: String,
         /// New title
         #[arg(long)]
         title: Option<String>,
@@ -155,7 +155,7 @@ enum Commands {
     /// Set a task to in_progress
     Start {
         /// Task ID to start
-        id: u64,
+        id: String,
         /// Who is working on it
         #[arg(long)]
         assignee: Option<String>,
@@ -163,12 +163,12 @@ enum Commands {
     /// Set a task to done
     Finish {
         /// Task ID to finish
-        id: u64,
+        id: String,
     },
     /// Set a task to cancelled
     Cancel {
         /// Task ID to cancel
-        id: u64,
+        id: String,
         /// Reason for cancellation (recorded as last_error)
         #[arg(long)]
         reason: Option<String>,
@@ -176,7 +176,7 @@ enum Commands {
     /// Hand off an in-progress task back to pending for another agent
     Handoff {
         /// Task ID to hand off
-        id: u64,
+        id: String,
         /// Summary of progress so far (required)
         #[arg(long, required = true)]
         summary: String,
@@ -193,20 +193,20 @@ enum Commands {
     /// Reopen a done or cancelled task back to pending
     Reopen {
         /// Task ID to reopen
-        id: u64,
+        id: String,
     },
     /// Clear a task's assignee without changing status
     Unassign {
         /// Task ID to unassign
-        id: u64,
+        id: String,
     },
     /// Add dependency edges (task cannot start until deps are done)
     Depend {
         /// Task ID that will gain dependencies
-        id: u64,
+        id: String,
         /// IDs of tasks it depends on (comma-separated)
         #[arg(long, required = true, value_delimiter = ',')]
-        on: Vec<u64>,
+        on: Vec<String>,
         /// Dependency type (hard or soft)
         #[arg(long, value_enum)]
         dep_type: Option<DepType>,
@@ -217,28 +217,28 @@ enum Commands {
     /// Remove dependency edges
     Undepend {
         /// Task ID to remove dependencies from
-        id: u64,
+        id: String,
         /// IDs of dependencies to remove (comma-separated)
         #[arg(long, required = true, value_delimiter = ',')]
-        on: Vec<u64>,
+        on: Vec<String>,
     },
     /// Change a task's parent
     Reparent {
         /// Task ID to reparent
-        id: u64,
+        id: String,
         /// New parent task ID
         #[arg(long, required = true)]
-        to: u64,
+        to: String,
     },
     /// Remove a task's parent (make it a root task)
     Orphan {
         /// Task ID to orphan
-        id: u64,
+        id: String,
     },
     /// Display the parent-child task hierarchy
     Tree {
         /// Root task ID (omit for full tree)
-        id: Option<u64>,
+        id: Option<String>,
     },
     /// Show the next available task without claiming it
     Next {
@@ -249,17 +249,17 @@ enum Commands {
     /// Run verification commands from task contract
     Verify {
         /// Task ID
-        id: u64,
+        id: String,
     },
     /// Display history log for a task
     Log {
         /// Task ID
-        id: u64,
+        id: String,
     },
     /// Read or write context notes for a task
     Context {
         /// Task ID
-        id: u64,
+        id: String,
         /// Set context text (overwrites existing)
         #[arg(long)]
         set: Option<String>,
@@ -287,9 +287,21 @@ enum Commands {
         #[command(subcommand)]
         action: TherapistAction,
     },
+    /// Migrate legacy numeric task IDs (scaffold; dry-run by default)
+    MigrateIds {
+        /// Preview migration preflight (default when --apply is not provided)
+        #[arg(long, conflicts_with = "apply")]
+        dry_run: bool,
+        /// Apply migration changes (preflight-only scaffold for now)
+        #[arg(long, conflicts_with = "dry_run")]
+        apply: bool,
+        /// Skip in-progress task safety gate
+        #[arg(long)]
+        force: bool,
+    },
     /// Rebuild the SQLite index from task files
     Reindex,
-    /// Install agent integrations (Claude hooks; optional Claude plugin and pi integration)
+    /// Install agent integrations (Claude hooks; optional Claude plugin/skills and pi integration)
     Setup {
         /// Write to ~/.claude/settings.json instead of .claude/settings.local.json
         #[arg(long)]
@@ -303,6 +315,9 @@ enum Commands {
         /// Also write the full Claude plugin directory to .claude/plugins/tak
         #[arg(long)]
         plugin: bool,
+        /// Install Claude skills under .claude/skills/ (use alone for skills-only setup)
+        #[arg(long)]
+        skills: bool,
         /// Also install pi integration (extension, skill, and APPEND_SYSTEM block)
         #[arg(long)]
         pi: bool,
@@ -332,7 +347,7 @@ enum LearnAction {
         tag: Vec<String>,
         /// Link to task IDs (comma-separated)
         #[arg(long = "task", value_delimiter = ',')]
-        task_ids: Vec<u64>,
+        task_ids: Vec<String>,
     },
     /// List learnings with optional filters
     List {
@@ -344,7 +359,7 @@ enum LearnAction {
         tag: Option<String>,
         /// Filter by linked task ID
         #[arg(long = "task")]
-        task_id: Option<u64>,
+        task_id: Option<String>,
     },
     /// Display a single learning
     Show {
@@ -369,10 +384,10 @@ enum LearnAction {
         tag: Option<Vec<String>>,
         /// Add link to task ID (repeatable)
         #[arg(long = "add-task", value_delimiter = ',')]
-        add_task: Vec<u64>,
+        add_task: Vec<String>,
         /// Remove link to task ID (repeatable)
         #[arg(long = "remove-task", value_delimiter = ',')]
-        remove_task: Vec<u64>,
+        remove_task: Vec<String>,
     },
     /// Remove a learning
     Remove {
@@ -382,7 +397,7 @@ enum LearnAction {
     /// Suggest relevant learnings for a task (FTS5 search)
     Suggest {
         /// Task ID to suggest learnings for
-        task_id: u64,
+        task_id: String,
     },
 }
 
@@ -482,7 +497,7 @@ enum BlackboardAction {
         tag: Vec<String>,
         /// Link note to task IDs (comma-separated)
         #[arg(long = "task", value_delimiter = ',')]
-        task_ids: Vec<u64>,
+        task_ids: Vec<String>,
     },
     /// List blackboard notes with optional filters
     List {
@@ -494,7 +509,7 @@ enum BlackboardAction {
         tag: Option<String>,
         /// Filter by linked task ID
         #[arg(long = "task")]
-        task_id: Option<u64>,
+        task_id: Option<String>,
         /// Show only the most recent N notes
         #[arg(long)]
         limit: Option<usize>,
@@ -556,6 +571,30 @@ enum TherapistAction {
     },
 }
 
+fn resolve_task_id_arg(repo_root: &std::path::Path, input: String) -> tak::error::Result<u64> {
+    let repo = tak::store::repo::Repo::open(repo_root)?;
+    repo.resolve_task_id_u64(&input)
+}
+
+fn resolve_optional_task_id_arg(
+    repo_root: &std::path::Path,
+    input: Option<String>,
+) -> tak::error::Result<Option<u64>> {
+    input
+        .map(|id| resolve_task_id_arg(repo_root, id))
+        .transpose()
+}
+
+fn resolve_task_id_args(
+    repo_root: &std::path::Path,
+    inputs: Vec<String>,
+) -> tak::error::Result<Vec<u64>> {
+    inputs
+        .into_iter()
+        .map(|id| resolve_task_id_arg(repo_root, id))
+        .collect()
+}
+
 fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
     // Commands dispatched before `.tak` repo discovery
     match &cli.command {
@@ -568,9 +607,12 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
             check,
             remove,
             plugin,
+            skills,
             pi,
         } => {
-            return tak::commands::setup::run(*global, *check, *remove, *plugin, *pi, format);
+            return tak::commands::setup::run(
+                *global, *check, *remove, *plugin, *skills, *pi, format,
+            );
         }
         Commands::Doctor { fix } => {
             return tak::commands::doctor::run(*fix, format);
@@ -598,6 +640,8 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
             skill,
             risk,
         } => {
+            let parent = resolve_optional_task_id_arg(&root, parent)?;
+            let depends_on = resolve_task_id_args(&root, depends_on)?;
             let contract = tak::model::Contract {
                 objective,
                 acceptance_criteria: criterion,
@@ -623,8 +667,12 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
                 format,
             )
         }
-        Commands::Delete { id, force } => tak::commands::delete::run(&root, id, force, format),
-        Commands::Show { id } => tak::commands::show::run(&root, id, format),
+        Commands::Delete { id, force } => {
+            tak::commands::delete::run(&root, resolve_task_id_arg(&root, id)?, force, format)
+        }
+        Commands::Show { id } => {
+            tak::commands::show::run(&root, resolve_task_id_arg(&root, id)?, format)
+        }
         Commands::List {
             status,
             kind,
@@ -634,18 +682,21 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
             blocked,
             children_of,
             priority,
-        } => tak::commands::list::run(
-            &root,
-            status,
-            kind,
-            tag,
-            assignee,
-            available,
-            blocked,
-            children_of,
-            priority,
-            format,
-        ),
+        } => {
+            let children_of = resolve_optional_task_id_arg(&root, children_of)?;
+            tak::commands::list::run(
+                &root,
+                status,
+                kind,
+                tag,
+                assignee,
+                available,
+                blocked,
+                children_of,
+                priority,
+                format,
+            )
+        }
         Commands::Edit {
             id,
             title,
@@ -663,7 +714,7 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
             pr,
         } => tak::commands::edit::run(
             &root,
-            id,
+            resolve_task_id_arg(&root, id)?,
             title,
             description,
             kind,
@@ -681,38 +732,77 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
         ),
         Commands::Start { id, assignee } => {
             let assignee = assignee.or_else(tak::agent::resolve_agent);
-            tak::commands::lifecycle::start(&root, id, assignee, format)
+            tak::commands::lifecycle::start(
+                &root,
+                resolve_task_id_arg(&root, id)?,
+                assignee,
+                format,
+            )
         }
-        Commands::Finish { id } => tak::commands::lifecycle::finish(&root, id, format),
+        Commands::Finish { id } => {
+            tak::commands::lifecycle::finish(&root, resolve_task_id_arg(&root, id)?, format)
+        }
         Commands::Cancel { id, reason } => {
-            tak::commands::lifecycle::cancel(&root, id, reason, format)
+            tak::commands::lifecycle::cancel(&root, resolve_task_id_arg(&root, id)?, reason, format)
         }
-        Commands::Handoff { id, summary } => {
-            tak::commands::lifecycle::handoff(&root, id, summary, format)
-        }
+        Commands::Handoff { id, summary } => tak::commands::lifecycle::handoff(
+            &root,
+            resolve_task_id_arg(&root, id)?,
+            summary,
+            format,
+        ),
         Commands::Claim { assignee, tag } => {
             let assignee = assignee
                 .or_else(tak::agent::resolve_agent)
                 .unwrap_or_else(tak::agent::generated_fallback);
             tak::commands::claim::run(&root, assignee, tag, format)
         }
-        Commands::Reopen { id } => tak::commands::lifecycle::reopen(&root, id, format),
-        Commands::Unassign { id } => tak::commands::lifecycle::unassign(&root, id, format),
+        Commands::Reopen { id } => {
+            tak::commands::lifecycle::reopen(&root, resolve_task_id_arg(&root, id)?, format)
+        }
+        Commands::Unassign { id } => {
+            tak::commands::lifecycle::unassign(&root, resolve_task_id_arg(&root, id)?, format)
+        }
         Commands::Depend {
             id,
             on,
             dep_type,
             reason,
-        } => tak::commands::deps::depend(&root, id, on, dep_type, reason, format),
-        Commands::Undepend { id, on } => tak::commands::deps::undepend(&root, id, on, format),
-        Commands::Reparent { id, to } => tak::commands::deps::reparent(&root, id, to, format),
-        Commands::Orphan { id } => tak::commands::deps::orphan(&root, id, format),
-        Commands::Tree { id } => tak::commands::tree::run(&root, id, format),
+        } => tak::commands::deps::depend(
+            &root,
+            resolve_task_id_arg(&root, id)?,
+            resolve_task_id_args(&root, on)?,
+            dep_type,
+            reason,
+            format,
+        ),
+        Commands::Undepend { id, on } => tak::commands::deps::undepend(
+            &root,
+            resolve_task_id_arg(&root, id)?,
+            resolve_task_id_args(&root, on)?,
+            format,
+        ),
+        Commands::Reparent { id, to } => tak::commands::deps::reparent(
+            &root,
+            resolve_task_id_arg(&root, id)?,
+            resolve_task_id_arg(&root, to)?,
+            format,
+        ),
+        Commands::Orphan { id } => {
+            tak::commands::deps::orphan(&root, resolve_task_id_arg(&root, id)?, format)
+        }
+        Commands::Tree { id } => {
+            tak::commands::tree::run(&root, resolve_optional_task_id_arg(&root, id)?, format)
+        }
         Commands::Next { assignee } => tak::commands::next::run(&root, assignee, format),
-        Commands::Verify { id } => tak::commands::verify::run(&root, id, format),
-        Commands::Log { id } => tak::commands::log::run(&root, id, format),
+        Commands::Verify { id } => {
+            tak::commands::verify::run(&root, resolve_task_id_arg(&root, id)?, format)
+        }
+        Commands::Log { id } => {
+            tak::commands::log::run(&root, resolve_task_id_arg(&root, id)?, format)
+        }
         Commands::Context { id, set, clear } => {
-            tak::commands::context::run(&root, id, set, clear, format)
+            tak::commands::context::run(&root, resolve_task_id_arg(&root, id)?, set, clear, format)
         }
         Commands::Learn { action } => match action {
             LearnAction::Add {
@@ -727,14 +817,20 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
                 description,
                 category,
                 tag,
-                task_ids,
+                resolve_task_id_args(&root, task_ids)?,
                 format,
             ),
             LearnAction::List {
                 category,
                 tag,
                 task_id,
-            } => tak::commands::learn::list(&root, category, tag, task_id, format),
+            } => tak::commands::learn::list(
+                &root,
+                category,
+                tag,
+                resolve_optional_task_id_arg(&root, task_id)?,
+                format,
+            ),
             LearnAction::Show { id } => tak::commands::learn::show(&root, id, format),
             LearnAction::Edit {
                 id,
@@ -751,13 +847,13 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
                 description,
                 category,
                 tag,
-                add_task,
-                remove_task,
+                resolve_task_id_args(&root, add_task)?,
+                resolve_task_id_args(&root, remove_task)?,
                 format,
             ),
             LearnAction::Remove { id } => tak::commands::learn::remove(&root, id, format),
             LearnAction::Suggest { task_id } => {
-                tak::commands::learn::suggest(&root, task_id, format)
+                tak::commands::learn::suggest(&root, resolve_task_id_arg(&root, task_id)?, format)
             }
         },
         Commands::Mesh { action } => match action {
@@ -793,13 +889,27 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
                 message,
                 tag,
                 task_ids,
-            } => tak::commands::blackboard::post(&root, &from, &message, tag, task_ids, format),
+            } => tak::commands::blackboard::post(
+                &root,
+                &from,
+                &message,
+                tag,
+                resolve_task_id_args(&root, task_ids)?,
+                format,
+            ),
             BlackboardAction::List {
                 status,
                 tag,
                 task_id,
                 limit,
-            } => tak::commands::blackboard::list(&root, status, tag, task_id, limit, format),
+            } => tak::commands::blackboard::list(
+                &root,
+                status,
+                tag,
+                resolve_optional_task_id_arg(&root, task_id)?,
+                limit,
+                format,
+            ),
             BlackboardAction::Show { id } => tak::commands::blackboard::show(&root, id, format),
             BlackboardAction::Close { id, by, reason } => {
                 tak::commands::blackboard::close(&root, id, &by, reason.as_deref(), format)
@@ -819,7 +929,60 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
             } => tak::commands::therapist::online(&root, session, session_dir, by, format),
             TherapistAction::Log { limit } => tak::commands::therapist::log(&root, limit, format),
         },
+        Commands::MigrateIds {
+            dry_run,
+            apply,
+            force,
+        } => {
+            let dry_run = dry_run || !apply;
+            tak::commands::migrate_ids::run(&root, dry_run, force, format)
+        }
         Commands::Reindex => tak::commands::reindex::run(&root),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tak::error::TakError;
+    use tak::model::{Contract, Kind, Planning};
+    use tak::store::files::FileStore;
+    use tempfile::tempdir;
+
+    fn init_repo_with_tasks(count: usize) -> tempfile::TempDir {
+        let dir = tempdir().unwrap();
+        let store = FileStore::init(dir.path()).unwrap();
+        for i in 0..count {
+            store
+                .create(
+                    format!("task-{i}"),
+                    Kind::Task,
+                    None,
+                    None,
+                    vec![],
+                    vec![],
+                    Contract::default(),
+                    Planning::default(),
+                )
+                .unwrap();
+        }
+        dir
+    }
+
+    #[test]
+    fn resolve_task_id_arg_accepts_canonical_hex_input() {
+        let dir = init_repo_with_tasks(1);
+
+        let resolved = resolve_task_id_arg(dir.path(), "0000000000000001".into()).unwrap();
+        assert_eq!(resolved, 1);
+    }
+
+    #[test]
+    fn resolve_task_id_arg_surfaces_ambiguous_prefix() {
+        let dir = init_repo_with_tasks(2);
+
+        let err = resolve_task_id_arg(dir.path(), "00000000000000".into()).unwrap_err();
+        assert!(matches!(err, TakError::TaskIdAmbiguous(_, _)));
     }
 }
 

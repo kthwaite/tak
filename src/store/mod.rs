@@ -4,6 +4,7 @@ pub mod index;
 pub mod learnings;
 pub mod lock;
 pub mod mesh;
+pub mod migration;
 pub mod repo;
 pub mod sidecars;
 pub mod therapist;
