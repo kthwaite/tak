@@ -7,17 +7,13 @@ use colored::Colorize;
 use serde_json::json;
 
 use crate::error::{Result, TakError};
+use crate::json_ids::format_task_id;
 use crate::model::Status;
 use crate::output::Format;
 use crate::store::coordination_db::{CoordinationDb, DbReservation};
 use crate::store::repo::Repo;
-use crate::task_id::TaskId;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(200);
-
-fn format_task_id(id: u64) -> String {
-    TaskId::from(id).to_string()
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PathBlocker {

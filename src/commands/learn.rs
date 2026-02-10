@@ -4,40 +4,10 @@ use chrono::Utc;
 use colored::Colorize;
 
 use crate::error::Result;
+use crate::json_ids::{format_task_id, learning_to_json_value};
 use crate::model::{Learning, LearningCategory};
 use crate::output::Format;
 use crate::store::repo::Repo;
-use crate::task_id::TaskId;
-
-fn format_task_id(id: u64) -> String {
-    TaskId::from(id).to_string()
-}
-
-fn learning_to_json_value(learning: &Learning) -> Result<serde_json::Value> {
-    let mut value = serde_json::to_value(learning)?;
-
-    if let Some(task_ids) = value
-        .as_object_mut()
-        .and_then(|obj| obj.get_mut("task_ids"))
-        .and_then(|v| v.as_array_mut())
-    {
-        for task_id in task_ids {
-            let canonical = match task_id {
-                serde_json::Value::Number(num) => num.as_u64().map(format_task_id),
-                serde_json::Value::String(raw) => {
-                    TaskId::parse_cli(raw).ok().map(|id| id.to_string())
-                }
-                _ => None,
-            };
-
-            if let Some(id) = canonical {
-                *task_id = serde_json::Value::String(id);
-            }
-        }
-    }
-
-    Ok(value)
-}
 
 pub fn add(
     repo_root: &Path,

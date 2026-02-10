@@ -4,6 +4,7 @@ use colored::Colorize;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Result, TakError};
+use crate::json_ids::{rewrite_task_id_array, rewrite_task_id_value, rewrite_task_json_value};
 use crate::model::{Status, Task};
 use crate::output::Format;
 use crate::store::coordination_db::CoordinationDb;
@@ -778,64 +779,6 @@ fn normalize_identity(raw: String) -> Option<String> {
 fn validate_identity(agent: String) -> Result<String> {
     WorkStore::validate_agent_name(&agent)?;
     Ok(agent)
-}
-
-fn task_id_string_from_json(value: &serde_json::Value) -> Option<String> {
-    match value {
-        serde_json::Value::Number(num) => num.as_u64().map(|id| TaskId::from(id).to_string()),
-        serde_json::Value::String(raw) => TaskId::parse_cli(raw).ok().map(|id| id.to_string()),
-        _ => None,
-    }
-}
-
-fn rewrite_task_id_value(value: &mut serde_json::Value) {
-    if let Some(task_id) = task_id_string_from_json(value) {
-        *value = serde_json::Value::String(task_id);
-    }
-}
-
-fn rewrite_task_id_array(values: &mut [serde_json::Value]) {
-    for value in values {
-        rewrite_task_id_value(value);
-    }
-}
-
-fn rewrite_task_json_value(task_value: &mut serde_json::Value) {
-    let Some(task_obj) = task_value.as_object_mut() else {
-        return;
-    };
-
-    if let Some(id) = task_obj.get_mut("id") {
-        rewrite_task_id_value(id);
-    }
-
-    if let Some(parent) = task_obj.get_mut("parent") {
-        rewrite_task_id_value(parent);
-    }
-
-    if let Some(depends_on) = task_obj
-        .get_mut("depends_on")
-        .and_then(|v| v.as_array_mut())
-    {
-        for dep in depends_on {
-            if let Some(dep_obj) = dep.as_object_mut()
-                && let Some(dep_id) = dep_obj.get_mut("id")
-            {
-                rewrite_task_id_value(dep_id);
-            }
-        }
-    }
-
-    if let Some(origin_idea_id) = task_obj.get_mut(crate::model::TRACE_ORIGIN_IDEA_ID_KEY) {
-        rewrite_task_id_value(origin_idea_id);
-    }
-
-    if let Some(refinement_task_ids) = task_obj
-        .get_mut(crate::model::TRACE_REFINEMENT_TASK_IDS_KEY)
-        .and_then(|v| v.as_array_mut())
-    {
-        rewrite_task_id_array(refinement_task_ids);
-    }
 }
 
 fn rewrite_work_response_json_task_ids(value: &mut serde_json::Value) {

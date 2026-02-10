@@ -1,18 +1,9 @@
 use std::path::Path;
 
 use crate::error::Result;
+use crate::json_ids::format_task_id;
 use crate::output::Format;
 use crate::store::repo::Repo;
-use crate::task_id::TaskId;
-
-/// Read or write context notes for a task.
-///
-/// - `tak context ID` — print context to stdout
-/// - `tak context ID --set TEXT` — overwrite context
-/// - `tak context ID --clear` — delete context file
-fn format_task_id(id: u64) -> String {
-    TaskId::from(id).to_string()
-}
 
 pub fn run(
     repo_root: &Path,

@@ -5,12 +5,12 @@ use clap::ValueEnum;
 use colored::Colorize;
 
 use crate::error::{Result, TakError};
+use crate::json_ids::{format_task_id, normalize_task_id_token};
 use crate::output::Format;
 use crate::store::coordination::{CoordinationLinks, derive_links_from_text};
 use crate::store::coordination_db::BlackboardStatus;
 use crate::store::coordination_db::{CoordinationDb, DbNote};
 use crate::store::repo::Repo;
-use crate::task_id::TaskId;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 #[clap(rename_all = "kebab-case")]
@@ -61,16 +61,6 @@ pub struct BlackboardPostOptions {
     pub template: Option<BlackboardTemplate>,
     pub since_note: Option<u64>,
     pub no_change_since: bool,
-}
-
-fn format_task_id(id: u64) -> String {
-    TaskId::from(id).to_string()
-}
-
-fn normalize_task_id_token(raw: &str) -> String {
-    TaskId::parse_cli(raw)
-        .map(|id| id.to_string())
-        .unwrap_or_else(|_| raw.to_string())
 }
 
 fn canonicalize_note_task_ids(note: &DbNote) -> DbNote {
