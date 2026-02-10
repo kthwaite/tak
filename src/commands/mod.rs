@@ -12,6 +12,7 @@ pub mod lifecycle;
 pub mod list;
 pub mod log;
 pub mod mesh;
+pub mod metrics;
 pub mod migrate_ids;
 pub mod next;
 pub mod reindex;

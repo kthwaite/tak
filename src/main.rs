@@ -1,5 +1,7 @@
+use chrono::NaiveDate;
 use clap::{Parser, Subcommand, ValueEnum};
 use tak::commands::blackboard::BlackboardTemplate;
+use tak::metrics::{CompletionMetric, MetricsBucket};
 use tak::model::{DepType, Estimate, Kind, LearningCategory, Priority, Risk, Status};
 use tak::output::Format;
 use tak::store::blackboard::BlackboardStatus;
@@ -233,6 +235,11 @@ enum Commands {
         #[command(subcommand)]
         action: MeshAction,
     },
+    /// Metrics and trend reporting
+    Metrics {
+        #[command(subcommand)]
+        action: MetricsAction,
+    },
     /// Migrate task IDs (legacy numeric filename migration and optional random re-key)
     MigrateIds {
         /// Preview migration preflight (default when --apply is not provided)
@@ -464,6 +471,67 @@ enum LearnAction {
     Suggest {
         /// Task ID to suggest learnings for
         task_id: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum MetricsAction {
+    /// Burndown trend over a date window
+    Burndown {
+        /// Start date (inclusive, YYYY-MM-DD). Defaults to 30 days before --to.
+        #[arg(long)]
+        from: Option<NaiveDate>,
+        /// End date (inclusive, YYYY-MM-DD). Defaults to today.
+        #[arg(long)]
+        to: Option<NaiveDate>,
+        /// Aggregation bucket
+        #[arg(long, value_enum, default_value = "day")]
+        bucket: MetricsBucket,
+        /// Filter by task kind
+        #[arg(long, value_enum)]
+        kind: Option<Kind>,
+        /// Require tags (repeatable or comma-separated)
+        #[arg(long = "tag", value_delimiter = ',')]
+        tag: Vec<String>,
+        /// Filter by assignee
+        #[arg(long)]
+        assignee: Option<String>,
+        /// Filter by parent task ID (children only)
+        #[arg(long)]
+        children_of: Option<String>,
+        /// Include cancelled tasks in source set
+        #[arg(long)]
+        include_cancelled: bool,
+    },
+    /// Completion-time trend over a date window
+    CompletionTime {
+        /// Start date (inclusive, YYYY-MM-DD). Defaults to 30 days before --to.
+        #[arg(long)]
+        from: Option<NaiveDate>,
+        /// End date (inclusive, YYYY-MM-DD). Defaults to today.
+        #[arg(long)]
+        to: Option<NaiveDate>,
+        /// Aggregation bucket
+        #[arg(long, value_enum, default_value = "day")]
+        bucket: MetricsBucket,
+        /// Duration metric (lead or cycle)
+        #[arg(long, value_enum, default_value = "cycle")]
+        metric: CompletionMetric,
+        /// Filter by task kind
+        #[arg(long, value_enum)]
+        kind: Option<Kind>,
+        /// Require tags (repeatable or comma-separated)
+        #[arg(long = "tag", value_delimiter = ',')]
+        tag: Vec<String>,
+        /// Filter by assignee
+        #[arg(long)]
+        assignee: Option<String>,
+        /// Filter by parent task ID (children only)
+        #[arg(long)]
+        children_of: Option<String>,
+        /// Include cancelled tasks in source set
+        #[arg(long)]
+        include_cancelled: bool,
     },
 }
 
@@ -1079,6 +1147,52 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
             LearnAction::Suggest { task_id } => {
                 tak::commands::learn::suggest(&root, resolve_task_id_arg(&root, task_id)?, format)
             }
+        },
+        Commands::Metrics { action } => match action {
+            MetricsAction::Burndown {
+                from,
+                to,
+                bucket,
+                kind,
+                tag,
+                assignee,
+                children_of,
+                include_cancelled,
+            } => tak::commands::metrics::burndown(
+                &root,
+                from,
+                to,
+                bucket,
+                kind,
+                tag,
+                assignee,
+                resolve_optional_task_id_arg(&root, children_of)?,
+                include_cancelled,
+                format,
+            ),
+            MetricsAction::CompletionTime {
+                from,
+                to,
+                bucket,
+                metric,
+                kind,
+                tag,
+                assignee,
+                children_of,
+                include_cancelled,
+            } => tak::commands::metrics::completion_time(
+                &root,
+                from,
+                to,
+                bucket,
+                kind,
+                tag,
+                assignee,
+                resolve_optional_task_id_arg(&root, children_of)?,
+                include_cancelled,
+                metric,
+                format,
+            ),
         },
         Commands::Mesh { action } => match action {
             MeshAction::Join { name, session_id } => {
@@ -1858,6 +1972,172 @@ mod tests {
                 assert!(!force_reclaim);
             }
             _ => panic!("expected work command"),
+        }
+    }
+
+    #[test]
+    fn parse_metrics_burndown_defaults() {
+        let cli = Cli::parse_from(["tak", "metrics", "burndown"]);
+        match cli.command {
+            Commands::Metrics { action } => match action {
+                MetricsAction::Burndown {
+                    from,
+                    to,
+                    bucket,
+                    kind,
+                    tag,
+                    assignee,
+                    children_of,
+                    include_cancelled,
+                } => {
+                    assert!(from.is_none());
+                    assert!(to.is_none());
+                    assert_eq!(bucket, MetricsBucket::Day);
+                    assert!(kind.is_none());
+                    assert!(tag.is_empty());
+                    assert!(assignee.is_none());
+                    assert!(children_of.is_none());
+                    assert!(!include_cancelled);
+                }
+                _ => panic!("expected burndown metrics action"),
+            },
+            _ => panic!("expected metrics command"),
+        }
+    }
+
+    #[test]
+    fn parse_metrics_burndown_with_filters() {
+        let cli = Cli::parse_from([
+            "tak",
+            "metrics",
+            "burndown",
+            "--from",
+            "2026-01-01",
+            "--to",
+            "2026-01-31",
+            "--bucket",
+            "week",
+            "--kind",
+            "task",
+            "--tag",
+            "metrics,cli",
+            "--assignee",
+            "agent-1",
+            "--children-of",
+            "123",
+            "--include-cancelled",
+        ]);
+
+        match cli.command {
+            Commands::Metrics { action } => match action {
+                MetricsAction::Burndown {
+                    from,
+                    to,
+                    bucket,
+                    kind,
+                    tag,
+                    assignee,
+                    children_of,
+                    include_cancelled,
+                } => {
+                    assert_eq!(from, NaiveDate::from_ymd_opt(2026, 1, 1));
+                    assert_eq!(to, NaiveDate::from_ymd_opt(2026, 1, 31));
+                    assert_eq!(bucket, MetricsBucket::Week);
+                    assert_eq!(kind, Some(Kind::Task));
+                    assert_eq!(tag, vec!["metrics", "cli"]);
+                    assert_eq!(assignee.as_deref(), Some("agent-1"));
+                    assert_eq!(children_of.as_deref(), Some("123"));
+                    assert!(include_cancelled);
+                }
+                _ => panic!("expected burndown metrics action"),
+            },
+            _ => panic!("expected metrics command"),
+        }
+    }
+
+    #[test]
+    fn parse_metrics_completion_time_defaults() {
+        let cli = Cli::parse_from(["tak", "metrics", "completion-time"]);
+        match cli.command {
+            Commands::Metrics { action } => match action {
+                MetricsAction::CompletionTime {
+                    from,
+                    to,
+                    bucket,
+                    metric,
+                    kind,
+                    tag,
+                    assignee,
+                    children_of,
+                    include_cancelled,
+                } => {
+                    assert!(from.is_none());
+                    assert!(to.is_none());
+                    assert_eq!(bucket, MetricsBucket::Day);
+                    assert_eq!(metric, CompletionMetric::Cycle);
+                    assert!(kind.is_none());
+                    assert!(tag.is_empty());
+                    assert!(assignee.is_none());
+                    assert!(children_of.is_none());
+                    assert!(!include_cancelled);
+                }
+                _ => panic!("expected completion-time metrics action"),
+            },
+            _ => panic!("expected metrics command"),
+        }
+    }
+
+    #[test]
+    fn parse_metrics_completion_time_with_filters() {
+        let cli = Cli::parse_from([
+            "tak",
+            "metrics",
+            "completion-time",
+            "--from",
+            "2026-02-01",
+            "--to",
+            "2026-02-28",
+            "--bucket",
+            "week",
+            "--metric",
+            "lead",
+            "--kind",
+            "task",
+            "--tag",
+            "metrics,completion",
+            "--assignee",
+            "agent-2",
+            "--children-of",
+            "42",
+            "--include-cancelled",
+        ]);
+
+        match cli.command {
+            Commands::Metrics { action } => match action {
+                MetricsAction::CompletionTime {
+                    from,
+                    to,
+                    bucket,
+                    metric,
+                    kind,
+                    tag,
+                    assignee,
+                    children_of,
+                    include_cancelled,
+                } => {
+                    assert_eq!(from, NaiveDate::from_ymd_opt(2026, 2, 1));
+                    assert_eq!(to, NaiveDate::from_ymd_opt(2026, 2, 28));
+                    assert_eq!(bucket, MetricsBucket::Week);
+                    assert_eq!(metric, CompletionMetric::Lead);
+                    assert_eq!(kind, Some(Kind::Task));
+                    assert_eq!(tag, vec!["metrics", "completion"]);
+                    assert_eq!(assignee.as_deref(), Some("agent-2"));
+                    assert_eq!(children_of.as_deref(), Some("42"));
+                    assert!(include_cancelled);
+                }
+                _ => panic!("expected completion-time metrics action"),
+            },
+            _ => panic!("expected metrics command"),
         }
     }
 
