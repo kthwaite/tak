@@ -1,9 +1,10 @@
 use colored::Colorize;
 
 use crate::error::Result;
-use crate::model::{Priority, Risk, Status, Task};
+use crate::model::{Kind, Priority, Risk, Status, Task};
 use crate::task_id::TaskId;
 use clap::ValueEnum;
+use std::collections::{HashMap, HashSet};
 
 const MINIMAL_ID_WIDTH: usize = TaskId::HEX_LEN;
 const MINIMAL_TITLE_WIDTH: usize = 20;
@@ -363,16 +364,55 @@ fn style_priority_cell(priority: Option<Priority>, padded: String) -> String {
     }
 }
 
+fn style_kind_cell(kind: Kind, padded: String) -> String {
+    match kind {
+        Kind::Epic => padded.magenta().bold().to_string(),
+        Kind::Feature => padded.blue().to_string(),
+        Kind::Task => padded,
+        Kind::Bug => padded.red().to_string(),
+    }
+}
+
+fn task_depth(task_id: u64, tasks_by_id: &HashMap<u64, &Task>) -> usize {
+    let mut depth = 0;
+    let mut visited = HashSet::new();
+    let mut current_parent = tasks_by_id.get(&task_id).and_then(|task| task.parent);
+
+    while let Some(parent_id) = current_parent {
+        if !visited.insert(parent_id) {
+            break;
+        }
+
+        depth += 1;
+        current_parent = tasks_by_id.get(&parent_id).and_then(|task| task.parent);
+
+        if !tasks_by_id.contains_key(&parent_id) {
+            break;
+        }
+    }
+
+    depth
+}
+
 fn print_tasks_pretty_table(tasks: &[Task]) {
     const TITLE_MAX_WIDTH: usize = 40;
     const ASSIGNEE_MAX_WIDTH: usize = 18;
-    const TAGS_MAX_WIDTH: usize = 24;
+    const TAGS_MAX_WIDTH: usize = 20;
+
+    let mut children_by_parent: HashMap<u64, usize> = HashMap::new();
+    for task in tasks {
+        if let Some(parent_id) = task.parent {
+            *children_by_parent.entry(parent_id).or_default() += 1;
+        }
+    }
+
+    let tasks_by_id: HashMap<u64, &Task> = tasks.iter().map(|task| (task.id, task)).collect();
 
     let headers = [
-        "ID", "TITLE", "KIND", "STATUS", "ASSIGNEE", "PRIORITY", "TAGS",
+        "ID", "TITLE", "KIND", "STATUS", "PARENT", "CHILDREN", "ASSIGNEE", "PRIORITY", "TAGS",
     ];
 
-    let rows: Vec<[String; 7]> = tasks
+    let rows: Vec<[String; 9]> = tasks
         .iter()
         .map(|task| {
             let assignee =
@@ -388,11 +428,32 @@ fn print_tasks_pretty_table(tasks: &[Task]) {
                 task.tags.join(", ")
             };
 
+            let child_count = children_by_parent.get(&task.id).copied().unwrap_or(0);
+            let children = if child_count == 0 {
+                "-".to_string()
+            } else {
+                child_count.to_string()
+            };
+
+            let depth = task_depth(task.id, &tasks_by_id).min(6);
+            let marker = if task.parent.is_some() {
+                "↳ "
+            } else if child_count > 0 {
+                "▸ "
+            } else {
+                ""
+            };
+            let title = format!("{}{}{}", "  ".repeat(depth), marker, task.title);
+
             [
                 format_task_id(task.id),
-                truncate_text(&task.title, TITLE_MAX_WIDTH),
+                truncate_text(&title, TITLE_MAX_WIDTH),
                 task.kind.to_string(),
                 task.status.to_string(),
+                task.parent
+                    .map(format_task_id)
+                    .unwrap_or_else(|| "-".to_string()),
+                children,
                 assignee,
                 priority,
                 truncate_text(&tags, TAGS_MAX_WIDTH),
@@ -428,13 +489,27 @@ fn print_tasks_pretty_table(tasks: &[Task]) {
             .bold()
             .to_string();
         let title = format!("{:<width$}", &row[1], width = widths[1]);
-        let kind = format!("{:<width$}", &row[2], width = widths[2]);
+        let kind = style_kind_cell(task.kind, format!("{:<width$}", &row[2], width = widths[2]));
         let status = style_status_cell(
             task.status,
             format!("{:<width$}", &row[3], width = widths[3]),
         );
 
-        let assignee_text = format!("{:<width$}", &row[4], width = widths[4]);
+        let parent_text = format!("{:>width$}", &row[4], width = widths[4]);
+        let parent = if task.parent.is_some() {
+            parent_text.cyan().to_string()
+        } else {
+            parent_text.dimmed().to_string()
+        };
+
+        let children_text = format!("{:>width$}", &row[5], width = widths[5]);
+        let children = if row[5] == "-" {
+            children_text.dimmed().to_string()
+        } else {
+            children_text.bold().yellow().to_string()
+        };
+
+        let assignee_text = format!("{:<width$}", &row[6], width = widths[6]);
         let assignee = if task.assignee.is_some() {
             assignee_text.cyan().to_string()
         } else {
@@ -443,17 +518,19 @@ fn print_tasks_pretty_table(tasks: &[Task]) {
 
         let priority = style_priority_cell(
             task.planning.priority,
-            format!("{:<width$}", &row[5], width = widths[5]),
+            format!("{:<width$}", &row[7], width = widths[7]),
         );
 
-        let tags_text = format!("{:<width$}", &row[6], width = widths[6]);
+        let tags_text = format!("{:<width$}", &row[8], width = widths[8]);
         let tags = if task.tags.is_empty() {
             tags_text.dimmed().to_string()
         } else {
             tags_text.cyan().to_string()
         };
 
-        let cells = [id, title, kind, status, assignee, priority, tags];
+        let cells = [
+            id, title, kind, status, parent, children, assignee, priority, tags,
+        ];
         print_table_row(&cells);
     }
 
@@ -515,7 +592,31 @@ pub fn print_tasks(tasks: &[Task], format: Format) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{DepType, Dependency};
+    use crate::model::{DepType, Dependency, Kind, Status};
+    use chrono::Utc;
+
+    fn task(id: u64, parent: Option<u64>) -> Task {
+        let now = Utc::now();
+        Task {
+            id,
+            title: format!("task-{id}"),
+            description: None,
+            status: Status::Pending,
+            kind: Kind::Task,
+            parent,
+            depends_on: vec![],
+            assignee: None,
+            tags: vec![],
+            contract: crate::model::Contract::default(),
+            planning: crate::model::Planning::default(),
+            git: crate::model::GitInfo::default(),
+            execution: crate::model::Execution::default(),
+            learnings: vec![],
+            created_at: now,
+            updated_at: now,
+            extensions: serde_json::Map::new(),
+        }
+    }
 
     #[test]
     fn format_task_id_uses_fixed_width_lower_hex() {
@@ -534,6 +635,36 @@ mod tests {
             format_dependency(&dep),
             "00000000000000ff (soft) [ordering]"
         );
+    }
+
+    #[test]
+    fn task_depth_counts_visible_ancestors() {
+        let root = task(1, None);
+        let child = task(2, Some(1));
+        let grandchild = task(3, Some(2));
+
+        let tasks_by_id = HashMap::from([(1, &root), (2, &child), (3, &grandchild)]);
+
+        assert_eq!(task_depth(1, &tasks_by_id), 0);
+        assert_eq!(task_depth(2, &tasks_by_id), 1);
+        assert_eq!(task_depth(3, &tasks_by_id), 2);
+    }
+
+    #[test]
+    fn task_depth_handles_missing_parent() {
+        let child = task(7, Some(99));
+        let tasks_by_id = HashMap::from([(7, &child)]);
+
+        assert_eq!(task_depth(7, &tasks_by_id), 1);
+    }
+
+    #[test]
+    fn task_depth_breaks_cycles() {
+        let a = task(10, Some(11));
+        let b = task(11, Some(10));
+        let tasks_by_id = HashMap::from([(10, &a), (11, &b)]);
+
+        assert_eq!(task_depth(10, &tasks_by_id), 2);
     }
 
     #[test]
