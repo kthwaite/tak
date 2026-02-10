@@ -198,6 +198,14 @@ Unstructured mode remains supported: omit `--template` to post plain free-text n
 
 `tak claim` is atomic and avoids TOCTOU races that can happen with `tak next` + `tak start`. For concurrent work, prefer claim-first execution plus explicit reservation management.
 
+## Isolated Verification Fallback
+
+Default practice is to run verification in the shared working tree.
+
+If unrelated in-progress edits make shared-tree verification noisy, use a temporary detached `git worktree` for targeted verification, then clean it up. Always note this in blackboard/task updates so evidence provenance is explicit.
+
+See: [`docs/how/isolated-verification.md`](./docs/how/isolated-verification.md).
+
 ## Claude Code Integration
 
 Tak ships as a Claude Code plugin. Enable it to get:

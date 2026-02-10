@@ -17,6 +17,14 @@ cargo fmt --check              # Check formatting
 
 No external SQLite needed — rusqlite bundles it via the `bundled` feature.
 
+## Isolated verification fallback
+
+Default practice: run verification in the shared working tree.
+
+When unrelated in-progress edits make shared-tree verification noisy, use a temporary detached `git worktree` for targeted verification and then remove it. Record the reason + commands in blackboard/task updates so evidence provenance is clear.
+
+See `docs/how/isolated-verification.md` for the playbook and guardrails.
+
 ## Architecture
 
 ### Hybrid Storage Model
