@@ -780,9 +780,109 @@ fn validate_identity(agent: String) -> Result<String> {
     Ok(agent)
 }
 
+fn task_id_string_from_json(value: &serde_json::Value) -> Option<String> {
+    match value {
+        serde_json::Value::Number(num) => num.as_u64().map(|id| TaskId::from(id).to_string()),
+        serde_json::Value::String(raw) => TaskId::parse_cli(raw).ok().map(|id| id.to_string()),
+        _ => None,
+    }
+}
+
+fn rewrite_task_id_value(value: &mut serde_json::Value) {
+    if let Some(task_id) = task_id_string_from_json(value) {
+        *value = serde_json::Value::String(task_id);
+    }
+}
+
+fn rewrite_task_id_array(values: &mut [serde_json::Value]) {
+    for value in values {
+        rewrite_task_id_value(value);
+    }
+}
+
+fn rewrite_task_json_value(task_value: &mut serde_json::Value) {
+    let Some(task_obj) = task_value.as_object_mut() else {
+        return;
+    };
+
+    if let Some(id) = task_obj.get_mut("id") {
+        rewrite_task_id_value(id);
+    }
+
+    if let Some(parent) = task_obj.get_mut("parent") {
+        rewrite_task_id_value(parent);
+    }
+
+    if let Some(depends_on) = task_obj
+        .get_mut("depends_on")
+        .and_then(|v| v.as_array_mut())
+    {
+        for dep in depends_on {
+            if let Some(dep_obj) = dep.as_object_mut()
+                && let Some(dep_id) = dep_obj.get_mut("id")
+            {
+                rewrite_task_id_value(dep_id);
+            }
+        }
+    }
+
+    if let Some(origin_idea_id) = task_obj.get_mut(crate::model::TRACE_ORIGIN_IDEA_ID_KEY) {
+        rewrite_task_id_value(origin_idea_id);
+    }
+
+    if let Some(refinement_task_ids) = task_obj
+        .get_mut(crate::model::TRACE_REFINEMENT_TASK_IDS_KEY)
+        .and_then(|v| v.as_array_mut())
+    {
+        rewrite_task_id_array(refinement_task_ids);
+    }
+}
+
+fn rewrite_work_response_json_task_ids(value: &mut serde_json::Value) {
+    let Some(obj) = value.as_object_mut() else {
+        return;
+    };
+
+    if let Some(loop_state) = obj.get_mut("loop").and_then(|v| v.as_object_mut()) {
+        if let Some(current_task_id) = loop_state.get_mut("current_task_id") {
+            rewrite_task_id_value(current_task_id);
+        }
+
+        if let Some(resume_gate) = loop_state
+            .get_mut(RESUME_GATE_EXTENSION_KEY)
+            .and_then(|v| v.as_object_mut())
+        {
+            if let Some(task_id) = resume_gate.get_mut("task_id") {
+                rewrite_task_id_value(task_id);
+            }
+
+            if let Some(blocked_dep_ids) = resume_gate
+                .get_mut("blocked_dep_ids")
+                .and_then(|v| v.as_array_mut())
+            {
+                rewrite_task_id_array(blocked_dep_ids);
+            }
+        }
+    }
+
+    if let Some(current_task) = obj.get_mut("current_task") {
+        rewrite_task_json_value(current_task);
+    }
+
+    if let Some(done) = obj.get_mut("done").and_then(|v| v.as_object_mut())
+        && let Some(finished_task_id) = done.get_mut("finished_task_id")
+    {
+        rewrite_task_id_value(finished_task_id);
+    }
+}
+
 fn render_response(response: &WorkResponse, format: Format) -> Result<String> {
     let rendered = match format {
-        Format::Json => serde_json::to_string(response)?,
+        Format::Json => {
+            let mut value = serde_json::to_value(response)?;
+            rewrite_work_response_json_task_ids(&mut value);
+            serde_json::to_string(&value)?
+        }
         Format::Pretty => {
             let active = if response.state.active {
                 "active".green().to_string()
@@ -1631,9 +1731,10 @@ mod tests {
             loop_state.get("active").and_then(|v| v.as_bool()),
             Some(true)
         );
+        let expected_task_id = TaskId::from(task_id).to_string();
         assert_eq!(
-            loop_state.get("current_task_id").and_then(|v| v.as_u64()),
-            Some(task_id)
+            loop_state.get("current_task_id").and_then(|v| v.as_str()),
+            Some(expected_task_id.as_str())
         );
 
         let current_task = value
@@ -1641,8 +1742,8 @@ mod tests {
             .and_then(|v| v.as_object())
             .unwrap();
         assert_eq!(
-            current_task.get("id").and_then(|v| v.as_u64()),
-            Some(task_id)
+            current_task.get("id").and_then(|v| v.as_str()),
+            Some(expected_task_id.as_str())
         );
 
         assert!(
@@ -1693,8 +1794,8 @@ mod tests {
             Some("finished")
         );
         assert_eq!(
-            done.get("finished_task_id").and_then(|v| v.as_u64()),
-            Some(42)
+            done.get("finished_task_id").and_then(|v| v.as_str()),
+            Some("000000000000002a")
         );
         assert_eq!(done.get("paused").and_then(|v| v.as_bool()), Some(false));
         assert_eq!(

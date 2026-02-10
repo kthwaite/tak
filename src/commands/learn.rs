@@ -7,6 +7,37 @@ use crate::error::Result;
 use crate::model::{Learning, LearningCategory};
 use crate::output::Format;
 use crate::store::repo::Repo;
+use crate::task_id::TaskId;
+
+fn format_task_id(id: u64) -> String {
+    TaskId::from(id).to_string()
+}
+
+fn learning_to_json_value(learning: &Learning) -> Result<serde_json::Value> {
+    let mut value = serde_json::to_value(learning)?;
+
+    if let Some(task_ids) = value
+        .as_object_mut()
+        .and_then(|obj| obj.get_mut("task_ids"))
+        .and_then(|v| v.as_array_mut())
+    {
+        for task_id in task_ids {
+            let canonical = match task_id {
+                serde_json::Value::Number(num) => num.as_u64().map(format_task_id),
+                serde_json::Value::String(raw) => {
+                    TaskId::parse_cli(raw).ok().map(|id| id.to_string())
+                }
+                _ => None,
+            };
+
+            if let Some(id) = canonical {
+                *task_id = serde_json::Value::String(id);
+            }
+        }
+    }
+
+    Ok(value)
+}
 
 pub fn add(
     repo_root: &Path,
@@ -224,7 +255,10 @@ pub fn suggest(repo_root: &Path, task_id: u64, format: Format) -> Result<()> {
 
 pub fn print_learning(learning: &Learning, format: Format) -> Result<()> {
     match format {
-        Format::Json => println!("{}", serde_json::to_string(learning)?),
+        Format::Json => println!(
+            "{}",
+            serde_json::to_string(&learning_to_json_value(learning)?)?
+        ),
         Format::Pretty => {
             println!(
                 "{} {} ({})",
@@ -241,7 +275,11 @@ pub fn print_learning(learning: &Learning, format: Format) -> Result<()> {
                 println!("  {} {}", "tags:".dimmed(), colored_tags.join(", "));
             }
             if !learning.task_ids.is_empty() {
-                let ids: Vec<String> = learning.task_ids.iter().map(|id| id.to_string()).collect();
+                let ids: Vec<String> = learning
+                    .task_ids
+                    .iter()
+                    .map(|id| format_task_id(*id))
+                    .collect();
                 println!("  {} {}", "tasks:".dimmed(), ids.join(", "));
             }
         }
@@ -255,7 +293,13 @@ pub fn print_learning(learning: &Learning, format: Format) -> Result<()> {
 
 fn print_learnings(learnings: &[Learning], format: Format) -> Result<()> {
     match format {
-        Format::Json => println!("{}", serde_json::to_string(learnings)?),
+        Format::Json => {
+            let values: Vec<serde_json::Value> = learnings
+                .iter()
+                .map(learning_to_json_value)
+                .collect::<Result<_>>()?;
+            println!("{}", serde_json::to_string(&values)?);
+        }
         Format::Pretty => {
             for learning in learnings {
                 print_learning(learning, Format::Pretty)?;

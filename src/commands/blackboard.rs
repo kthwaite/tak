@@ -10,6 +10,7 @@ use crate::store::blackboard::BlackboardStatus;
 use crate::store::coordination::{CoordinationLinks, derive_links_from_text};
 use crate::store::coordination_db::{CoordinationDb, DbNote};
 use crate::store::repo::Repo;
+use crate::task_id::TaskId;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 #[clap(rename_all = "kebab-case")]
@@ -60,6 +61,35 @@ pub struct BlackboardPostOptions {
     pub template: Option<BlackboardTemplate>,
     pub since_note: Option<u64>,
     pub no_change_since: bool,
+}
+
+fn format_task_id(id: u64) -> String {
+    TaskId::from(id).to_string()
+}
+
+fn normalize_task_id_token(raw: &str) -> String {
+    TaskId::parse_cli(raw)
+        .map(|id| id.to_string())
+        .unwrap_or_else(|_| raw.to_string())
+}
+
+fn canonicalize_note_task_ids(note: &DbNote) -> DbNote {
+    let mut normalized = note.clone();
+    normalized.task_ids = note
+        .task_ids
+        .iter()
+        .map(|id| normalize_task_id_token(id))
+        .collect();
+    normalized
+}
+
+fn note_matches_task_candidates(note: &DbNote, candidates: &[String]) -> bool {
+    note.task_ids.iter().any(|raw| {
+        let normalized = normalize_task_id_token(raw);
+        candidates
+            .iter()
+            .any(|candidate| candidate == raw || candidate == &normalized)
+    })
 }
 
 pub fn post(
@@ -130,7 +160,7 @@ pub fn post_with_options(
     // Links are derived but not stored in CoordinationDb (dropped at boundary)
     let _links = derive_transition_links(options.template, &rendered_message, options.since_note);
 
-    let task_id_strs: Vec<String> = task_ids.iter().map(|id| id.to_string()).collect();
+    let task_id_strs: Vec<String> = task_ids.iter().map(|id| format_task_id(*id)).collect();
     let note = db.post_note(from, &rendered_message, &tags, &task_id_strs)?;
     print_note(&note, format)?;
     Ok(())
@@ -172,7 +202,7 @@ fn render_template(
     } else {
         let ids = task_ids
             .iter()
-            .map(|id| id.to_string())
+            .map(|id| format_task_id(*id))
             .collect::<Vec<_>>()
             .join(",");
         format!("tasks={ids}")
@@ -464,13 +494,18 @@ pub fn list(
 ) -> Result<()> {
     let db = CoordinationDb::from_repo(repo_root)?;
     let status_str = status.map(|s| s.to_string());
-    let task_id_str = task_id.map(|id| id.to_string());
-    let notes = db.list_notes(
-        status_str.as_deref(),
-        tag.as_deref(),
-        task_id_str.as_deref(),
-        limit.map(|l| l as u32),
-    )?;
+
+    let mut notes = db.list_notes(status_str.as_deref(), tag.as_deref(), None, None)?;
+
+    if let Some(task_id) = task_id {
+        let candidates = vec![format_task_id(task_id), task_id.to_string()];
+        notes.retain(|note| note_matches_task_candidates(note, &candidates));
+    }
+
+    if let Some(limit) = limit {
+        notes.truncate(limit);
+    }
+
     print_notes(&notes, format)?;
     Ok(())
 }
@@ -505,8 +540,10 @@ pub fn reopen(repo_root: &Path, id: u64, by: &str, format: Format) -> Result<()>
 }
 
 fn print_note(note: &DbNote, format: Format) -> Result<()> {
+    let note = canonicalize_note_task_ids(note);
+
     match format {
-        Format::Json => println!("{}", serde_json::to_string(note)?),
+        Format::Json => println!("{}", serde_json::to_string(&note)?),
         Format::Pretty => {
             let status = style_status(&note.status);
             println!(
@@ -544,13 +581,15 @@ fn print_note(note: &DbNote, format: Format) -> Result<()> {
 }
 
 fn print_notes(notes: &[DbNote], format: Format) -> Result<()> {
+    let normalized: Vec<DbNote> = notes.iter().map(canonicalize_note_task_ids).collect();
+
     match format {
-        Format::Json => println!("{}", serde_json::to_string(notes)?),
+        Format::Json => println!("{}", serde_json::to_string(&normalized)?),
         Format::Pretty => {
-            if notes.is_empty() {
+            if normalized.is_empty() {
                 println!("{}", "No blackboard notes.".dimmed());
             } else {
-                for note in notes {
+                for note in &normalized {
                     let status = style_status(&note.status);
                     println!(
                         "{} {} {} {}",
@@ -562,11 +601,14 @@ fn print_notes(notes: &[DbNote], format: Format) -> Result<()> {
                     if !note.tags.is_empty() {
                         println!("  {} {}", "tags:".dimmed(), note.tags.join(", ").cyan());
                     }
+                    if !note.task_ids.is_empty() {
+                        println!("  {} {}", "tasks:".dimmed(), note.task_ids.join(", "));
+                    }
                 }
             }
         }
         Format::Minimal => {
-            for note in notes {
+            for note in &normalized {
                 println!("{} {} {}", note.id, note.status, note.from_agent);
             }
         }

@@ -11,8 +11,13 @@ use crate::model::Status;
 use crate::output::Format;
 use crate::store::coordination_db::{CoordinationDb, DbReservation};
 use crate::store::repo::Repo;
+use crate::task_id::TaskId;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(200);
+
+fn format_task_id(id: u64) -> String {
+    TaskId::from(id).to_string()
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PathBlocker {
@@ -157,6 +162,7 @@ fn print_path_ready(path: &str, waited: Duration, format: Format) {
 
 fn print_task_ready(task_id: u64, waited: Duration, format: Format) {
     let waited_ms = waited.as_millis() as u64;
+    let task_id = format_task_id(task_id);
     match format {
         Format::Json => println!(
             "{}",
@@ -170,7 +176,7 @@ fn print_task_ready(task_id: u64, waited: Duration, format: Format) {
         Format::Pretty => println!(
             "{} task {} {}",
             "Ready:".green().bold(),
-            task_id.to_string().cyan(),
+            task_id.cyan(),
             format!("(waited {waited_ms}ms)").dimmed()
         ),
         Format::Minimal => println!("{task_id}"),
@@ -192,12 +198,13 @@ fn format_path_timeout(path: &str, waited: Duration, blockers: &[PathBlocker]) -
 
 fn format_task_timeout(task_id: u64, waited: Duration, blockers: &[u64]) -> String {
     let waited_ms = waited.as_millis();
+    let task_id = format_task_id(task_id);
     if blockers.is_empty() {
         format!("task {task_id} is still blocked after {waited_ms}ms")
     } else {
         let deps = blockers
             .iter()
-            .map(|id| id.to_string())
+            .map(|id| format_task_id(*id))
             .collect::<Vec<_>>()
             .join(",");
         format!(

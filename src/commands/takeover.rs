@@ -40,7 +40,7 @@ impl DecisionPath {
 #[derive(Debug, Clone, Serialize)]
 struct TakeoverResponse {
     event: &'static str,
-    task_id: u64,
+    task_id: String,
     previous_owner: String,
     new_owner: String,
     decision: DecisionPath,
@@ -177,7 +177,7 @@ fn takeover_response(
 
     Ok(TakeoverResponse {
         event: "takeover",
-        task_id,
+        task_id: TaskId::from(task_id).to_string(),
         previous_owner,
         new_owner: assignee,
         decision,
@@ -210,7 +210,7 @@ fn render_response(response: &TakeoverResponse, format: Format) -> Result<String
     let rendered = match format {
         Format::Json => serde_json::to_string(response)?,
         Format::Pretty => {
-            let task_id = TaskId::from(response.task_id);
+            let task_id = &response.task_id;
             let inactivity = response
                 .owner_inactive_secs
                 .map(|secs| format!("{secs}s"))
@@ -243,7 +243,7 @@ fn render_response(response: &TakeoverResponse, format: Format) -> Result<String
         Format::Minimal => format!(
             "{}\t{}\t{}\t{}\t{}\t{}",
             response.event,
-            TaskId::from(response.task_id),
+            &response.task_id,
             response.previous_owner,
             response.new_owner,
             response.decision.as_str(),
@@ -426,7 +426,7 @@ mod tests {
     fn render_json_includes_previous_owner_and_decision() {
         let response = TakeoverResponse {
             event: "takeover",
-            task_id: 42,
+            task_id: TaskId::from(42).to_string(),
             previous_owner: "owner-1".into(),
             new_owner: "agent-2".into(),
             decision: DecisionPath::OwnerInactive,
@@ -462,7 +462,7 @@ mod tests {
     fn render_pretty_and_minimal_include_decision_and_owners() {
         let response = TakeoverResponse {
             event: "takeover",
-            task_id: 42,
+            task_id: TaskId::from(42).to_string(),
             previous_owner: "owner-1".into(),
             new_owner: "agent-2".into(),
             decision: DecisionPath::Forced,
@@ -481,6 +481,7 @@ mod tests {
         let minimal = render_response(&response, Format::Minimal).unwrap();
         let parts = minimal.split('\t').collect::<Vec<_>>();
         assert_eq!(parts[0], "takeover");
+        assert_eq!(parts[1], TaskId::from(42).to_string());
         assert_eq!(parts[2], "owner-1");
         assert_eq!(parts[3], "agent-2");
         assert_eq!(parts[4], "forced");
