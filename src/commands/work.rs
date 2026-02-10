@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Result, TakError};
 use crate::model::{Status, Task};
 use crate::output::Format;
-use crate::store::mesh::MeshStore;
+use crate::store::coordination_db::CoordinationDb;
 use crate::store::repo::Repo;
 use crate::store::work::{
     WorkClaimStrategy, WorkCoordinationVerbosity, WorkState, WorkStore, WorkVerifyMode,
@@ -205,20 +205,19 @@ fn evaluate_resume_gate(repo: &Repo, gate: ResumeGate) -> Result<ResumeGateDecis
 }
 
 fn list_agent_reservations_best_effort(repo_root: &Path, agent: &str) -> Vec<String> {
-    let mesh = MeshStore::open(&repo_root.join(".tak"));
-    if !mesh.exists() {
-        return vec![];
-    }
-
-    let Ok(reservations) = mesh.list_reservations() else {
+    let Ok(db) = CoordinationDb::from_repo(repo_root) else {
         return vec![];
     };
 
-    let mut paths = reservations
+    let Ok(reservations) = db.list_reservations() else {
+        return vec![];
+    };
+
+    let mut paths: Vec<String> = reservations
         .into_iter()
         .filter(|reservation| reservation.agent == agent)
-        .flat_map(|reservation| reservation.paths)
-        .collect::<Vec<_>>();
+        .map(|reservation| reservation.path)
+        .collect();
 
     paths.sort();
     paths.dedup();
@@ -710,25 +709,19 @@ fn load_task_if_exists(repo_root: &Path, task_id: Option<u64>) -> Result<Option<
 }
 
 fn release_agent_reservations(repo_root: &Path, agent: &str) -> ReservationReleaseSummary {
-    let mesh = MeshStore::open(&repo_root.join(".tak"));
-    if !mesh.exists() {
+    let Ok(db) = CoordinationDb::from_repo(repo_root) else {
         return ReservationReleaseSummary {
             released: true,
             paths: vec![],
             error: None,
         };
-    }
+    };
 
     let paths = list_agent_reservations_best_effort(repo_root, agent);
-    match mesh.release(agent, vec![]) {
+    match db.release_all(agent) {
         Ok(_) => ReservationReleaseSummary {
             released: true,
             paths,
-            error: None,
-        },
-        Err(TakError::MeshAgentNotFound(_)) => ReservationReleaseSummary {
-            released: true,
-            paths: vec![],
             error: None,
         },
         Err(err) => ReservationReleaseSummary {
@@ -922,7 +915,6 @@ fn print_response(response: WorkResponse, format: Format) -> Result<()> {
 mod tests {
     use super::*;
     use crate::model::{Contract, Kind, Planning};
-    use crate::store::mesh::MeshStore;
     use chrono::Utc;
     use std::fs;
     use std::sync::Mutex;
@@ -1342,12 +1334,16 @@ mod tests {
             .activate("agent-1", None, None, None, None, None)
             .unwrap();
 
-        let mesh = MeshStore::open(&dir.path().join(".tak"));
-        mesh.join(Some("agent-1"), Some("sid-1")).unwrap();
-        mesh.reserve(
+        let db = CoordinationDb::from_repo(dir.path()).unwrap();
+        let reg = db
+            .join_agent("agent-1", "sid-1", "/tmp", None, None)
+            .unwrap();
+        db.reserve(
             "agent-1",
-            vec!["src/commands/work.rs".into()],
+            reg.generation,
+            "src/commands/work.rs",
             Some("status-snapshot"),
+            3600,
         )
         .unwrap();
 
@@ -1375,12 +1371,16 @@ mod tests {
         state.current_task_id = Some(task_id);
         store.save(&state).unwrap();
 
-        let mesh = MeshStore::open(&dir.path().join(".tak"));
-        mesh.join(Some("agent-1"), Some("sid-1")).unwrap();
-        mesh.reserve(
+        let db = CoordinationDb::from_repo(dir.path()).unwrap();
+        let reg = db
+            .join_agent("agent-1", "sid-1", "/tmp", None, None)
+            .unwrap();
+        db.reserve(
             "agent-1",
-            vec!["src/commands/work.rs".into()],
+            reg.generation,
+            "src/commands/work.rs",
             Some("test-work-done"),
+            3600,
         )
         .unwrap();
 
@@ -1403,7 +1403,8 @@ mod tests {
         let finished_task = repo.store.read(task_id).unwrap();
         assert_eq!(finished_task.status, Status::Done);
 
-        let reservations = mesh.list_reservations().unwrap();
+        let db2 = CoordinationDb::from_repo(dir.path()).unwrap();
+        let reservations = db2.list_reservations().unwrap();
         assert!(
             reservations
                 .iter()
@@ -1470,12 +1471,16 @@ mod tests {
         state.current_task_id = Some(task_id);
         store.save(&state).unwrap();
 
-        let mesh = MeshStore::open(&dir.path().join(".tak"));
-        mesh.join(Some("agent-1"), Some("sid-1")).unwrap();
-        mesh.reserve(
+        let db = CoordinationDb::from_repo(dir.path()).unwrap();
+        let reg = db
+            .join_agent("agent-1", "sid-1", "/tmp", None, None)
+            .unwrap();
+        db.reserve(
             "agent-1",
-            vec!["src/commands/work.rs".into()],
+            reg.generation,
+            "src/commands/work.rs",
             Some("test-work-done-detached"),
+            3600,
         )
         .unwrap();
 
@@ -1492,7 +1497,8 @@ mod tests {
         let task = repo.store.read(task_id).unwrap();
         assert_eq!(task.status, Status::Pending);
 
-        let reservations = mesh.list_reservations().unwrap();
+        let db2 = CoordinationDb::from_repo(dir.path()).unwrap();
+        let reservations = db2.list_reservations().unwrap();
         assert!(
             reservations
                 .iter()
@@ -1503,12 +1509,16 @@ mod tests {
     #[test]
     fn stop_is_idempotent_and_releases_agent_reservations() {
         let dir = setup_repo();
-        let mesh = MeshStore::open(&dir.path().join(".tak"));
-        mesh.join(Some("agent-1"), Some("sid-1")).unwrap();
-        mesh.reserve(
+        let db = CoordinationDb::from_repo(dir.path()).unwrap();
+        let reg = db
+            .join_agent("agent-1", "sid-1", "/tmp", None, None)
+            .unwrap();
+        db.reserve(
             "agent-1",
-            vec!["src/commands/work.rs".into()],
+            reg.generation,
+            "src/commands/work.rs",
             Some("test-stop"),
+            3600,
         )
         .unwrap();
 
@@ -1516,7 +1526,8 @@ mod tests {
         assert_eq!(first.event, WorkEvent::Stopped);
         assert!(!first.state.active);
 
-        let reservations = mesh.list_reservations().unwrap();
+        let db2 = CoordinationDb::from_repo(dir.path()).unwrap();
+        let reservations = db2.list_reservations().unwrap();
         assert!(
             reservations
                 .iter()
@@ -1545,12 +1556,16 @@ mod tests {
         state.current_task_id = Some(finished_task_id);
         store.save(&state).unwrap();
 
-        let mesh = MeshStore::open(&dir.path().join(".tak"));
-        mesh.join(Some("agent-1"), Some("sid-1")).unwrap();
-        mesh.reserve(
+        let db = CoordinationDb::from_repo(dir.path()).unwrap();
+        let reg = db
+            .join_agent("agent-1", "sid-1", "/tmp", None, None)
+            .unwrap();
+        db.reserve(
             "agent-1",
-            vec!["src/commands/work.rs".into()],
+            reg.generation,
+            "src/commands/work.rs",
             Some("test-reconcile-release"),
+            3600,
         )
         .unwrap();
 
@@ -1564,7 +1579,8 @@ mod tests {
         ));
         assert!(response.state.current_task_id != Some(finished_task_id));
 
-        let reservations = mesh.list_reservations().unwrap();
+        let db2 = CoordinationDb::from_repo(dir.path()).unwrap();
+        let reservations = db2.list_reservations().unwrap();
         assert!(
             reservations
                 .iter()

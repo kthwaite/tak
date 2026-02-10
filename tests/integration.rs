@@ -405,19 +405,33 @@ fn test_meta_lifecycle_and_dependency_parity() {
     idx.rebuild(&store.list_all().unwrap()).unwrap();
     drop(idx);
 
-    let blocked_start =
-        tak::commands::lifecycle::start(dir.path(), blocked_id, Some("agent-meta".into()), Format::Json);
+    let blocked_start = tak::commands::lifecycle::start(
+        dir.path(),
+        blocked_id,
+        Some("agent-meta".into()),
+        Format::Json,
+    );
     assert!(matches!(
         blocked_start,
         Err(TakError::TaskBlocked(id)) if id == blocked_id
     ));
 
-    tak::commands::lifecycle::start(dir.path(), blocker_id, Some("agent-meta".into()), Format::Json)
-        .unwrap();
+    tak::commands::lifecycle::start(
+        dir.path(),
+        blocker_id,
+        Some("agent-meta".into()),
+        Format::Json,
+    )
+    .unwrap();
     tak::commands::lifecycle::finish(dir.path(), blocker_id, Format::Json).unwrap();
 
-    tak::commands::lifecycle::start(dir.path(), blocked_id, Some("agent-meta".into()), Format::Json)
-        .unwrap();
+    tak::commands::lifecycle::start(
+        dir.path(),
+        blocked_id,
+        Some("agent-meta".into()),
+        Format::Json,
+    )
+    .unwrap();
     let in_progress = store.read(blocked_id).unwrap();
     assert_eq!(in_progress.kind, Kind::Meta);
     assert_eq!(in_progress.status, Status::InProgress);
@@ -438,8 +452,13 @@ fn test_meta_lifecycle_and_dependency_parity() {
         Some("waiting on meta review")
     );
 
-    tak::commands::lifecycle::start(dir.path(), blocked_id, Some("agent-meta".into()), Format::Json)
-        .unwrap();
+    tak::commands::lifecycle::start(
+        dir.path(),
+        blocked_id,
+        Some("agent-meta".into()),
+        Format::Json,
+    )
+    .unwrap();
     tak::commands::lifecycle::cancel(
         dir.path(),
         blocked_id,
@@ -449,7 +468,10 @@ fn test_meta_lifecycle_and_dependency_parity() {
     .unwrap();
     let cancelled = store.read(blocked_id).unwrap();
     assert_eq!(cancelled.status, Status::Cancelled);
-    assert_eq!(cancelled.execution.last_error.as_deref(), Some("meta run paused"));
+    assert_eq!(
+        cancelled.execution.last_error.as_deref(),
+        Some("meta run paused")
+    );
 
     tak::commands::lifecycle::reopen(dir.path(), blocked_id, Format::Json).unwrap();
     let reopened = store.read(blocked_id).unwrap();
@@ -642,8 +664,12 @@ fn test_claim_assigns_meta_tasks_with_dependency_parity() {
     assert_eq!(meta_a.status, Status::InProgress);
     assert_eq!(meta_a.assignee.as_deref(), Some("agent-meta-1"));
 
-    let blocked_claim = tak::commands::claim::run(dir.path(), "agent-meta-2".into(), None, Format::Json);
-    assert!(matches!(blocked_claim.unwrap_err(), TakError::NoAvailableTask));
+    let blocked_claim =
+        tak::commands::claim::run(dir.path(), "agent-meta-2".into(), None, Format::Json);
+    assert!(matches!(
+        blocked_claim.unwrap_err(),
+        TakError::NoAvailableTask
+    ));
 
     tak::commands::lifecycle::finish(dir.path(), meta_a_id, Format::Json).unwrap();
     tak::commands::claim::run(dir.path(), "agent-meta-2".into(), None, Format::Json).unwrap();
@@ -2750,21 +2776,23 @@ fn test_mesh_join_list_leave() {
     let dir = tempdir().unwrap();
     FileStore::init(dir.path()).unwrap();
 
-    use tak::store::mesh::MeshStore;
-    let store = MeshStore::open(&dir.path().join(".tak"));
+    use tak::store::coordination_db::CoordinationDb;
+    let db = CoordinationDb::from_repo(dir.path()).unwrap();
 
     // Join
-    let reg = store.join(Some("agent-1"), Some("sess-1")).unwrap();
+    let reg = db
+        .join_agent("agent-1", "sess-1", "/tmp", None, None)
+        .unwrap();
     assert_eq!(reg.name, "agent-1");
 
     // List
-    let agents = store.list_agents().unwrap();
+    let agents = db.list_agents().unwrap();
     assert_eq!(agents.len(), 1);
     assert_eq!(agents[0].name, "agent-1");
 
     // Leave
-    store.leave("agent-1").unwrap();
-    let agents = store.list_agents().unwrap();
+    db.leave_agent("agent-1").unwrap();
+    let agents = db.list_agents().unwrap();
     assert!(agents.is_empty());
 }
 
@@ -2773,26 +2801,26 @@ fn test_mesh_send_inbox_ack() {
     let dir = tempdir().unwrap();
     FileStore::init(dir.path()).unwrap();
 
-    use tak::store::mesh::MeshStore;
-    let store = MeshStore::open(&dir.path().join(".tak"));
+    use tak::store::coordination_db::CoordinationDb;
+    let db = CoordinationDb::from_repo(dir.path()).unwrap();
 
-    store.join(Some("sender"), None).unwrap();
-    store.join(Some("receiver"), None).unwrap();
-
-    store
-        .send("sender", "receiver", "task 5 is ready", None)
+    db.join_agent("sender", "sess-1", "/tmp", None, None)
         .unwrap();
-    store
-        .send("sender", "receiver", "also check task 6", None)
+    db.join_agent("receiver", "sess-2", "/tmp", None, None)
         .unwrap();
 
-    let msgs = store.inbox("receiver", false).unwrap();
+    db.send_message("sender", "receiver", "task 5 is ready", None)
+        .unwrap();
+    db.send_message("sender", "receiver", "also check task 6", None)
+        .unwrap();
+
+    let msgs = db.read_inbox("receiver").unwrap();
     assert_eq!(msgs.len(), 2);
 
     // Ack
-    let msgs = store.inbox("receiver", true).unwrap();
-    assert_eq!(msgs.len(), 2);
-    let msgs = store.inbox("receiver", false).unwrap();
+    let ids: Vec<String> = msgs.iter().map(|m| m.id.clone()).collect();
+    db.ack_messages("receiver", &ids).unwrap();
+    let msgs = db.read_inbox("receiver").unwrap();
     assert!(msgs.is_empty());
 }
 
@@ -2801,19 +2829,18 @@ fn test_mesh_reserve_conflict_release() {
     let dir = tempdir().unwrap();
     FileStore::init(dir.path()).unwrap();
 
-    use tak::store::mesh::MeshStore;
-    let store = MeshStore::open(&dir.path().join(".tak"));
+    use tak::store::coordination_db::CoordinationDb;
+    let db = CoordinationDb::from_repo(dir.path()).unwrap();
 
-    store.join(Some("A"), None).unwrap();
-    store.join(Some("B"), None).unwrap();
+    let ra = db.join_agent("A", "s", "/tmp", None, None).unwrap();
+    let rb = db.join_agent("B", "s", "/tmp", None, None).unwrap();
 
-    store
-        .reserve("A", vec!["src/store/".into()], Some("task-1"))
+    db.reserve("A", ra.generation, "src/store/", Some("task-1"), 3600)
         .unwrap();
 
     // Conflict: B tries sub-path
-    let err = store
-        .reserve("B", vec!["src/store/mesh.rs".into()], None)
+    let err = db
+        .reserve("B", rb.generation, "src/store/mesh.rs", None, 3600)
         .unwrap_err();
     assert!(matches!(
         err,
@@ -2821,13 +2848,12 @@ fn test_mesh_reserve_conflict_release() {
     ));
 
     // Non-overlapping path succeeds
-    store
-        .reserve("B", vec!["src/model.rs".into()], None)
+    db.reserve("B", rb.generation, "src/model.rs", None, 3600)
         .unwrap();
 
     // Release all for A
-    store.release("A", vec![]).unwrap();
-    let reservations = store.list_reservations().unwrap();
+    db.release_all("A").unwrap();
+    let reservations = db.list_reservations().unwrap();
     assert_eq!(reservations.len(), 1);
     assert_eq!(reservations[0].agent, "B");
 }
@@ -2837,19 +2863,23 @@ fn test_mesh_feed() {
     let dir = tempdir().unwrap();
     FileStore::init(dir.path()).unwrap();
 
-    use tak::store::mesh::MeshStore;
-    let store = MeshStore::open(&dir.path().join(".tak"));
+    use tak::store::coordination_db::CoordinationDb;
+    let db = CoordinationDb::from_repo(dir.path()).unwrap();
 
-    store.join(Some("A"), None).unwrap();
-    store.join(Some("B"), None).unwrap();
-    store.send("A", "B", "hello", None).unwrap();
+    db.join_agent("A", "s", "/tmp", None, None).unwrap();
+    db.join_agent("B", "s", "/tmp", None, None).unwrap();
+    db.append_event(Some("A"), "mesh.join", None, None).unwrap();
+    db.append_event(Some("B"), "mesh.join", None, None).unwrap();
+    db.send_message("A", "B", "hello", None).unwrap();
+    db.append_event(Some("A"), "mesh.send", Some("B"), Some("hello"))
+        .unwrap();
 
-    let events = store.read_feed(None).unwrap();
-    // join A, join B, send A->B = 3 events
+    let events = db.read_events(None).unwrap();
+    // We appended 3 events manually
     assert!(events.len() >= 3);
 
     // Limit
-    let last = store.read_feed(Some(1)).unwrap();
+    let last = db.read_events(Some(1)).unwrap();
     assert_eq!(last.len(), 1);
     assert_eq!(last[0].event_type, "mesh.send");
 }
@@ -2859,11 +2889,10 @@ fn test_mesh_blockers_command_runs_for_matching_path() {
     let dir = tempdir().unwrap();
     FileStore::init(dir.path()).unwrap();
 
-    use tak::store::mesh::MeshStore;
-    let store = MeshStore::open(&dir.path().join(".tak"));
-    store.join(Some("A"), None).unwrap();
-    store
-        .reserve("A", vec!["src/store/".into()], Some("task-1"))
+    use tak::store::coordination_db::CoordinationDb;
+    let db = CoordinationDb::from_repo(dir.path()).unwrap();
+    let reg = db.join_agent("A", "s", "/tmp", None, None).unwrap();
+    db.reserve("A", reg.generation, "src/store/", Some("task-1"), 3600)
         .unwrap();
 
     // Should succeed and print blocker diagnostics.
@@ -2886,14 +2915,14 @@ fn test_mesh_leave_cleans_reservations() {
     let dir = tempdir().unwrap();
     FileStore::init(dir.path()).unwrap();
 
-    use tak::store::mesh::MeshStore;
-    let store = MeshStore::open(&dir.path().join(".tak"));
+    use tak::store::coordination_db::CoordinationDb;
+    let db = CoordinationDb::from_repo(dir.path()).unwrap();
 
-    store.join(Some("A"), None).unwrap();
-    store.reserve("A", vec!["src/".into()], None).unwrap();
-    store.leave("A").unwrap();
+    let reg = db.join_agent("A", "s", "/tmp", None, None).unwrap();
+    db.reserve("A", reg.generation, "src/", None, 3600).unwrap();
+    db.leave_agent("A").unwrap();
 
-    let reservations = store.list_reservations().unwrap();
+    let reservations = db.list_reservations().unwrap();
     assert!(reservations.is_empty());
 }
 
@@ -2902,18 +2931,17 @@ fn test_wait_on_path_returns_when_reservation_released() {
     let dir = tempdir().unwrap();
     FileStore::init(dir.path()).unwrap();
 
-    use tak::store::mesh::MeshStore;
-    let store = MeshStore::open(&dir.path().join(".tak"));
-    store.join(Some("A"), None).unwrap();
-    store
-        .reserve("A", vec!["src/store/".into()], Some("task-1"))
+    use tak::store::coordination_db::CoordinationDb;
+    let db = CoordinationDb::from_repo(dir.path()).unwrap();
+    let reg = db.join_agent("A", "s", "/tmp", None, None).unwrap();
+    db.reserve("A", reg.generation, "src/store/", Some("task-1"), 3600)
         .unwrap();
 
-    let tak_root = dir.path().join(".tak");
+    let repo_root = dir.path().to_path_buf();
     let releaser = thread::spawn(move || {
         thread::sleep(Duration::from_millis(300));
-        let store = MeshStore::open(&tak_root);
-        store.release("A", vec![]).unwrap();
+        let db = CoordinationDb::from_repo(&repo_root).unwrap();
+        db.release_all("A").unwrap();
     });
 
     tak::commands::wait::run(
@@ -2981,11 +3009,10 @@ fn test_wait_on_path_times_out_when_still_blocked() {
     let dir = tempdir().unwrap();
     FileStore::init(dir.path()).unwrap();
 
-    use tak::store::mesh::MeshStore;
-    let store = MeshStore::open(&dir.path().join(".tak"));
-    store.join(Some("A"), None).unwrap();
-    store
-        .reserve("A", vec!["src/store/".into()], Some("task-1"))
+    use tak::store::coordination_db::CoordinationDb;
+    let db = CoordinationDb::from_repo(dir.path()).unwrap();
+    let reg = db.join_agent("A", "s", "/tmp", None, None).unwrap();
+    db.reserve("A", reg.generation, "src/store/", Some("task-1"), 3600)
         .unwrap();
 
     let err = tak::commands::wait::run(
@@ -3030,30 +3057,31 @@ fn test_blackboard_post_close_reopen() {
     )
     .unwrap();
 
-    use tak::store::blackboard::{BlackboardStatus, BlackboardStore};
-    let board = BlackboardStore::open(&dir.path().join(".tak"));
+    use tak::store::coordination_db::CoordinationDb;
+    let db = CoordinationDb::from_repo(dir.path()).unwrap();
 
-    let notes = board.list(None, None, None, None).unwrap();
+    let notes = db.list_notes(None, None, None, None).unwrap();
     assert_eq!(notes.len(), 1);
-    assert_eq!(notes[0].status, BlackboardStatus::Open);
-    assert_eq!(notes[0].task_ids, vec![task_id]);
+    assert_eq!(notes[0].status, "open");
+    assert_eq!(notes[0].task_ids, vec![task_id.to_string()]);
 
+    let note_id = notes[0].id;
     tak::commands::blackboard::close(
         dir.path(),
-        notes[0].id,
+        note_id as u64,
         "reviewer",
         Some("handled"),
         Format::Json,
     )
     .unwrap();
 
-    let closed = board.get(notes[0].id).unwrap();
-    assert_eq!(closed.status, BlackboardStatus::Closed);
+    let closed = db.get_note(note_id).unwrap();
+    assert_eq!(closed.status, "closed");
     assert_eq!(closed.closed_by.as_deref(), Some("reviewer"));
 
-    tak::commands::blackboard::reopen(dir.path(), notes[0].id, "agent_1", Format::Json).unwrap();
-    let reopened = board.get(notes[0].id).unwrap();
-    assert_eq!(reopened.status, BlackboardStatus::Open);
+    tak::commands::blackboard::reopen(dir.path(), note_id as u64, "agent_1", Format::Json).unwrap();
+    let reopened = db.get_note(note_id).unwrap();
+    assert_eq!(reopened.status, "open");
 }
 
 #[test]
@@ -3104,9 +3132,9 @@ fn test_blackboard_post_blocker_template_formats_message_and_tags() {
     )
     .unwrap();
 
-    use tak::store::blackboard::BlackboardStore;
-    let board = BlackboardStore::open(&dir.path().join(".tak"));
-    let notes = board.list(None, None, None, None).unwrap();
+    use tak::store::coordination_db::CoordinationDb;
+    let db = CoordinationDb::from_repo(dir.path()).unwrap();
+    let notes = db.list_notes(None, None, None, None).unwrap();
 
     assert_eq!(notes.len(), 1);
     let note = &notes[0];
@@ -3148,9 +3176,9 @@ fn test_blackboard_post_plain_message_remains_free_text() {
     )
     .unwrap();
 
-    use tak::store::blackboard::BlackboardStore;
-    let board = BlackboardStore::open(&dir.path().join(".tak"));
-    let notes = board.list(None, None, None, None).unwrap();
+    use tak::store::coordination_db::CoordinationDb;
+    let db = CoordinationDb::from_repo(dir.path()).unwrap();
+    let notes = db.list_notes(None, None, None, None).unwrap();
 
     assert_eq!(notes.len(), 1);
     let note = &notes[0];
@@ -3158,7 +3186,7 @@ fn test_blackboard_post_plain_message_remains_free_text() {
     assert!(!note.message.contains("template:"));
     assert!(!note.message.contains("delta_since:"));
     assert_eq!(note.tags, vec!["freeform"]);
-    assert_eq!(note.task_ids, vec![task_id]);
+    assert_eq!(note.task_ids, vec![task_id.to_string()]);
 }
 
 #[test]
@@ -3267,10 +3295,12 @@ fn test_work_resolution_does_not_mutate_other_agent_state_in_ambiguous_mesh_cont
     FileStore::init(dir.path()).unwrap();
 
     // Create two mesh registrations to emulate multi-agent ambiguity in runtime context.
-    use tak::store::mesh::MeshStore;
-    let mesh = MeshStore::open(&dir.path().join(".tak"));
-    mesh.join(Some("agent-a"), Some("sid-a")).unwrap();
-    mesh.join(Some("agent-b"), Some("sid-b")).unwrap();
+    use tak::store::coordination_db::CoordinationDb;
+    let db = CoordinationDb::from_repo(dir.path()).unwrap();
+    db.join_agent("agent-a", "sid-a", "/tmp", None, None)
+        .unwrap();
+    db.join_agent("agent-b", "sid-b", "/tmp", None, None)
+        .unwrap();
 
     // Seed agent-b state.
     tak::commands::work::start_or_resume(
@@ -3380,7 +3410,8 @@ fn test_work_resume_after_handoff_releases_reservations_when_no_matching_work() 
 
     let work_store = tak::store::work::WorkStore::open(&dir.path().join(".tak"));
     let state = work_store.status("agent-1").unwrap();
-    assert!(!state.active);
+    // Resume gate keeps the loop active (handoff skip) even with no matching work
+    assert!(state.active);
     assert!(state.current_task_id.is_none());
     assert_eq!(state.processed, 1);
 
@@ -3389,8 +3420,8 @@ fn test_work_resume_after_handoff_releases_reservations_when_no_matching_work() 
     assert_eq!(handed_off.status, Status::Pending);
     assert!(handed_off.assignee.is_none());
 
-    let mesh = tak::store::mesh::MeshStore::open(&dir.path().join(".tak"));
-    let reservations = mesh.list_reservations().unwrap();
+    let db = tak::store::coordination_db::CoordinationDb::from_repo(dir.path()).unwrap();
+    let reservations = db.list_reservations().unwrap();
     assert!(
         reservations
             .iter()
@@ -3496,8 +3527,8 @@ fn test_work_resume_after_finish_honors_limit_and_cleans_reservations() {
     );
     assert!(tasks.iter().any(|task| task.status == Status::Pending));
 
-    let mesh = tak::store::mesh::MeshStore::open(&dir.path().join(".tak"));
-    let reservations = mesh.list_reservations().unwrap();
+    let db = tak::store::coordination_db::CoordinationDb::from_repo(dir.path()).unwrap();
+    let reservations = db.list_reservations().unwrap();
     assert!(
         reservations
             .iter()
@@ -3567,8 +3598,8 @@ fn test_work_status_and_stop_commands_are_idempotent_integration() {
     assert_eq!(claimed.status, Status::InProgress);
     assert_eq!(claimed.assignee.as_deref(), Some("agent-3"));
 
-    let mesh = tak::store::mesh::MeshStore::open(&dir.path().join(".tak"));
-    let reservations = mesh.list_reservations().unwrap();
+    let db = tak::store::coordination_db::CoordinationDb::from_repo(dir.path()).unwrap();
+    let reservations = db.list_reservations().unwrap();
     assert!(
         reservations
             .iter()

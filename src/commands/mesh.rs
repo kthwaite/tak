@@ -349,12 +349,7 @@ pub fn join(
     let reg = db.join_agent(&resolved_name, &sid, &cwd, pid, host.as_deref())?;
 
     // Best-effort feed event
-    let _ = db.append_event(
-        Some(&reg.name),
-        "mesh.join",
-        None,
-        Some("joined the mesh"),
-    );
+    let _ = db.append_event(Some(&reg.name), "mesh.join", None, Some("joined the mesh"));
 
     match format {
         Format::Json => println!("{}", serde_json::to_string(&reg)?),
@@ -565,10 +560,7 @@ pub fn cleanup(
                 .collect();
             CleanupCandidate {
                 agent: a.name.clone(),
-                reason: format!(
-                    "updated_at {} is older than {}s",
-                    a.updated_at, ttl_secs
-                ),
+                reason: format!("updated_at {} is older than {}s", a.updated_at, ttl_secs),
                 reservation_paths: agent_paths,
                 inbox_messages: 0, // CoordinationDb doesn't expose per-agent inbox count easily
             }
@@ -664,16 +656,8 @@ pub fn cleanup(
                         );
                     }
                 }
-                println!(
-                    "{} {}",
-                    "Removed agents:".dimmed(),
-                    removed_agents.len()
-                );
-                println!(
-                    "{} {}",
-                    "Removed reservations:".dimmed(),
-                    reservations_del
-                );
+                println!("{} {}", "Removed agents:".dimmed(), removed_agents.len());
+                println!("{} {}", "Removed reservations:".dimmed(), reservations_del);
                 println!("{} {}", "Removed inbox messages:".dimmed(), 0);
             }
             Format::Minimal => println!("{}", removed_agents.len()),
@@ -915,7 +899,11 @@ pub fn release(
         Some(name),
         "mesh.release",
         None,
-        Some(if all { "released all" } else { "released paths" }),
+        Some(if all {
+            "released all"
+        } else {
+            "released paths"
+        }),
     );
 
     match format {
@@ -987,8 +975,14 @@ mod tests {
         let db = CoordinationDb::open_memory().unwrap();
         db.join_agent("agent-a", "s", "/", None, None).unwrap();
         let agent = db.get_agent("agent-a").unwrap();
-        db.reserve("agent-a", agent.generation, "src/store", Some("task-1"), 3600)
-            .unwrap();
+        db.reserve(
+            "agent-a",
+            agent.generation,
+            "src/store",
+            Some("task-1"),
+            3600,
+        )
+        .unwrap();
 
         let reservations = db.list_reservations().unwrap();
         let blockers = collect_blockers(&reservations, &[]);
