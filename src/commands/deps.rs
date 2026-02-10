@@ -180,20 +180,38 @@ pub fn undepend(
     print_updated_tasks(&updated_tasks, format, quiet)
 }
 
-pub fn reparent(repo_root: &Path, id: u64, to: u64, format: Format, quiet: bool) -> Result<()> {
+pub fn reparent(
+    repo_root: &Path,
+    ids: Vec<u64>,
+    to: u64,
+    format: Format,
+    quiet: bool,
+) -> Result<()> {
     let repo = Repo::open(repo_root)?;
-    repo.store.read(to)?; // validate parent exists
-    if repo.index.would_parent_cycle(id, to)? {
-        return Err(TakError::CycleDetected(id));
+    let target_ids = normalize_ids(ids);
+
+    // Validate all referenced tasks before any mutation.
+    repo.store.read(to)?; // parent exists
+    for &target_id in &target_ids {
+        repo.store.read(target_id)?;
+        if repo.index.would_parent_cycle(target_id, to)? {
+            return Err(TakError::CycleDetected(target_id));
+        }
     }
 
-    let mut task = repo.store.read(id)?;
-    task.parent = Some(to);
-    task.updated_at = Utc::now();
+    let mut updated_tasks = Vec::with_capacity(target_ids.len());
+    for target_id in target_ids {
+        let mut task = repo.store.read(target_id)?;
+        task.parent = Some(to);
+        task.updated_at = Utc::now();
 
-    repo.store.write(&task)?;
-    repo.index.upsert(&task)?;
-    print_updated_tasks(&[task], format, quiet)
+        repo.store.write(&task)?;
+        repo.index.upsert(&task)?;
+        updated_tasks.push(task);
+    }
+
+    updated_tasks.sort_by_key(|task| task.id);
+    print_updated_tasks(&updated_tasks, format, quiet)
 }
 
 pub fn orphan(repo_root: &Path, id: u64, format: Format, quiet: bool) -> Result<()> {

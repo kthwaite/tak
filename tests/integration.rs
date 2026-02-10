@@ -944,6 +944,204 @@ fn test_depend_and_undepend_support_multi_target_batch_edits() {
 }
 
 #[test]
+fn test_reparent_supports_multi_target_batch_edits() {
+    let dir = tempdir().unwrap();
+    let store = FileStore::init(dir.path()).unwrap();
+
+    let parent = store
+        .create(
+            "Parent".into(),
+            Kind::Epic,
+            None,
+            None,
+            vec![],
+            vec![],
+            Contract::default(),
+            Planning::default(),
+        )
+        .unwrap();
+    let first = store
+        .create(
+            "First".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![],
+            vec![],
+            Contract::default(),
+            Planning::default(),
+        )
+        .unwrap();
+    let second = store
+        .create(
+            "Second".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![],
+            vec![],
+            Contract::default(),
+            Planning::default(),
+        )
+        .unwrap();
+
+    let idx = Index::open(&store.root().join("index.db")).unwrap();
+    idx.rebuild(&store.list_all().unwrap()).unwrap();
+    drop(idx);
+
+    tak::commands::deps::reparent(
+        dir.path(),
+        vec![first.id, second.id],
+        parent.id,
+        Format::Json,
+        true,
+    )
+    .unwrap();
+
+    let first_task = store.read(first.id).unwrap();
+    let second_task = store.read(second.id).unwrap();
+    assert_eq!(first_task.parent, Some(parent.id));
+    assert_eq!(second_task.parent, Some(parent.id));
+}
+
+#[test]
+fn test_reparent_rolls_back_on_partial_failure() {
+    let dir = tempdir().unwrap();
+    let store = FileStore::init(dir.path()).unwrap();
+
+    let old_parent = store
+        .create(
+            "Old parent".into(),
+            Kind::Epic,
+            None,
+            None,
+            vec![],
+            vec![],
+            Contract::default(),
+            Planning::default(),
+        )
+        .unwrap();
+    let new_parent = store
+        .create(
+            "New parent".into(),
+            Kind::Epic,
+            None,
+            None,
+            vec![],
+            vec![],
+            Contract::default(),
+            Planning::default(),
+        )
+        .unwrap();
+    let first = store
+        .create(
+            "First".into(),
+            Kind::Task,
+            None,
+            Some(old_parent.id),
+            vec![],
+            vec![],
+            Contract::default(),
+            Planning::default(),
+        )
+        .unwrap();
+    let second = store
+        .create(
+            "Second".into(),
+            Kind::Task,
+            None,
+            Some(old_parent.id),
+            vec![],
+            vec![],
+            Contract::default(),
+            Planning::default(),
+        )
+        .unwrap();
+
+    let idx = Index::open(&store.root().join("index.db")).unwrap();
+    idx.rebuild(&store.list_all().unwrap()).unwrap();
+    drop(idx);
+
+    let missing_id = 9_999_999_999_u64;
+    let result = tak::commands::deps::reparent(
+        dir.path(),
+        vec![first.id, missing_id, second.id],
+        new_parent.id,
+        Format::Json,
+        true,
+    );
+
+    assert!(matches!(result.unwrap_err(), TakError::TaskNotFound(id) if id == missing_id));
+
+    let first_task = store.read(first.id).unwrap();
+    let second_task = store.read(second.id).unwrap();
+    assert_eq!(first_task.parent, Some(old_parent.id));
+    assert_eq!(second_task.parent, Some(old_parent.id));
+}
+
+#[test]
+fn test_reparent_rejects_batch_when_any_target_would_cycle() {
+    let dir = tempdir().unwrap();
+    let store = FileStore::init(dir.path()).unwrap();
+
+    let ancestor = store
+        .create(
+            "Ancestor".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![],
+            vec![],
+            Contract::default(),
+            Planning::default(),
+        )
+        .unwrap();
+    let descendant = store
+        .create(
+            "Descendant".into(),
+            Kind::Task,
+            None,
+            Some(ancestor.id),
+            vec![],
+            vec![],
+            Contract::default(),
+            Planning::default(),
+        )
+        .unwrap();
+    let sibling = store
+        .create(
+            "Sibling".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![],
+            vec![],
+            Contract::default(),
+            Planning::default(),
+        )
+        .unwrap();
+
+    let idx = Index::open(&store.root().join("index.db")).unwrap();
+    idx.rebuild(&store.list_all().unwrap()).unwrap();
+    drop(idx);
+
+    let result = tak::commands::deps::reparent(
+        dir.path(),
+        vec![ancestor.id, sibling.id],
+        descendant.id,
+        Format::Json,
+        true,
+    );
+
+    assert!(matches!(result.unwrap_err(), TakError::CycleDetected(id) if id == ancestor.id));
+
+    let ancestor_task = store.read(ancestor.id).unwrap();
+    let sibling_task = store.read(sibling.id).unwrap();
+    assert_eq!(ancestor_task.parent, None);
+    assert_eq!(sibling_task.parent, None);
+}
+
+#[test]
 fn test_delete_removes_task() {
     let dir = tempdir().unwrap();
     let store = FileStore::init(dir.path()).unwrap();

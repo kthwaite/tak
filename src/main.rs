@@ -289,10 +289,11 @@ enum Commands {
         /// Task ID to reopen (canonical hex, unique prefix, or legacy decimal)
         id: String,
     },
-    /// Change a task's parent
+    /// Change one or more tasks' parent
     Reparent {
-        /// Task ID to reparent (canonical hex, unique prefix, or legacy decimal)
-        id: String,
+        /// Task IDs to reparent (canonical hex, unique prefix, or legacy decimal; comma-separated)
+        #[arg(required = true, value_delimiter = ',')]
+        ids: Vec<String>,
         /// New parent task ID (canonical hex, unique prefix, or legacy decimal)
         #[arg(long, required = true)]
         to: String,
@@ -1151,9 +1152,9 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
             format,
             quiet,
         ),
-        Commands::Reparent { id, to, quiet } => tak::commands::deps::reparent(
+        Commands::Reparent { ids, to, quiet } => tak::commands::deps::reparent(
             &root,
-            resolve_task_id_arg(&root, id)?,
+            resolve_task_id_args(&root, ids)?,
             resolve_task_id_arg(&root, to)?,
             format,
             quiet,
@@ -1861,17 +1862,31 @@ mod tests {
     }
 
     #[test]
-    fn parse_reparent_and_orphan_support_quiet() {
-        let reparent = Cli::parse_from(["tak", "reparent", "123", "--to", "456", "--quiet"]);
-        match reparent.command {
-            Commands::Reparent { id, to, quiet } => {
-                assert_eq!(id, "123");
+    fn parse_reparent_supports_single_and_multi_targets_with_quiet() {
+        let reparent_single = Cli::parse_from(["tak", "reparent", "123", "--to", "456", "--quiet"]);
+        match reparent_single.command {
+            Commands::Reparent { ids, to, quiet } => {
+                assert_eq!(ids, vec!["123"]);
                 assert_eq!(to, "456");
                 assert!(quiet);
             }
             _ => panic!("expected reparent command"),
         }
 
+        let reparent_multi =
+            Cli::parse_from(["tak", "reparent", "123,abc", "--to", "456", "--quiet"]);
+        match reparent_multi.command {
+            Commands::Reparent { ids, to, quiet } => {
+                assert_eq!(ids, vec!["123", "abc"]);
+                assert_eq!(to, "456");
+                assert!(quiet);
+            }
+            _ => panic!("expected reparent command"),
+        }
+    }
+
+    #[test]
+    fn parse_orphan_supports_quiet() {
         let orphan = Cli::parse_from(["tak", "orphan", "123", "--quiet"]);
         match orphan.command {
             Commands::Orphan { id, quiet } => {

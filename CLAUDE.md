@@ -120,7 +120,7 @@ For task-taking commands, `TASK_ID` accepts canonical 16-hex IDs, unique hex pre
 | `unassign TASK_ID` | Clear assignee without changing status; appends history log |
 | `depend TASK_IDS --on TASK_IDS` | Add dependency edges in bulk (`--dep-type hard\|soft`, `--reason`, `--quiet`) |
 | `undepend TASK_IDS --on TASK_IDS` | Remove dependency edges in bulk (`--quiet`) |
-| `reparent TASK_ID --to TASK_ID` | Change parent (`--quiet`) |
+| `reparent TASK_IDS --to TASK_ID` | Change parent in bulk (`--quiet`; comma-separated IDs) |
 | `orphan TASK_ID` | Remove parent (`--quiet`) |
 | `tree [TASK_ID]` | Display parent-child hierarchy (`--pending`, `--sort id\|created\|priority\|estimate`) |
 | `next` | Show next available task (`--assignee`) |
@@ -175,6 +175,7 @@ Errors are structured JSON on stderr when `--format json`: `{"error":"<code>","m
 - `Index::upsert()` is transactional (delete old deps/tags, insert new); uses `INSERT OR IGNORE` for resilience against duplicates
 - `Index::rebuild()` uses two-pass insertion: first insert tasks without parent_id, then update parent_id (handles forward references and FK constraints); uses `INSERT OR IGNORE` for deps/tags
 - `delete` validates referential integrity (children + dependents); `--force` cascades (orphans children, removes incoming deps); cleans up sidecar files
+- `reparent` supports bulk targets (`TASK_IDS --to TASK_ID`) and uses validate-then-commit semantics across the whole batch (no partial writes on invalid IDs or cycle checks).
 - Task IDs are allocated via OS-backed CSPRNG (`TaskId::generate`) and stored as canonical 16-hex filenames; FileStore retries collisions up to a bounded attempt limit under `task-id.lock`
 - Task-id CLI resolution is exact-first (canonical hex or legacy decimal), then unique hex-prefix fallback (case-insensitive)
 - Stale index detection via file fingerprint: `Repo::open()` compares task filename + size + nanosecond mtime against stored metadata, auto-rebuilds on mismatch

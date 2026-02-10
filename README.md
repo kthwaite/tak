@@ -122,7 +122,7 @@ Task ID arguments across commands accept canonical hex, unique hex prefixes, and
 | `tak work [start\|status\|stop\|done]` | CLI-native work loop controller (resume/claim, inspect state, stop loop, or finish+release with optional pause) |
 | `tak finish <task-id>` / `tak handoff <task-id>` / `tak cancel <task-id>` | Close, hand off, or cancel execution |
 | `tak reopen <task-id>` / `tak unassign <task-id>` | Reopen or clear assignment |
-| `tak depend` / `tak undepend` / `tak reparent` / `tak orphan` | Manage dependency + parent-child edges |
+| `tak depend` / `tak undepend` / `tak reparent` / `tak orphan` | Manage dependency + parent-child edges (including bulk reparent via `tak reparent <id1,id2,...> --to <parent-id>`) |
 | `tak wait` | Deterministically wait for reservation/path or dependency blockers to clear (`--path` or `--on-task`, optional `--timeout`) |
 | `tak context <task-id>` / `tak log <task-id>` / `tak verify <task-id>` | Task sidecars: notes, history, verification |
 | `tak learn <subcommand>` | Manage learnings + suggestions |
@@ -135,6 +135,18 @@ Task ID arguments across commands accept canonical hex, unique hex prefixes, and
 | `tak delete <task-id>` | Delete task (`--force` to cascade orphan/removal behavior) |
 | `tak reindex` | Rebuild SQLite index from task files |
 | `tak setup` / `tak doctor` | Install/check integrations and environment health |
+
+### Bulk reparent example
+
+```bash
+# Bundle multiple tasks under one parent in a single command
+# (all-or-nothing validation: if any ID is invalid or cyclic, nothing is changed)
+tak reparent 00000000000000a1,00000000000000a2,00000000000000a3 --to 00000000000000ff
+
+# Optional quiet mode for scripts
+# (suppresses mutation output)
+tak reparent 00a1,00a2 --to 00ff --quiet
+```
 
 ### Metrics quick examples
 
