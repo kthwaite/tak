@@ -6,7 +6,7 @@ use serde::Serialize;
 
 use crate::error::{Result, TakError};
 use crate::output::Format;
-use crate::store::mesh::{MeshStore, Reservation};
+use crate::store::mesh::{InboxReadOptions, MeshStore, Reservation};
 use crate::store::paths::{normalize_reservation_path, normalized_paths_conflict};
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -326,9 +326,23 @@ pub fn broadcast(repo_root: &Path, from: &str, text: &str, format: Format) -> Re
     Ok(())
 }
 
-pub fn inbox(repo_root: &Path, name: &str, ack: bool, format: Format) -> Result<()> {
+pub fn inbox(
+    repo_root: &Path,
+    name: &str,
+    ack: bool,
+    ack_ids: Vec<String>,
+    ack_before: Option<&str>,
+    format: Format,
+) -> Result<()> {
     let store = MeshStore::open(&repo_root.join(".tak"));
-    let msgs = store.inbox(name, ack)?;
+    let msgs = store.inbox_with_options(
+        name,
+        InboxReadOptions {
+            ack_all: ack,
+            ack_ids,
+            ack_before: ack_before.map(str::to_string),
+        },
+    )?;
     match format {
         Format::Json => println!("{}", serde_json::to_string(&msgs)?),
         Format::Pretty => {

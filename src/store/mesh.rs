@@ -35,6 +35,12 @@ impl Default for MeshLeaseConfig {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct MeshFeedRetentionConfig {
+    pub max_events: Option<usize>,
+    pub max_age_secs: Option<u64>,
+}
+
 /// A registered agent in the mesh.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Registration {
@@ -66,6 +72,13 @@ pub struct Message {
     pub reply_to: Option<String>,
     #[serde(default, skip_serializing_if = "CoordinationLinks::is_empty")]
     pub links: CoordinationLinks,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct InboxReadOptions {
+    pub ack_all: bool,
+    pub ack_ids: Vec<String>,
+    pub ack_before: Option<String>,
 }
 
 /// A file/path reservation held by an agent.
@@ -144,6 +157,7 @@ impl MeshStore {
         fs::create_dir_all(self.registry_dir())?;
         fs::create_dir_all(self.inbox_dir())?;
         fs::create_dir_all(self.locks_dir())?;
+        fs::create_dir_all(self.inbox_locks_dir())?;
         let res_path = self.reservations_path();
         if !res_path.exists() {
             fs::write(&res_path, "[]")?;
@@ -221,6 +235,44 @@ impl MeshStore {
         cfg
     }
 
+    pub fn feed_retention_config(&self) -> MeshFeedRetentionConfig {
+        let mut cfg = MeshFeedRetentionConfig::default();
+        let config_path = self.tak_root_path().join("config.json");
+
+        let Ok(content) = fs::read_to_string(config_path) else {
+            return cfg;
+        };
+
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) else {
+            return cfg;
+        };
+
+        let Some(mesh) = value.get("mesh").and_then(serde_json::Value::as_object) else {
+            return cfg;
+        };
+
+        let nested = mesh
+            .get("feed_retention")
+            .and_then(serde_json::Value::as_object);
+
+        cfg.max_events = first_positive_usize(&[
+            mesh.get("feed_max_events"),
+            mesh.get("feed_retention_max_events"),
+            nested.and_then(|feed| feed.get("max_events")),
+        ]);
+
+        cfg.max_age_secs = first_positive_u64_optional(&[
+            mesh.get("feed_max_age_secs"),
+            mesh.get("feed_max_age_seconds"),
+            mesh.get("feed_retention_max_age_secs"),
+            mesh.get("feed_retention_max_age_seconds"),
+            nested.and_then(|feed| feed.get("max_age_secs")),
+            nested.and_then(|feed| feed.get("max_age_seconds")),
+        ]);
+
+        cfg
+    }
+
     // -- path helpers -------------------------------------------------------
 
     fn registry_dir(&self) -> PathBuf {
@@ -247,8 +299,17 @@ impl MeshStore {
         self.locks_dir().join("registry.lock")
     }
 
-    fn inbox_lock_path(&self) -> PathBuf {
-        self.locks_dir().join("inbox.lock")
+    fn inbox_locks_dir(&self) -> PathBuf {
+        self.locks_dir().join("inbox")
+    }
+
+    fn agent_inbox_lock_path(&self, name: &str) -> PathBuf {
+        self.inbox_locks_dir().join(format!("{name}.lock"))
+    }
+
+    fn acquire_agent_inbox_lock(&self, name: &str) -> crate::error::Result<std::fs::File> {
+        fs::create_dir_all(self.inbox_locks_dir())?;
+        lock::acquire_lock(&self.agent_inbox_lock_path(name))
     }
 
     fn reservations_lock_path(&self) -> PathBuf {
@@ -279,8 +340,91 @@ impl MeshStore {
             .append(true)
             .open(self.feed_path())?;
         file.write_all(line.as_bytes())?;
+
+        // Feed pruning is best-effort to avoid making coordination writes brittle.
+        let _ = self.prune_feed_locked(self.feed_retention_config());
+
         lock::release_lock(lock)?;
         Ok(())
+    }
+
+    fn prune_feed_locked(&self, retention: MeshFeedRetentionConfig) -> crate::error::Result<usize> {
+        if retention.max_events.is_none() && retention.max_age_secs.is_none() {
+            return Ok(0);
+        }
+
+        let path = self.feed_path();
+        if !path.exists() {
+            return Ok(0);
+        }
+
+        let content = fs::read_to_string(&path)?;
+        let lines: Vec<String> = content
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(str::to_string)
+            .collect();
+        if lines.is_empty() {
+            return Ok(0);
+        }
+
+        let now = Utc::now();
+        let cutoff = retention
+            .max_age_secs
+            .map(|secs| now - Duration::seconds(secs as i64));
+
+        let mut retained: Vec<(String, Option<FeedEvent>)> = lines
+            .into_iter()
+            .filter_map(|line| {
+                let parsed = serde_json::from_str::<FeedEvent>(&line).ok();
+                if let (Some(event), Some(cutoff)) = (parsed.as_ref(), cutoff)
+                    && event.ts < cutoff
+                {
+                    return None;
+                }
+                Some((line, parsed))
+            })
+            .collect();
+
+        if let Some(max_events) = retention.max_events {
+            let parsed_indices: Vec<usize> = retained
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, (_, parsed))| parsed.as_ref().map(|_| idx))
+                .collect();
+
+            if parsed_indices.len() > max_events {
+                let to_drop = parsed_indices.len() - max_events;
+                let drop_indices: HashSet<usize> =
+                    parsed_indices.into_iter().take(to_drop).collect();
+                retained = retained
+                    .into_iter()
+                    .enumerate()
+                    .filter_map(|(idx, entry)| (!drop_indices.contains(&idx)).then_some(entry))
+                    .collect();
+            }
+        }
+
+        let pruned_lines: Vec<String> = retained.into_iter().map(|(line, _)| line).collect();
+        let pruned_count = content
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .count()
+            .saturating_sub(pruned_lines.len());
+
+        if pruned_count == 0 {
+            return Ok(0);
+        }
+
+        if pruned_lines.is_empty() {
+            fs::write(path, "")?;
+        } else {
+            let mut rewritten = pruned_lines.join("\n");
+            rewritten.push('\n');
+            fs::write(path, rewritten)?;
+        }
+
+        Ok(pruned_count)
     }
 
     /// Read feed events, optionally limited to the last N.
@@ -429,9 +573,10 @@ impl MeshStore {
         // so the caller can retry after fixing the issue.
         self.remove_agent_reservations_locked(name)?;
 
-        // Remove inbox under inbox lock to avoid races with concurrent send/inbox
+        // Remove inbox under the agent-scoped inbox lock to avoid races
+        // with concurrent send/inbox for this specific agent.
         {
-            let _inbox_lock = lock::acquire_lock(&self.inbox_lock_path())?;
+            let _inbox_lock = self.acquire_agent_inbox_lock(name)?;
             let inbox = self.agent_inbox_dir(name);
             if inbox.exists() {
                 fs::remove_dir_all(&inbox)?;
@@ -736,16 +881,16 @@ impl MeshStore {
         fs::write(&reservations_path, json)?;
         lock::release_lock(reservations_lock)?;
 
-        let inbox_lock = lock::acquire_lock(&self.inbox_lock_path())?;
         let mut removed_inbox_messages = 0usize;
         for name in &removed_agents {
+            let inbox_lock = self.acquire_agent_inbox_lock(name)?;
             let inbox = self.agent_inbox_dir(name);
             removed_inbox_messages += count_inbox_messages(&inbox)?;
             if inbox.exists() {
                 fs::remove_dir_all(inbox)?;
             }
+            lock::release_lock(inbox_lock)?;
         }
-        lock::release_lock(inbox_lock)?;
 
         lock::release_lock(reg_lock)?;
 
@@ -919,7 +1064,7 @@ impl MeshStore {
             return Err(crate::error::TakError::MeshAgentNotFound(to.into()));
         }
 
-        let lock = lock::acquire_lock(&self.inbox_lock_path())?;
+        let lock = self.acquire_agent_inbox_lock(to)?;
 
         let now = Utc::now();
         let msg = Message {
@@ -959,6 +1104,10 @@ impl MeshStore {
     }
 
     /// Broadcast with optional cross-channel linkage metadata.
+    ///
+    /// Best-effort: skips recipients that have left between the agent list
+    /// snapshot and the per-agent send (e.g. concurrent `leave`). Only returns
+    /// an error for failures that indicate a systemic problem (I/O, corruption).
     pub fn broadcast_with_links(
         &self,
         from: &str,
@@ -970,8 +1119,16 @@ impl MeshStore {
         let mut messages = Vec::new();
         for agent in &agents {
             if agent.name != from {
-                let msg = self.send_with_links(from, &agent.name, text, None, links.clone())?;
-                messages.push(msg);
+                match self.send_with_links(from, &agent.name, text, None, links.clone()) {
+                    Ok(msg) => messages.push(msg),
+                    // Agent left between list_agents and send — expected race.
+                    Err(crate::error::TakError::MeshAgentNotFound(_)) => continue,
+                    // Lock contention — agent's inbox is busy, skip rather than
+                    // fail the entire broadcast.
+                    Err(crate::error::TakError::Locked(_)) => continue,
+                    // Systemic failure — propagate.
+                    Err(e) => return Err(e),
+                }
             }
         }
         Ok(messages)
@@ -979,16 +1136,35 @@ impl MeshStore {
 
     /// Read inbox messages for an agent. If `ack` is true, delete after reading.
     pub fn inbox(&self, name: &str, ack: bool) -> crate::error::Result<Vec<Message>> {
+        self.inbox_with_options(
+            name,
+            InboxReadOptions {
+                ack_all: ack,
+                ..InboxReadOptions::default()
+            },
+        )
+    }
+
+    /// Read inbox messages for an agent with selective acknowledgement controls.
+    ///
+    /// - `ack_all`: delete all read messages after loading.
+    /// - `ack_ids`: delete only specific message IDs.
+    /// - `ack_before`: delete all messages up to and including this message ID
+    ///   based on inbox timestamp ordering.
+    pub fn inbox_with_options(
+        &self,
+        name: &str,
+        options: InboxReadOptions,
+    ) -> crate::error::Result<Vec<Message>> {
         Self::validate_name(name)?;
         let dir = self.agent_inbox_dir(name);
         if !dir.exists() {
             return Ok(vec![]);
         }
 
-        let lock = lock::acquire_lock(&self.inbox_lock_path())?;
+        let lock = self.acquire_agent_inbox_lock(name)?;
 
-        let mut messages = Vec::new();
-        let mut files = Vec::new();
+        let mut entries: Vec<(Message, PathBuf)> = Vec::new();
         for entry in fs::read_dir(&dir)? {
             let entry = entry?;
             let path = entry.path();
@@ -999,16 +1175,38 @@ impl MeshStore {
             let msg: Message = serde_json::from_str(&content).map_err(|e| {
                 crate::error::TakError::MeshCorruptFile(path.display().to_string(), e.to_string())
             })?;
-            files.push(path.clone());
-            messages.push(msg);
+            entries.push((msg, path));
         }
 
-        // Sort by timestamp
-        messages.sort_by_key(|m| m.timestamp);
+        // Sort by timestamp then id for deterministic ordering.
+        entries
+            .sort_by(|(a, _), (b, _)| a.timestamp.cmp(&b.timestamp).then_with(|| a.id.cmp(&b.id)));
 
-        if ack {
-            for path in &files {
-                let _ = fs::remove_file(path);
+        let messages: Vec<Message> = entries.iter().map(|(msg, _)| msg.clone()).collect();
+
+        if options.ack_all || !options.ack_ids.is_empty() || options.ack_before.is_some() {
+            let ack_ids: HashSet<String> = options
+                .ack_ids
+                .iter()
+                .map(|id| id.trim())
+                .filter(|id| !id.is_empty())
+                .map(str::to_string)
+                .collect();
+
+            let ack_before_idx = options
+                .ack_before
+                .as_deref()
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+                .and_then(|target| entries.iter().position(|(msg, _)| msg.id == target));
+
+            for (idx, (msg, path)) in entries.iter().enumerate() {
+                let should_ack = options.ack_all
+                    || ack_ids.contains(&msg.id)
+                    || ack_before_idx.is_some_and(|limit| idx <= limit);
+                if should_ack {
+                    let _ = fs::remove_file(path);
+                }
             }
         }
 
@@ -1272,12 +1470,19 @@ impl MeshStore {
 // ---------------------------------------------------------------------------
 
 fn first_positive_u64(values: &[Option<&serde_json::Value>], default_value: u64) -> u64 {
+    first_positive_u64_optional(values).unwrap_or(default_value)
+}
+
+fn first_positive_u64_optional(values: &[Option<&serde_json::Value>]) -> Option<u64> {
     values
         .iter()
         .flatten()
         .find_map(|v| v.as_u64())
         .filter(|v| *v > 0)
-        .unwrap_or(default_value)
+}
+
+fn first_positive_usize(values: &[Option<&serde_json::Value>]) -> Option<usize> {
+    first_positive_u64_optional(values).and_then(|value| usize::try_from(value).ok())
 }
 
 fn local_host_name() -> Option<String> {
@@ -1670,6 +1875,54 @@ mod tests {
     }
 
     #[test]
+    fn feed_retention_config_defaults_to_unbounded() {
+        let (_dir, store) = setup_mesh();
+        let cfg = store.feed_retention_config();
+        assert_eq!(cfg, MeshFeedRetentionConfig::default());
+    }
+
+    #[test]
+    fn feed_retention_config_reads_nested_and_alias_fields() {
+        let dir = tempdir().unwrap();
+        let tak_root = dir.path().join(".tak");
+        fs::create_dir_all(&tak_root).unwrap();
+        fs::write(
+            tak_root.join("config.json"),
+            r#"{
+  "version": 2,
+  "mesh": {
+    "feed_retention": {
+      "max_events": 7,
+      "max_age_seconds": 300
+    }
+  }
+}"#,
+        )
+        .unwrap();
+
+        let mesh = MeshStore::open(&tak_root);
+        let cfg = mesh.feed_retention_config();
+        assert_eq!(cfg.max_events, Some(7));
+        assert_eq!(cfg.max_age_secs, Some(300));
+
+        fs::write(
+            tak_root.join("config.json"),
+            r#"{
+  "version": 2,
+  "mesh": {
+    "feed_retention_max_events": 5,
+    "feed_max_age_secs": 90
+  }
+}"#,
+        )
+        .unwrap();
+
+        let cfg2 = mesh.feed_retention_config();
+        assert_eq!(cfg2.max_events, Some(5));
+        assert_eq!(cfg2.max_age_secs, Some(90));
+    }
+
+    #[test]
     fn feed_append_and_read() {
         let (_dir, store) = setup_mesh();
         let evt1 = FeedEvent {
@@ -1698,6 +1951,181 @@ mod tests {
         let last = store.read_feed(Some(1)).unwrap();
         assert_eq!(last.len(), 1);
         assert_eq!(last[0].agent, "B");
+    }
+
+    #[test]
+    fn feed_prunes_to_max_events_when_configured() {
+        let dir = tempdir().unwrap();
+        let tak_root = dir.path().join(".tak");
+        fs::create_dir_all(&tak_root).unwrap();
+        fs::write(
+            tak_root.join("config.json"),
+            r#"{
+  "version": 2,
+  "mesh": {
+    "feed_retention": {
+      "max_events": 2
+    }
+  }
+}"#,
+        )
+        .unwrap();
+
+        let store = MeshStore::open(&tak_root);
+        store.ensure_dirs().unwrap();
+
+        store
+            .append_feed(&FeedEvent {
+                ts: Utc::now(),
+                agent: "A".into(),
+                event_type: "mesh.join".into(),
+                target: None,
+                preview: None,
+            })
+            .unwrap();
+        store
+            .append_feed(&FeedEvent {
+                ts: Utc::now(),
+                agent: "B".into(),
+                event_type: "mesh.join".into(),
+                target: None,
+                preview: None,
+            })
+            .unwrap();
+        store
+            .append_feed(&FeedEvent {
+                ts: Utc::now(),
+                agent: "C".into(),
+                event_type: "mesh.join".into(),
+                target: None,
+                preview: None,
+            })
+            .unwrap();
+
+        let events = store.read_feed(None).unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].agent, "B");
+        assert_eq!(events[1].agent, "C");
+    }
+
+    #[test]
+    fn feed_pruning_preserves_malformed_lines() {
+        let dir = tempdir().unwrap();
+        let tak_root = dir.path().join(".tak");
+        fs::create_dir_all(&tak_root).unwrap();
+        fs::write(
+            tak_root.join("config.json"),
+            r#"{
+  "version": 2,
+  "mesh": {
+    "feed_retention": {
+      "max_events": 1
+    }
+  }
+}"#,
+        )
+        .unwrap();
+
+        let store = MeshStore::open(&tak_root);
+        store.ensure_dirs().unwrap();
+
+        let e1 = FeedEvent {
+            ts: Utc::now() - Duration::seconds(2),
+            agent: "A".into(),
+            event_type: "mesh.join".into(),
+            target: None,
+            preview: None,
+        };
+        let e2 = FeedEvent {
+            ts: Utc::now() - Duration::seconds(1),
+            agent: "B".into(),
+            event_type: "mesh.join".into(),
+            target: None,
+            preview: None,
+        };
+
+        let seed = format!(
+            "NOT VALID JSON\n{}\n{}\n",
+            serde_json::to_string(&e1).unwrap(),
+            serde_json::to_string(&e2).unwrap()
+        );
+        fs::write(store.feed_path(), seed).unwrap();
+
+        store
+            .append_feed(&FeedEvent {
+                ts: Utc::now(),
+                agent: "C".into(),
+                event_type: "mesh.join".into(),
+                target: None,
+                preview: None,
+            })
+            .unwrap();
+
+        let raw = fs::read_to_string(store.feed_path()).unwrap();
+        assert!(raw.contains("NOT VALID JSON"));
+
+        let events = store.read_feed(None).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].agent, "C");
+    }
+
+    #[test]
+    fn feed_prunes_events_older_than_max_age_when_configured() {
+        let dir = tempdir().unwrap();
+        let tak_root = dir.path().join(".tak");
+        fs::create_dir_all(&tak_root).unwrap();
+        fs::write(
+            tak_root.join("config.json"),
+            r#"{
+  "version": 2,
+  "mesh": {
+    "feed_retention": {
+      "max_age_secs": 60
+    }
+  }
+}"#,
+        )
+        .unwrap();
+
+        let store = MeshStore::open(&tak_root);
+        store.ensure_dirs().unwrap();
+
+        let old = FeedEvent {
+            ts: Utc::now() - Duration::seconds(120),
+            agent: "old".into(),
+            event_type: "mesh.join".into(),
+            target: None,
+            preview: None,
+        };
+        let recent = FeedEvent {
+            ts: Utc::now() - Duration::seconds(10),
+            agent: "recent".into(),
+            event_type: "mesh.join".into(),
+            target: None,
+            preview: None,
+        };
+
+        let seed = format!(
+            "{}\n{}\n",
+            serde_json::to_string(&old).unwrap(),
+            serde_json::to_string(&recent).unwrap()
+        );
+        fs::write(store.feed_path(), seed).unwrap();
+
+        store
+            .append_feed(&FeedEvent {
+                ts: Utc::now(),
+                agent: "new".into(),
+                event_type: "mesh.join".into(),
+                target: None,
+                preview: None,
+            })
+            .unwrap();
+
+        let events = store.read_feed(None).unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].agent, "recent");
+        assert_eq!(events[1].agent, "new");
     }
 
     #[test]
@@ -1959,6 +2387,88 @@ mod tests {
     }
 
     #[test]
+    fn inbox_ack_id_removes_only_selected_messages() {
+        let (_dir, store) = setup_mesh();
+        store.join(Some("sender"), None).unwrap();
+        store.join(Some("receiver"), None).unwrap();
+
+        let msg1 = store.send("sender", "receiver", "one", None).unwrap();
+        let msg2 = store.send("sender", "receiver", "two", None).unwrap();
+        let msg3 = store.send("sender", "receiver", "three", None).unwrap();
+
+        let read = store
+            .inbox_with_options(
+                "receiver",
+                InboxReadOptions {
+                    ack_ids: vec![msg2.id.clone()],
+                    ..InboxReadOptions::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(read.len(), 3);
+
+        let remaining = store.inbox("receiver", false).unwrap();
+        assert_eq!(remaining.len(), 2);
+        assert!(remaining.iter().any(|m| m.id == msg1.id));
+        assert!(!remaining.iter().any(|m| m.id == msg2.id));
+        assert!(remaining.iter().any(|m| m.id == msg3.id));
+    }
+
+    #[test]
+    fn inbox_ack_before_removes_prefix_in_timestamp_order() {
+        let (_dir, store) = setup_mesh();
+        store.join(Some("sender"), None).unwrap();
+        store.join(Some("receiver"), None).unwrap();
+
+        store.send("sender", "receiver", "one", None).unwrap();
+        store.send("sender", "receiver", "two", None).unwrap();
+        store.send("sender", "receiver", "three", None).unwrap();
+
+        let baseline = store.inbox("receiver", false).unwrap();
+        assert_eq!(baseline.len(), 3);
+        let anchor = baseline[1].id.clone();
+
+        let _ = store
+            .inbox_with_options(
+                "receiver",
+                InboxReadOptions {
+                    ack_before: Some(anchor),
+                    ..InboxReadOptions::default()
+                },
+            )
+            .unwrap();
+
+        let remaining = store.inbox("receiver", false).unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].id, baseline[2].id);
+    }
+
+    #[test]
+    fn inbox_lock_is_scoped_per_agent() {
+        let (_dir, store) = setup_mesh();
+        store.join(Some("sender"), None).unwrap();
+        store.join(Some("A"), None).unwrap();
+        store.join(Some("B"), None).unwrap();
+
+        let held = store.acquire_agent_inbox_lock("A").unwrap();
+
+        store.send("sender", "B", "hello-b", None).unwrap();
+        let b_inbox = store.inbox("B", false).unwrap();
+        assert_eq!(b_inbox.len(), 1);
+        assert_eq!(b_inbox[0].text, "hello-b");
+
+        let err = store.send("sender", "A", "hello-a", None).unwrap_err();
+        assert!(matches!(err, crate::error::TakError::Locked(_)));
+
+        lock::release_lock(held).unwrap();
+
+        store.send("sender", "A", "hello-a", None).unwrap();
+        let a_inbox = store.inbox("A", false).unwrap();
+        assert_eq!(a_inbox.len(), 1);
+        assert_eq!(a_inbox[0].text, "hello-a");
+    }
+
+    #[test]
     fn send_with_links_normalizes_and_persists_cross_channel_ids() {
         let (_dir, store) = setup_mesh();
         store.join(Some("sender"), None).unwrap();
@@ -2016,6 +2526,28 @@ mod tests {
         // A should have no messages
         let a_inbox = store.inbox("A", false).unwrap();
         assert!(a_inbox.is_empty());
+    }
+
+    #[test]
+    fn broadcast_skips_agent_that_left_during_send() {
+        let (_dir, store) = setup_mesh();
+        store.join(Some("A"), None).unwrap();
+        store.join(Some("B"), None).unwrap();
+        store.join(Some("C"), None).unwrap();
+
+        // Simulate B leaving after list_agents but before send — remove its
+        // registration and inbox so send_with_links sees MeshAgentNotFound.
+        fs::remove_file(store.registration_path("B")).unwrap();
+        fs::remove_dir_all(store.agent_inbox_dir("B")).unwrap();
+
+        let msgs = store.broadcast("A", "hello").unwrap();
+        // Only C should have received the message
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].to, "C");
+
+        let c_inbox = store.inbox("C", false).unwrap();
+        assert_eq!(c_inbox.len(), 1);
+        assert_eq!(c_inbox[0].text, "hello");
     }
 
     #[test]

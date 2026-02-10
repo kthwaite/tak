@@ -515,9 +515,15 @@ enum MeshAction {
         /// Agent name
         #[arg(long)]
         name: String,
-        /// Acknowledge (delete) messages after reading
-        #[arg(long)]
+        /// Acknowledge (delete) all messages after reading
+        #[arg(long, conflicts_with_all = ["ack_ids", "ack_before"])]
         ack: bool,
+        /// Acknowledge specific message IDs (repeatable)
+        #[arg(long = "ack-id", value_name = "ID", conflicts_with = "ack")]
+        ack_ids: Vec<String>,
+        /// Acknowledge all messages up to and including this message ID
+        #[arg(long = "ack-before", value_name = "ID", conflicts_with = "ack")]
+        ack_before: Option<String>,
     },
     /// Refresh registration and reservation lease liveness metadata
     Heartbeat {
@@ -1093,9 +1099,19 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
                     apply_coordination_verbosity_label(&message, effective, verbosity.is_some());
                 tak::commands::mesh::broadcast(&root, &from, &message, format)
             }
-            MeshAction::Inbox { name, ack } => {
-                tak::commands::mesh::inbox(&root, &name, ack, format)
-            }
+            MeshAction::Inbox {
+                name,
+                ack,
+                ack_ids,
+                ack_before,
+            } => tak::commands::mesh::inbox(
+                &root,
+                &name,
+                ack,
+                ack_ids,
+                ack_before.as_deref(),
+                format,
+            ),
             MeshAction::Heartbeat { name, session_id } => tak::commands::mesh::heartbeat(
                 &root,
                 name.as_deref(),
@@ -1458,6 +1474,50 @@ mod tests {
             }
             _ => panic!("expected mesh send command"),
         }
+    }
+
+    #[test]
+    fn parse_mesh_inbox_selective_ack_flags() {
+        let cli = Cli::parse_from([
+            "tak",
+            "mesh",
+            "inbox",
+            "--name",
+            "agent-1",
+            "--ack-id",
+            "msg-1",
+            "--ack-id",
+            "msg-2",
+            "--ack-before",
+            "msg-9",
+        ]);
+
+        match cli.command {
+            Commands::Mesh {
+                action:
+                    MeshAction::Inbox {
+                        name,
+                        ack,
+                        ack_ids,
+                        ack_before,
+                    },
+            } => {
+                assert_eq!(name, "agent-1");
+                assert!(!ack);
+                assert_eq!(ack_ids, vec!["msg-1", "msg-2"]);
+                assert_eq!(ack_before.as_deref(), Some("msg-9"));
+            }
+            _ => panic!("expected mesh inbox command"),
+        }
+    }
+
+    #[test]
+    fn parse_mesh_inbox_bulk_ack_conflicts_with_selective_flags() {
+        let result = Cli::try_parse_from([
+            "tak", "mesh", "inbox", "--name", "agent-1", "--ack", "--ack-id", "msg-1",
+        ]);
+
+        assert!(result.is_err());
     }
 
     #[test]
