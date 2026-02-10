@@ -22,6 +22,7 @@ pub enum Kind {
     #[default]
     Task,
     Bug,
+    Meta,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
@@ -349,6 +350,7 @@ impl std::fmt::Display for Kind {
             Self::Feature => write!(f, "feature"),
             Self::Task => write!(f, "task"),
             Self::Bug => write!(f, "bug"),
+            Self::Meta => write!(f, "meta"),
         }
     }
 }
@@ -413,6 +415,12 @@ mod tests {
     fn kind_feature_serializes_snake_case() {
         let json = serde_json::to_string(&Kind::Feature).unwrap();
         assert_eq!(json, r#""feature""#);
+    }
+
+    #[test]
+    fn kind_meta_serializes_snake_case() {
+        let json = serde_json::to_string(&Kind::Meta).unwrap();
+        assert_eq!(json, r#""meta""#);
     }
 
     #[test]

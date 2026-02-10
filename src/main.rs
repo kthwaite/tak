@@ -1292,6 +1292,44 @@ mod tests {
     }
 
     #[test]
+    fn parse_create_kind_meta() {
+        let cli = Cli::parse_from(["tak", "create", "Meta task", "--kind", "meta"]);
+
+        match cli.command {
+            Commands::Create { title, kind, .. } => {
+                assert_eq!(title, "Meta task");
+                assert_eq!(kind, Kind::Meta);
+            }
+            _ => panic!("expected create command"),
+        }
+    }
+
+    #[test]
+    fn parse_edit_kind_meta() {
+        let cli = Cli::parse_from(["tak", "edit", "42", "--kind", "meta"]);
+
+        match cli.command {
+            Commands::Edit { id, kind, .. } => {
+                assert_eq!(id, "42");
+                assert_eq!(kind, Some(Kind::Meta));
+            }
+            _ => panic!("expected edit command"),
+        }
+    }
+
+    #[test]
+    fn parse_list_kind_meta() {
+        let cli = Cli::parse_from(["tak", "list", "--kind", "meta"]);
+
+        match cli.command {
+            Commands::List { kind, .. } => {
+                assert_eq!(kind, Some(Kind::Meta));
+            }
+            _ => panic!("expected list command"),
+        }
+    }
+
+    #[test]
     fn parse_blackboard_post_template_flag() {
         let cli = Cli::parse_from([
             "tak",
