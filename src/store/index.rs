@@ -326,6 +326,20 @@ impl Index {
         Ok(ids)
     }
 
+    /// Return IDs filtered by exact task kind string as stored in SQLite.
+    ///
+    /// This is intentionally string-based so index-level filtering remains
+    /// forward-compatible with newly introduced kinds.
+    pub fn ids_by_kind(&self, kind: &str) -> Result<Vec<TaskId>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id FROM tasks WHERE kind = ?1 ORDER BY id")?;
+        let ids = stmt
+            .query_map(params![kind], |row| row.get(0))?
+            .collect::<std::result::Result<Vec<TaskId>, _>>()?;
+        Ok(ids)
+    }
+
     pub fn would_cycle(
         &self,
         task_id: impl Into<TaskId>,
@@ -831,6 +845,28 @@ mod tests {
         assert_eq!(idx.roots().unwrap(), tids(&[1, 4]));
         assert_eq!(idx.children_of(1).unwrap(), tids(&[2, 3]));
         assert_eq!(idx.children_of(4).unwrap(), Vec::<TaskId>::new());
+    }
+
+    #[test]
+    fn ids_by_kind_supports_meta_rows_without_regressing_availability_queries() {
+        let idx = Index::open_memory().unwrap();
+
+        let mut t1 = make_task(1, Status::Pending, vec![], None);
+        let mut t2 = make_task(2, Status::Pending, vec![], None);
+        t2.kind = Kind::Meta;
+
+        idx.rebuild(&[t1.clone(), t2]).unwrap();
+        assert_eq!(idx.ids_by_kind("meta").unwrap(), tids(&[2]));
+        assert_eq!(idx.ids_by_kind("task").unwrap(), tids(&[1]));
+        assert!(idx.ids_by_kind("Meta").unwrap().is_empty());
+
+        // Verify upsert also persists kind changes.
+        t1.kind = Kind::Meta;
+        idx.upsert(&t1).unwrap();
+        assert_eq!(idx.ids_by_kind("meta").unwrap(), tids(&[1, 2]));
+
+        // Availability ordering/query semantics should stay intact regardless of kind label.
+        assert_eq!(idx.available(None).unwrap(), tids(&[1, 2]));
     }
 
     #[test]
