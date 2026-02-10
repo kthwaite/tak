@@ -1,14 +1,14 @@
 use colored::Colorize;
 
 use crate::error::Result;
-use crate::model::Task;
+use crate::model::{Status, Task};
 use crate::output::{Format, truncate_title};
 use crate::store::repo::Repo;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 struct TreeNode {
     id: u64,
     title: String,
@@ -16,6 +16,36 @@ struct TreeNode {
     status: String,
     blocked: bool,
     children: Vec<TreeNode>,
+}
+
+fn collect_tasks(all_tasks: Vec<Task>, pending_only: bool) -> HashMap<u64, Task> {
+    all_tasks
+        .into_iter()
+        .filter(|task| !pending_only || task.status == Status::Pending)
+        .map(|task| (task.id, task))
+        .collect()
+}
+
+fn build_children_map(
+    tasks: &HashMap<u64, Task>,
+    pending_only: bool,
+) -> HashMap<Option<u64>, Vec<u64>> {
+    let mut children_map: HashMap<Option<u64>, Vec<u64>> = HashMap::new();
+    for task in tasks.values() {
+        let parent = if pending_only {
+            task.parent.filter(|pid| tasks.contains_key(pid))
+        } else {
+            task.parent
+        };
+        children_map.entry(parent).or_default().push(task.id);
+    }
+
+    // Sort children by ID for deterministic output
+    for children in children_map.values_mut() {
+        children.sort();
+    }
+
+    children_map
 }
 
 fn build_tree(
@@ -100,23 +130,16 @@ fn print_tree_minimal(node: &TreeNode, depth: usize) {
     }
 }
 
-pub fn run(repo_root: &Path, id: Option<u64>, format: Format) -> Result<()> {
+pub fn run(repo_root: &Path, id: Option<u64>, pending_only: bool, format: Format) -> Result<()> {
     let repo = Repo::open(repo_root)?;
     let blocked_ids: HashSet<u64> = repo.index.blocked()?.iter().map(u64::from).collect();
 
     // Pre-load all tasks into memory (one pass over files)
     let all_tasks = repo.store.list_all()?;
-    let tasks: HashMap<u64, Task> = all_tasks.into_iter().map(|t| (t.id, t)).collect();
+    let tasks = collect_tasks(all_tasks, pending_only);
 
     // Build parent→children index in memory
-    let mut children_map: HashMap<Option<u64>, Vec<u64>> = HashMap::new();
-    for task in tasks.values() {
-        children_map.entry(task.parent).or_default().push(task.id);
-    }
-    // Sort children by ID for deterministic output
-    for children in children_map.values_mut() {
-        children.sort();
-    }
+    let children_map = build_children_map(&tasks, pending_only);
 
     if let Some(root_id) = id {
         if let Some(tree) = build_tree(root_id, &children_map, &tasks, &blocked_ids) {
@@ -150,4 +173,96 @@ pub fn run(repo_root: &Path, id: Option<u64>, format: Format) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::Kind;
+    use chrono::Utc;
+
+    fn task(id: u64, status: Status, parent: Option<u64>) -> Task {
+        let now = Utc::now();
+        Task {
+            id,
+            title: format!("task-{id}"),
+            description: None,
+            status,
+            kind: Kind::Task,
+            parent,
+            depends_on: vec![],
+            assignee: None,
+            tags: vec![],
+            contract: crate::model::Contract::default(),
+            planning: crate::model::Planning::default(),
+            git: crate::model::GitInfo::default(),
+            execution: crate::model::Execution::default(),
+            learnings: vec![],
+            created_at: now,
+            updated_at: now,
+            extensions: serde_json::Map::new(),
+        }
+    }
+
+    #[test]
+    fn pending_filter_promotes_children_of_non_pending_parents_to_roots() {
+        let tasks = vec![
+            task(1, Status::Done, None),
+            task(2, Status::Pending, Some(1)),
+            task(3, Status::Pending, Some(2)),
+            task(4, Status::Pending, None),
+        ];
+
+        let filtered = collect_tasks(tasks, true);
+        let children_map = build_children_map(&filtered, true);
+        let roots = children_map.get(&None).cloned().unwrap_or_default();
+        assert_eq!(roots, vec![2, 4]);
+
+        let tree = build_tree(2, &children_map, &filtered, &HashSet::new()).unwrap();
+        let child_ids: Vec<u64> = tree.children.iter().map(|child| child.id).collect();
+        assert_eq!(child_ids, vec![3]);
+    }
+
+    #[test]
+    fn rooted_pending_tree_omits_non_pending_children() {
+        let tasks = vec![
+            task(10, Status::Pending, None),
+            task(11, Status::Done, Some(10)),
+            task(12, Status::Pending, Some(10)),
+        ];
+
+        let filtered = collect_tasks(tasks, true);
+        let children_map = build_children_map(&filtered, true);
+
+        let tree = build_tree(10, &children_map, &filtered, &HashSet::new()).unwrap();
+        let child_ids: Vec<u64> = tree.children.iter().map(|child| child.id).collect();
+        assert_eq!(child_ids, vec![12]);
+    }
+
+    #[test]
+    fn rooted_pending_tree_for_non_pending_root_is_empty() {
+        let tasks = vec![
+            task(1, Status::Done, None),
+            task(2, Status::Pending, Some(1)),
+        ];
+
+        let filtered = collect_tasks(tasks, true);
+        let children_map = build_children_map(&filtered, true);
+
+        assert!(build_tree(1, &children_map, &filtered, &HashSet::new()).is_none());
+    }
+
+    #[test]
+    fn non_pending_tree_keeps_original_parent_links() {
+        let tasks = vec![
+            task(1, Status::Done, None),
+            task(2, Status::Pending, Some(1)),
+        ];
+
+        let unfiltered = collect_tasks(tasks, false);
+        let children_map = build_children_map(&unfiltered, false);
+        let roots = children_map.get(&None).cloned().unwrap_or_default();
+
+        assert_eq!(roots, vec![1]);
+    }
 }

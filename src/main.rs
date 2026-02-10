@@ -239,6 +239,9 @@ enum Commands {
     Tree {
         /// Root task ID (omit for full tree)
         id: Option<String>,
+        /// Show only pending tasks
+        #[arg(long)]
+        pending: bool,
     },
     /// Show the next available task without claiming it
     Next {
@@ -791,9 +794,12 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
         Commands::Orphan { id } => {
             tak::commands::deps::orphan(&root, resolve_task_id_arg(&root, id)?, format)
         }
-        Commands::Tree { id } => {
-            tak::commands::tree::run(&root, resolve_optional_task_id_arg(&root, id)?, format)
-        }
+        Commands::Tree { id, pending } => tak::commands::tree::run(
+            &root,
+            resolve_optional_task_id_arg(&root, id)?,
+            pending,
+            format,
+        ),
         Commands::Next { assignee } => tak::commands::next::run(&root, assignee, format),
         Commands::Verify { id } => {
             tak::commands::verify::run(&root, resolve_task_id_arg(&root, id)?, format)
@@ -983,6 +989,18 @@ mod tests {
 
         let err = resolve_task_id_arg(dir.path(), "00000000000000".into()).unwrap_err();
         assert!(matches!(err, TakError::TaskIdAmbiguous(_, _)));
+    }
+
+    #[test]
+    fn parse_tree_pending_flag() {
+        let cli = Cli::parse_from(["tak", "tree", "--pending"]);
+        match cli.command {
+            Commands::Tree { id, pending } => {
+                assert!(id.is_none());
+                assert!(pending);
+            }
+            _ => panic!("expected tree command"),
+        }
     }
 }
 
