@@ -24,8 +24,39 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Initialize a new .tak/ directory in the current repository
-    Init,
+    /// Shared coordination blackboard
+    Blackboard {
+        #[command(subcommand)]
+        action: BlackboardAction,
+    },
+    /// Set a task to cancelled
+    Cancel {
+        /// Task ID to cancel
+        id: String,
+        /// Reason for cancellation (recorded as last_error)
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    /// Atomically find and start the next available task
+    Claim {
+        /// Who is claiming the task (default: $TAK_AGENT, then auto-generated)
+        #[arg(long)]
+        assignee: Option<String>,
+        /// Only claim tasks with this tag
+        #[arg(long)]
+        tag: Option<String>,
+    },
+    /// Read or write context notes for a task
+    Context {
+        /// Task ID
+        id: String,
+        /// Set context text (overwrites existing)
+        #[arg(long)]
+        set: Option<String>,
+        /// Clear context notes
+        #[arg(long, conflicts_with = "set")]
+        clear: bool,
+    },
     /// Create a new task
     Create {
         /// Task title
@@ -78,37 +109,25 @@ enum Commands {
         #[arg(long)]
         force: bool,
     },
-    /// Display a single task
-    Show {
-        /// Task ID to show
+    /// Add dependency edges (task cannot start until deps are done)
+    Depend {
+        /// Task ID that will gain dependencies
         id: String,
+        /// IDs of tasks it depends on (comma-separated)
+        #[arg(long, required = true, value_delimiter = ',')]
+        on: Vec<String>,
+        /// Dependency type (hard or soft)
+        #[arg(long, value_enum)]
+        dep_type: Option<DepType>,
+        /// Reason for the dependency
+        #[arg(long)]
+        reason: Option<String>,
     },
-    /// List and filter tasks
-    List {
-        /// Filter by status
-        #[arg(long, value_enum)]
-        status: Option<Status>,
-        /// Filter by kind
-        #[arg(long, value_enum)]
-        kind: Option<Kind>,
-        /// Filter by tag
+    /// Validate tak installation and report issues
+    Doctor {
+        /// Auto-fix what can be fixed (reindex if stale, etc.)
         #[arg(long)]
-        tag: Option<String>,
-        /// Filter by assignee
-        #[arg(long)]
-        assignee: Option<String>,
-        /// Show only available tasks (pending, unblocked, unassigned)
-        #[arg(long, conflicts_with = "blocked")]
-        available: bool,
-        /// Show only blocked tasks
-        #[arg(long, conflicts_with = "available")]
-        blocked: bool,
-        /// Show only children of this task ID
-        #[arg(long)]
-        children_of: Option<String>,
-        /// Filter by priority
-        #[arg(long, value_enum)]
-        priority: Option<Priority>,
+        fix: bool,
     },
     /// Edit task fields
     Edit {
@@ -154,26 +173,10 @@ enum Commands {
         #[arg(long)]
         pr: Option<String>,
     },
-    /// Set a task to in_progress
-    Start {
-        /// Task ID to start
-        id: String,
-        /// Who is working on it
-        #[arg(long)]
-        assignee: Option<String>,
-    },
     /// Set a task to done
     Finish {
         /// Task ID to finish
         id: String,
-    },
-    /// Set a task to cancelled
-    Cancel {
-        /// Task ID to cancel
-        id: String,
-        /// Reason for cancellation (recorded as last_error)
-        #[arg(long)]
-        reason: Option<String>,
     },
     /// Hand off an in-progress task back to pending for another agent
     Handoff {
@@ -186,46 +189,82 @@ enum Commands {
         #[arg(long, value_enum)]
         verbosity: Option<WorkCoordinationVerbosity>,
     },
-    /// Atomically find and start the next available task
-    Claim {
-        /// Who is claiming the task (default: $TAK_AGENT, then auto-generated)
-        #[arg(long)]
-        assignee: Option<String>,
-        /// Only claim tasks with this tag
+    /// Initialize a new .tak/ directory in the current repository
+    Init,
+    /// Manage learnings (add, list, show, edit, remove, suggest)
+    Learn {
+        #[command(subcommand)]
+        action: LearnAction,
+    },
+    /// List and filter tasks
+    List {
+        /// Filter by status
+        #[arg(long, value_enum)]
+        status: Option<Status>,
+        /// Filter by kind
+        #[arg(long, value_enum)]
+        kind: Option<Kind>,
+        /// Filter by tag
         #[arg(long)]
         tag: Option<String>,
+        /// Filter by assignee
+        #[arg(long)]
+        assignee: Option<String>,
+        /// Show only available tasks (pending, unblocked, unassigned)
+        #[arg(long, conflicts_with = "blocked")]
+        available: bool,
+        /// Show only blocked tasks
+        #[arg(long, conflicts_with = "available")]
+        blocked: bool,
+        /// Show only children of this task ID
+        #[arg(long)]
+        children_of: Option<String>,
+        /// Filter by priority
+        #[arg(long, value_enum)]
+        priority: Option<Priority>,
     },
+    /// Display history log for a task
+    Log {
+        /// Task ID
+        id: String,
+    },
+    /// Multi-agent coordination mesh
+    Mesh {
+        #[command(subcommand)]
+        action: MeshAction,
+    },
+    /// Migrate task IDs (legacy numeric filename migration and optional random re-key)
+    MigrateIds {
+        /// Preview migration preflight (default when --apply is not provided)
+        #[arg(long, conflicts_with = "apply")]
+        dry_run: bool,
+        /// Apply migration changes
+        #[arg(long, conflicts_with = "dry_run")]
+        apply: bool,
+        /// Re-key all task IDs to fresh random IDs (works on already-canonical repos)
+        #[arg(long)]
+        rekey_random: bool,
+        /// Skip in-progress task safety gate
+        #[arg(long)]
+        force: bool,
+    },
+    /// Show the next available task without claiming it
+    Next {
+        /// Include tasks assigned to this person
+        #[arg(long)]
+        assignee: Option<String>,
+    },
+    /// Remove a task's parent (make it a root task)
+    Orphan {
+        /// Task ID to orphan
+        id: String,
+    },
+    /// Rebuild the SQLite index from task files
+    Reindex,
     /// Reopen a done or cancelled task back to pending
     Reopen {
         /// Task ID to reopen
         id: String,
-    },
-    /// Clear a task's assignee without changing status
-    Unassign {
-        /// Task ID to unassign
-        id: String,
-    },
-    /// Add dependency edges (task cannot start until deps are done)
-    Depend {
-        /// Task ID that will gain dependencies
-        id: String,
-        /// IDs of tasks it depends on (comma-separated)
-        #[arg(long, required = true, value_delimiter = ',')]
-        on: Vec<String>,
-        /// Dependency type (hard or soft)
-        #[arg(long, value_enum)]
-        dep_type: Option<DepType>,
-        /// Reason for the dependency
-        #[arg(long)]
-        reason: Option<String>,
-    },
-    /// Remove dependency edges
-    Undepend {
-        /// Task ID to remove dependencies from
-        id: String,
-        /// IDs of dependencies to remove (comma-separated)
-        #[arg(long, required = true, value_delimiter = ',')]
-        on: Vec<String>,
     },
     /// Change a task's parent
     Reparent {
@@ -235,10 +274,44 @@ enum Commands {
         #[arg(long, required = true)]
         to: String,
     },
-    /// Remove a task's parent (make it a root task)
-    Orphan {
-        /// Task ID to orphan
+    /// Install agent integrations (Claude hooks; optional Claude plugin/skills and pi integration)
+    Setup {
+        /// Write to ~/.claude/settings.json instead of .claude/settings.local.json
+        #[arg(long)]
+        global: bool,
+        /// Verify installation status, exit 0/1
+        #[arg(long)]
+        check: bool,
+        /// Remove tak hooks from settings
+        #[arg(long)]
+        remove: bool,
+        /// Also write the full Claude plugin directory to .claude/plugins/tak
+        #[arg(long)]
+        plugin: bool,
+        /// Install Claude skills under .claude/skills/ (use alone for skills-only setup)
+        #[arg(long)]
+        skills: bool,
+        /// Also install pi integration (extension, skill, and APPEND_SYSTEM block)
+        #[arg(long)]
+        pi: bool,
+    },
+    /// Display a single task
+    Show {
+        /// Task ID to show
         id: String,
+    },
+    /// Set a task to in_progress
+    Start {
+        /// Task ID to start
+        id: String,
+        /// Who is working on it
+        #[arg(long)]
+        assignee: Option<String>,
+    },
+    /// Diagnose /tak workflow friction and record therapist observations
+    Therapist {
+        #[command(subcommand)]
+        action: TherapistAction,
     },
     /// Display the parent-child task hierarchy
     Tree {
@@ -252,11 +325,23 @@ enum Commands {
         #[arg(long)]
         pending: bool,
     },
-    /// Show the next available task without claiming it
-    Next {
-        /// Include tasks assigned to this person
-        #[arg(long)]
-        assignee: Option<String>,
+    /// Clear a task's assignee without changing status
+    Unassign {
+        /// Task ID to unassign
+        id: String,
+    },
+    /// Remove dependency edges
+    Undepend {
+        /// Task ID to remove dependencies from
+        id: String,
+        /// IDs of dependencies to remove (comma-separated)
+        #[arg(long, required = true, value_delimiter = ',')]
+        on: Vec<String>,
+    },
+    /// Run verification commands from task contract
+    Verify {
+        /// Task ID
+        id: String,
     },
     /// Deterministically wait for a path reservation to clear or a task to become unblocked
     Wait {
@@ -297,91 +382,6 @@ enum Commands {
         /// Default coordination verbosity to persist in loop state
         #[arg(long, value_enum)]
         verbosity: Option<WorkCoordinationVerbosity>,
-    },
-    /// Run verification commands from task contract
-    Verify {
-        /// Task ID
-        id: String,
-    },
-    /// Display history log for a task
-    Log {
-        /// Task ID
-        id: String,
-    },
-    /// Read or write context notes for a task
-    Context {
-        /// Task ID
-        id: String,
-        /// Set context text (overwrites existing)
-        #[arg(long)]
-        set: Option<String>,
-        /// Clear context notes
-        #[arg(long, conflicts_with = "set")]
-        clear: bool,
-    },
-    /// Manage learnings (add, list, show, edit, remove, suggest)
-    Learn {
-        #[command(subcommand)]
-        action: LearnAction,
-    },
-    /// Multi-agent coordination mesh
-    Mesh {
-        #[command(subcommand)]
-        action: MeshAction,
-    },
-    /// Shared coordination blackboard
-    Blackboard {
-        #[command(subcommand)]
-        action: BlackboardAction,
-    },
-    /// Diagnose /tak workflow friction and record therapist observations
-    Therapist {
-        #[command(subcommand)]
-        action: TherapistAction,
-    },
-    /// Migrate task IDs (legacy numeric filename migration and optional random re-key)
-    MigrateIds {
-        /// Preview migration preflight (default when --apply is not provided)
-        #[arg(long, conflicts_with = "apply")]
-        dry_run: bool,
-        /// Apply migration changes
-        #[arg(long, conflicts_with = "dry_run")]
-        apply: bool,
-        /// Re-key all task IDs to fresh random IDs (works on already-canonical repos)
-        #[arg(long)]
-        rekey_random: bool,
-        /// Skip in-progress task safety gate
-        #[arg(long)]
-        force: bool,
-    },
-    /// Rebuild the SQLite index from task files
-    Reindex,
-    /// Install agent integrations (Claude hooks; optional Claude plugin/skills and pi integration)
-    Setup {
-        /// Write to ~/.claude/settings.json instead of .claude/settings.local.json
-        #[arg(long)]
-        global: bool,
-        /// Verify installation status, exit 0/1
-        #[arg(long)]
-        check: bool,
-        /// Remove tak hooks from settings
-        #[arg(long)]
-        remove: bool,
-        /// Also write the full Claude plugin directory to .claude/plugins/tak
-        #[arg(long)]
-        plugin: bool,
-        /// Install Claude skills under .claude/skills/ (use alone for skills-only setup)
-        #[arg(long)]
-        skills: bool,
-        /// Also install pi integration (extension, skill, and APPEND_SYSTEM block)
-        #[arg(long)]
-        pi: bool,
-    },
-    /// Validate tak installation and report issues
-    Doctor {
-        /// Auto-fix what can be fixed (reindex if stale, etc.)
-        #[arg(long)]
-        fix: bool,
     },
 }
 
