@@ -51,8 +51,10 @@ Tasks are JSON files in `.tak/tasks/` (the git-committed source of truth). A git
 - **`src/store/mesh.rs`** — `MeshStore`: manages `.tak/runtime/mesh/` — agent registry (join/leave/list), messaging (send/broadcast/inbox), file reservations (reserve/release), activity feed (append/read). Per-domain file locks via `lock.rs`. Auto-generates agent names when omitted.
 - **`src/store/blackboard.rs`** — `BlackboardStore`: shared coordination notes under `.tak/runtime/blackboard/` (`post/list/show/close/reopen`) with tags, task links, and close metadata.
 - **`src/store/therapist.rs`** — `TherapistStore`: append-only workflow observations under `.tak/therapist/observations.jsonl` (`offline`/`online` diagnosis artifacts).
+- **`src/store/work.rs`** — `WorkStore`: per-agent CLI work-loop state under `.tak/runtime/work/` with lock-safe activate/status/deactivate/save flows plus strategy/verbosity metadata.
 - **`src/store/repo.rs`** — `Repo`: wraps FileStore + Index + SidecarStore + LearningStore. Walks up from CWD to find `.tak/`. Auto-rebuilds index on open if missing or stale (file fingerprint mismatch). Also auto-rebuilds learnings index via separate fingerprint.
 - **`src/commands/`** — One file per command group. Most take `&Path` (repo root) and return `Result<()>`. `doctor` doesn't require a repo; `setup` supports global mode anywhere but project-scoped setup requires a git repo root.
+- **`src/commands/work.rs`** — CLI-native work-loop handlers (`start/resume`, `status`, `stop`) with reconciliation events (`continued`/`attached`/`claimed`/`no_work`/`limit_reached`) and format-specific output rendering.
 - **`src/commands/mesh.rs`** — 9 mesh subcommand handlers: join, leave, list, send, broadcast, inbox, reserve, release, feed
 - **`src/commands/blackboard.rs`** — 5 blackboard subcommand handlers: post, list, show, close, reopen
 - **`src/commands/therapist.rs`** — therapist handlers: offline diagnosis, online RPC interview, and observation log listing
@@ -78,6 +80,7 @@ For task-taking commands, `TASK_ID` accepts canonical 16-hex IDs, unique hex pre
 | `cancel TASK_ID` | Pending/in_progress -> cancelled (`--reason`); appends history log |
 | `handoff TASK_ID` | In_progress -> pending, record summary (`--summary`, required); appends history log |
 | `claim` | Atomic next+start with file lock (`--assignee`, `--tag`); appends history log |
+| `work [start\|status\|stop]` | CLI-native work-loop controller (`start/resume`, `status`, `stop`) with persisted per-agent loop state |
 | `reopen TASK_ID` | Done/cancelled -> pending (clears assignee); appends history log |
 | `unassign TASK_ID` | Clear assignee without changing status; appends history log |
 | `depend TASK_ID --on TASK_IDS` | Add dependency edges (`--dep-type hard\|soft`, `--reason`) |
@@ -211,7 +214,7 @@ Errors are structured JSON on stderr when `--format json`: `{"error":"<code>","m
 
 ## Claude Code Plugin
 
-Three embedded Claude skills under `claude-plugin/skills/`: **task-management** (CLI + coordination reference), **epic-planning** (structured decomposition), and **task-execution** (including conversational `/tak work`, `/tak work status`, `/tak work stop` loop semantics).
+Three embedded Claude skills under `claude-plugin/skills/`: **task-management** (CLI + coordination reference), **epic-planning** (structured decomposition), and **task-execution** (CLI-first `tak work` / `tak work status` / `tak work stop` flow, with `/tak work*` prompts as shorthand).
 
 Lifecycle hooks remain lightweight and session-scoped: `tak reindex` + `tak mesh join` on `SessionStart`, and `tak mesh leave` on `Stop`.
 

@@ -10,9 +10,17 @@ Systematic workflow for agents to find available work, claim it, execute it, and
 
 **Critical:** update task state via `tak` commands only (`claim`, `start`, `handoff`, `finish`, `cancel`, etc.). Never manually edit `.tak/*` data files.
 
-## Claude `/tak work` loop (pi-parity mode)
+## Claude `/tak work` loop (CLI-parity mode)
 
-Claude Code does not provide the same extension runtime hooks/guards as pi. Emulate the same workflow behavior conversationally.
+Claude Code does not provide the same extension runtime hooks/guards as pi. Keep parity by driving blocker cooperation through explicit `tak` CLI commands and durable coordination notes.
+
+Primary path: invoke CLI-native work-loop commands directly.
+
+```bash
+tak work [--assignee <agent>] [--tag <tag>] [--limit <n>] [--verify isolated|local]
+tak work status [--assignee <agent>]
+tak work stop [--assignee <agent>]
+```
 
 When the user requests `/tak work`, interpret it as:
 
@@ -64,16 +72,32 @@ Support these control variants:
      ```bash
      tak blackboard post --from <agent> --template status --task <id> --message "<delta + next step>"
      ```
-   - Blocked on reservation overlap (preferred flow):
+   - Blocked on reservation overlap (CLI parity flow):
      ```bash
+     # 1) Diagnose owner/path/reason/age
      tak mesh blockers --path <path-you-need>
-     tak blackboard post --from <agent> --template blocker --task <id> --message "Blocked by <owner>/<path>; requesting <exact action>"
+
+     # 2) Immediate operational ask (mesh)
+     tak mesh send --from <agent> --to <owner> --message "Task #<id> blocked on <path>; request release or handoff."
+
+     # 3) Durable blocker record (blackboard)
+     tak blackboard post --from <agent> --template blocker --verbosity high --task <id> \
+       --message "Blocked by <owner> on <path> (reason=<reason>, age=<age>s); requested <exact action>; next check in 120s."
+
+     # 4) Deterministic wait window
      tak wait --path <blocking-path> --timeout 120
      ```
    - Blocked on unfinished dependency:
      ```bash
-     tak blackboard post --from <agent> --template blocker --task <id> --message "Blocked on dependency <task-id>; requesting owner update"
+     tak blackboard post --from <agent> --template blocker --verbosity high --task <id> \
+       --message "Blocked on dependency <task-id>; requested owner update; next check in 120s."
      tak wait --on-task <blocking-task-id> --timeout 120
+     ```
+   - If a wait timeout expires, post a delta follow-up (avoid repeating unchanged context):
+     ```bash
+     tak blackboard post --from <agent> --template status --task <id> \
+       --since-note <note-id> --no-change-since \
+       --message "Still blocked after 120s; re-pinged owner and retrying wait window."
      ```
    - Done:
      ```bash
@@ -140,15 +164,26 @@ If blocked:
    ```bash
    tak mesh blockers --path <scope-or-blocking-path>
    ```
-2. Post a durable blocker note:
+2. Ask the blocker owner directly in mesh:
    ```bash
-   tak blackboard post --from <agent> --template blocker --task <id> --message "Blocked verify in isolated mode; requesting <action>"
+   tak mesh send --from <agent> --to <owner> --message "Verify blocked for task #<id> on <path>; request release/window or handoff."
    ```
-3. Offer an explicit wait window:
+3. Post a durable blocker note (high-signal template):
+   ```bash
+   tak blackboard post --from <agent> --template blocker --verbosity high --task <id> \
+     --message "Blocked verify in isolated mode by <owner>/<path> (reason=<reason>, age=<age>s); requested <action>; waiting 120s."
+   ```
+4. Offer an explicit wait window:
    ```bash
    tak wait --path <blocking-path> --timeout 120
    # or
    tak wait --on-task <blocking-task-id> --timeout 120
+   ```
+5. On timeout, post a compact delta update:
+   ```bash
+   tak blackboard post --from <agent> --template status --task <id> \
+     --since-note <note-id> --no-change-since \
+     --message "Verify still blocked after timeout; re-pinged owner and retrying wait."
    ```
 
 When `/tak work verify:local`:
@@ -188,7 +223,9 @@ When `/tak work verify:local`:
   ```
 - Do not silently take over tasks assigned to another agent.
 - Use mesh + blackboard when blocked on reservations or cross-agent dependencies.
-- Prefer structured templates (`blocker`, `handoff`, `status`) for durable coordination notes.
+- Run `tak mesh blockers` before posting blocker notes so owner/path/reason/age are concrete.
+- Use deterministic waits (`tak wait --path ...` / `tak wait --on-task ...`) instead of manual ping loops.
+- Prefer structured templates (`blocker`, `handoff`, `status`) plus delta follow-ups (`--since-note`, `--no-change-since`) for durable coordination notes.
 
 ## Status transitions
 

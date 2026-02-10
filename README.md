@@ -33,6 +33,12 @@ tak finish 0000000000000001
 
 # Check what's unblocked
 tak list --available
+
+# Or run the CLI-native work loop
+# (default action is start/resume)
+tak work --assignee agent-1
+tak work status --assignee agent-1
+tak work stop --assignee agent-1
 ```
 
 ## Stigmergic Coordination Model
@@ -60,6 +66,7 @@ In practice: claim work, reserve paths, post meaningful updates in shared channe
 | `tak show <task-id>` / `tak list` / `tak tree [task-id]` | Query tasks and hierarchy |
 | `tak edit <task-id>` | Update task metadata (`--title`, `--kind`, tags, contract/planning, `--pr`) |
 | `tak claim` / `tak start <task-id>` | Start work (atomic claim preferred in multi-agent mode) |
+| `tak work [start\|status\|stop]` | CLI-native work loop controller (resume/claim, inspect loop state, or stop loop) |
 | `tak finish <task-id>` / `tak handoff <task-id>` / `tak cancel <task-id>` | Close, hand off, or cancel execution |
 | `tak reopen <task-id>` / `tak unassign <task-id>` | Reopen or clear assignment |
 | `tak depend` / `tak undepend` / `tak reparent` / `tak orphan` | Manage dependency + parent-child edges |
@@ -187,10 +194,10 @@ Tak ships as a Claude Code plugin. Enable it to get:
 
 - **Task management skill**: Full CLI + coordination reference (tasks, mesh, blackboard, learnings, therapist)
 - **Epic planning skill**: Guided decomposition of features into task hierarchies and dependency graphs
-- **Task execution skill**: Agent workflow for claiming/executing/completing tasks, including conversational `/tak work`, `/tak work status`, and `/tak work stop` loop semantics
+- **Task execution skill**: Agent workflow for claiming/executing/completing tasks, centered on CLI-native `tak work`, `tak work status`, and `tak work stop` (with `/tak work*` chat aliases)
 - **Session lifecycle hooks**: Auto-reindex + auto-join mesh on session start, auto-leave mesh on stop
 
-> Note: Claude implements `/tak work` via skill instructions (conversational loop), while pi additionally enforces loop guards through extension runtime hooks.
+> Note: Prefer invoking `tak work` commands directly. Claude `/tak work*` prompts are shorthand that run the same CLI-first flow; pi additionally layers extension runtime guardrails.
 
 ```bash
 # Run from your git repo root
