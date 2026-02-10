@@ -6,6 +6,7 @@ use colored::Colorize;
 use serde_json::{Value, json};
 
 use crate::error::Result;
+use crate::json_ids::format_task_id;
 use crate::model::Task;
 use crate::output::Format;
 
@@ -342,15 +343,18 @@ fn run_integrity_checks(checks: &mut Vec<Check>, tak: &Path) {
                             && file_id != task.id
                         {
                             filename_issues.push(format!(
-                                "task file '{}' id mismatch (filename {file_id}, payload {})",
-                                name, task.id
+                                "task file '{}' id mismatch (filename {}, payload {})",
+                                name,
+                                format_task_id(file_id),
+                                format_task_id(task.id)
                             ));
                         }
 
                         let task_id = task.id;
                         if tasks.insert(task_id, task).is_some() {
                             filename_issues.push(format!(
-                                "duplicate task id found in task files for id {task_id}"
+                                "duplicate task id found in task files for id {}",
+                                format_task_id(task_id)
                             ));
                         }
                     }
@@ -383,7 +387,11 @@ fn run_integrity_checks(checks: &mut Vec<Check>, tak: &Path) {
         if let Some(parent) = task.parent
             && !tasks.contains_key(&parent)
         {
-            parent_issues.push(format!("task {id}: parent {parent} not found"));
+            parent_issues.push(format!(
+                "task {}: parent {} not found",
+                format_task_id(*id),
+                format_task_id(parent)
+            ));
         }
     }
     if parent_issues.is_empty() {
@@ -399,7 +407,11 @@ fn run_integrity_checks(checks: &mut Vec<Check>, tak: &Path) {
     for (id, task) in &tasks {
         for dep in &task.depends_on {
             if !tasks.contains_key(&dep.id) {
-                dep_issues.push(format!("task {id}: depends on {}, not found", dep.id));
+                dep_issues.push(format!(
+                    "task {}: depends on {}, not found",
+                    format_task_id(*id),
+                    format_task_id(dep.id)
+                ));
             }
         }
     }
@@ -416,7 +428,7 @@ fn run_integrity_checks(checks: &mut Vec<Check>, tak: &Path) {
     if let Some(task_id) = dep_cycle {
         checks.push(Check::error(
             "Data Integrity",
-            format!("cycle detected involving task {task_id}"),
+            format!("cycle detected involving task {}", format_task_id(task_id)),
         ));
     } else {
         checks.push(Check::ok("Data Integrity", "no cycles"));
@@ -427,7 +439,7 @@ fn run_integrity_checks(checks: &mut Vec<Check>, tak: &Path) {
     if let Some(task_id) = parent_cycle {
         checks.push(Check::error(
             "Data Integrity",
-            format!("parent cycle involving task {task_id}"),
+            format!("parent cycle involving task {}", format_task_id(task_id)),
         ));
     } else {
         checks.push(Check::ok("Data Integrity", "no parent cycles"));

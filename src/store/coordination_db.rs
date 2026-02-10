@@ -3,7 +3,7 @@ use std::path::Path;
 
 use chrono::{DateTime, Utc};
 use clap::ValueEnum;
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -79,6 +79,12 @@ pub struct DbNote {
     pub from_agent: String,
     pub message: String,
     pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supersedes_note_id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub superseded_by_note_id: Option<i64>,
     pub tags: Vec<String>,
     pub task_ids: Vec<String>,
     pub created_at: DateTime<Utc>,
@@ -204,6 +210,9 @@ impl CoordinationDb {
                 from_agent TEXT NOT NULL,
                 message TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'open',
+                note_type TEXT,
+                supersedes_note_id INTEGER,
+                superseded_by_note_id INTEGER,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 closed_by TEXT,
@@ -235,7 +244,40 @@ impl CoordinationDb {
             CREATE INDEX IF NOT EXISTS idx_events_created
                 ON events(created_at);",
         )?;
+        self.ensure_notes_schema_extensions()?;
         Ok(())
+    }
+
+    fn ensure_notes_schema_extensions(&self) -> Result<()> {
+        if !self.table_has_column("notes", "note_type")? {
+            self.conn
+                .execute("ALTER TABLE notes ADD COLUMN note_type TEXT", [])?;
+        }
+        if !self.table_has_column("notes", "supersedes_note_id")? {
+            self.conn.execute(
+                "ALTER TABLE notes ADD COLUMN supersedes_note_id INTEGER",
+                [],
+            )?;
+        }
+        if !self.table_has_column("notes", "superseded_by_note_id")? {
+            self.conn.execute(
+                "ALTER TABLE notes ADD COLUMN superseded_by_note_id INTEGER",
+                [],
+            )?;
+        }
+        Ok(())
+    }
+
+    fn table_has_column(&self, table: &str, column: &str) -> Result<bool> {
+        let sql = format!("PRAGMA table_info({table})");
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+        for row in rows {
+            if row? == column {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     /// Expose the raw connection (for tests or advanced usage).
@@ -663,13 +705,25 @@ impl CoordinationDb {
         tags: &[String],
         task_ids: &[String],
     ) -> Result<DbNote> {
+        self.post_note_with_type(from, message, tags, task_ids, None)
+    }
+
+    /// Post a new note with an optional typed hint.
+    pub fn post_note_with_type(
+        &self,
+        from: &str,
+        message: &str,
+        tags: &[String],
+        task_ids: &[String],
+        note_type: Option<&str>,
+    ) -> Result<DbNote> {
         let tx = self.conn.unchecked_transaction()?;
         let now = Utc::now().to_rfc3339();
 
         tx.execute(
-            "INSERT INTO notes (from_agent, message, status, created_at, updated_at)
-             VALUES (?1, ?2, 'open', ?3, ?3)",
-            params![from, message, &now],
+            "INSERT INTO notes (from_agent, message, status, note_type, created_at, updated_at)
+             VALUES (?1, ?2, 'open', ?3, ?4, ?4)",
+            params![from, message, note_type, &now],
         )?;
         let id = tx.last_insert_rowid();
 
@@ -699,6 +753,9 @@ impl CoordinationDb {
             from_agent: from.to_string(),
             message: message.to_string(),
             status: "open".to_string(),
+            note_type: note_type.map(str::to_string),
+            supersedes_note_id: None,
+            superseded_by_note_id: None,
             tags: sorted_tags,
             task_ids: sorted_task_ids,
             created_at: parse_dt(&now),
@@ -756,7 +813,8 @@ impl CoordinationDb {
         };
 
         let sql = format!(
-            "SELECT DISTINCT n.id, n.from_agent, n.message, n.status, n.created_at, n.updated_at, \
+            "SELECT DISTINCT n.id, n.from_agent, n.message, n.status, n.note_type, \
+             n.supersedes_note_id, n.superseded_by_note_id, n.created_at, n.updated_at, \
              n.closed_by, n.closed_reason, n.closed_at \
              FROM notes n{joins}{where_clause} ORDER BY n.id DESC{limit_clause}"
         );
@@ -772,13 +830,16 @@ impl CoordinationDb {
                     from_agent: row.get(1)?,
                     message: row.get(2)?,
                     status: row.get(3)?,
+                    note_type: row.get(4)?,
+                    supersedes_note_id: row.get(5)?,
+                    superseded_by_note_id: row.get(6)?,
                     tags: vec![],
                     task_ids: vec![],
-                    created_at: parse_dt(&row.get::<_, String>(4)?),
-                    updated_at: parse_dt(&row.get::<_, String>(5)?),
-                    closed_by: row.get(6)?,
-                    closed_reason: row.get(7)?,
-                    closed_at: parse_dt_opt(row.get(8)?),
+                    created_at: parse_dt(&row.get::<_, String>(7)?),
+                    updated_at: parse_dt(&row.get::<_, String>(8)?),
+                    closed_by: row.get(9)?,
+                    closed_reason: row.get(10)?,
+                    closed_at: parse_dt_opt(row.get(11)?),
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -795,8 +856,9 @@ impl CoordinationDb {
     /// Get a single note by ID.
     pub fn get_note(&self, id: i64) -> Result<DbNote> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, from_agent, message, status, created_at, updated_at, \
-             closed_by, closed_reason, closed_at FROM notes WHERE id = ?1",
+            "SELECT id, from_agent, message, status, note_type, supersedes_note_id, \
+             superseded_by_note_id, created_at, updated_at, closed_by, closed_reason, closed_at \
+             FROM notes WHERE id = ?1",
         )?;
         let note = stmt
             .query_row(params![id], |row| {
@@ -805,11 +867,14 @@ impl CoordinationDb {
                     row.get::<_, String>(1)?,
                     row.get::<_, String>(2)?,
                     row.get::<_, String>(3)?,
-                    row.get::<_, String>(4)?,
-                    row.get::<_, String>(5)?,
-                    row.get::<_, Option<String>>(6)?,
-                    row.get::<_, Option<String>>(7)?,
-                    row.get::<_, Option<String>>(8)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, Option<i64>>(5)?,
+                    row.get::<_, Option<i64>>(6)?,
+                    row.get::<_, String>(7)?,
+                    row.get::<_, String>(8)?,
+                    row.get::<_, Option<String>>(9)?,
+                    row.get::<_, Option<String>>(10)?,
+                    row.get::<_, Option<String>>(11)?,
                 ))
             })
             .map_err(|e| match e {
@@ -822,6 +887,9 @@ impl CoordinationDb {
             from_agent,
             message,
             status,
+            note_type,
+            supersedes_note_id,
+            superseded_by_note_id,
             created_at,
             updated_at,
             closed_by,
@@ -836,6 +904,9 @@ impl CoordinationDb {
             from_agent,
             message,
             status,
+            note_type,
+            supersedes_note_id,
+            superseded_by_note_id,
             tags,
             task_ids,
             created_at: parse_dt(&created_at),
@@ -874,6 +945,56 @@ impl CoordinationDb {
         if changes == 0 {
             return Err(TakError::BlackboardNoteNotFound(id as u64));
         }
+        Ok(())
+    }
+
+    /// Link a successor note to a superseded note and close the superseded note.
+    pub fn supersede_note(&self, superseder_id: i64, superseded_id: i64, by: &str) -> Result<()> {
+        if superseder_id == superseded_id {
+            return Err(TakError::BlackboardInvalidMessage);
+        }
+
+        let tx = self.conn.unchecked_transaction()?;
+
+        let superseder_exists: i64 = tx
+            .query_row(
+                "SELECT COUNT(*) FROM notes WHERE id = ?1",
+                params![superseder_id],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+        if superseder_exists == 0 {
+            return Err(TakError::BlackboardNoteNotFound(superseder_id as u64));
+        }
+
+        let superseded_status: Option<String> = tx
+            .query_row(
+                "SELECT status FROM notes WHERE id = ?1",
+                params![superseded_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(status) = superseded_status else {
+            return Err(TakError::BlackboardNoteNotFound(superseded_id as u64));
+        };
+        if status != "open" {
+            return Ok(());
+        }
+
+        let now = Utc::now().to_rfc3339();
+        tx.execute(
+            "UPDATE notes SET supersedes_note_id = ?2, updated_at = ?3 WHERE id = ?1",
+            params![superseder_id, superseded_id, &now],
+        )?;
+
+        let reason = format!("superseded by B{superseder_id}");
+        tx.execute(
+            "UPDATE notes SET superseded_by_note_id = ?2, status = 'closed', closed_by = ?3, \
+             closed_reason = ?4, closed_at = ?5, updated_at = ?5 WHERE id = ?1",
+            params![superseded_id, superseder_id, by, reason, &now],
+        )?;
+
+        tx.commit()?;
         Ok(())
     }
 
@@ -1458,12 +1579,121 @@ mod tests {
             .unwrap();
         assert_eq!(note.from_agent, "alice");
         assert_eq!(note.status, "open");
+        assert!(note.note_type.is_none());
         assert_eq!(note.tags, vec!["auth", "review"]);
         assert_eq!(note.task_ids, vec!["abc123"]);
 
         let fetched = db.get_note(note.id).unwrap();
         assert_eq!(fetched.message, "need review on auth module");
         assert_eq!(fetched.tags.len(), 2);
+    }
+
+    #[test]
+    fn note_post_with_type_persists_note_type() {
+        let db = CoordinationDb::open_memory().unwrap();
+
+        let note = db
+            .post_note_with_type("alice", "shipped", &[], &[], Some("completion"))
+            .unwrap();
+        assert_eq!(note.note_type.as_deref(), Some("completion"));
+        assert!(note.supersedes_note_id.is_none());
+        assert!(note.superseded_by_note_id.is_none());
+
+        let fetched = db.get_note(note.id).unwrap();
+        assert_eq!(fetched.note_type.as_deref(), Some("completion"));
+        assert!(fetched.supersedes_note_id.is_none());
+        assert!(fetched.superseded_by_note_id.is_none());
+    }
+
+    #[test]
+    fn note_supersede_links_and_closes_previous_note() {
+        let db = CoordinationDb::open_memory().unwrap();
+
+        let old = db
+            .post_note_with_type("alice", "status old", &[], &[], Some("status"))
+            .unwrap();
+        let new = db
+            .post_note_with_type("alice", "status new", &[], &[], Some("status"))
+            .unwrap();
+
+        db.supersede_note(new.id, old.id, "alice").unwrap();
+
+        let refreshed_new = db.get_note(new.id).unwrap();
+        assert_eq!(refreshed_new.supersedes_note_id, Some(old.id));
+
+        let refreshed_old = db.get_note(old.id).unwrap();
+        assert_eq!(refreshed_old.status, "closed");
+        assert_eq!(refreshed_old.superseded_by_note_id, Some(new.id));
+        assert_eq!(refreshed_old.closed_by.as_deref(), Some("alice"));
+        assert_eq!(
+            refreshed_old.closed_reason,
+            Some(format!("superseded by B{}", new.id))
+        );
+    }
+
+    #[test]
+    fn note_open_migrates_legacy_schema_and_preserves_existing_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("coordination.db");
+
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE notes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                from_agent TEXT NOT NULL,
+                message TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'open',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                closed_by TEXT,
+                closed_reason TEXT,
+                closed_at TEXT
+            );",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO notes (from_agent, message, status, created_at, updated_at)
+             VALUES (?1, ?2, 'open', ?3, ?3)",
+            params!["legacy-agent", "legacy note", Utc::now().to_rfc3339()],
+        )
+        .unwrap();
+        drop(conn);
+
+        let db = CoordinationDb::open(&db_path).unwrap();
+
+        let note = db.get_note(1).unwrap();
+        assert_eq!(note.message, "legacy note");
+        assert!(note.note_type.is_none());
+
+        let note_type_columns: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('notes') WHERE name = 'note_type'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(note_type_columns, 1);
+
+        let supersedes_columns: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('notes') WHERE name = 'supersedes_note_id'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(supersedes_columns, 1);
+
+        let superseded_by_columns: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('notes') WHERE name = 'superseded_by_note_id'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(superseded_by_columns, 1);
     }
 
     #[test]

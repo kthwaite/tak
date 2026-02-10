@@ -3,6 +3,7 @@ use std::path::Path;
 use colored::Colorize;
 
 use crate::error::Result;
+use crate::json_ids::format_task_id;
 use crate::output::Format;
 use crate::store::repo::Repo;
 
@@ -23,7 +24,7 @@ pub fn run(repo_root: &Path, id: u64, format: Format) -> Result<()> {
                 println!("[]");
             }
             _ => {
-                eprintln!("No history for task {id}");
+                eprintln!("No history for task {}", format_task_id(id));
             }
         }
         return Ok(());

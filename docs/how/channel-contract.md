@@ -58,6 +58,21 @@ tak blackboard post --from agent-1 --template status --task 49 \
   --since-note 120 --no-change-since --message "Still waiting on owner response; fallback planned at 15:30Z."
 ```
 
+Low-noise board triage (personal + recent window):
+
+```bash
+tak blackboard list --status open --tag coordination --from agent-1 --recent-secs 1800
+```
+
+Inbox/feed low-noise filters:
+
+```bash
+tak mesh inbox --name agent-1 --from agent-2 --recent-secs 900
+tak mesh feed --event-type mesh.send,mesh.reserve --recent-secs 1800
+# include heartbeat chatter only when explicitly requested
+tak mesh feed --include-heartbeat --event-type mesh.heartbeat --recent-secs 300
+```
+
 ### Task-local context/history (deep detail)
 
 ```bash
@@ -86,6 +101,9 @@ Current behavior includes non-blocking schema warnings when template-required fi
 
 - `tak blackboard post --task <id>` validates task existence and fails on missing IDs.
 - `--no-change-since` requires `--since-note`.
+- `tak blackboard list --from/--recent-secs` and `tak mesh inbox --from/--recent-secs` are additive filters; ordering remains stable.
+- `tak mesh inbox` ack behavior is unchanged by filters (ack actions still apply to the underlying inbox set).
+- `tak mesh feed` suppresses `mesh.heartbeat` by default; use `--include-heartbeat` or an explicit `--event-type mesh.heartbeat` filter to include them.
 - Free-text mode remains valid: omit `--template` for unstructured notes.
 - Sensitive-text detection in blackboard posts warns but does not block posting.
 
@@ -103,5 +121,11 @@ Current behavior includes non-blocking schema warnings when template-required fi
   - `test_blackboard_post_close_reopen`
   - `test_blackboard_post_blocker_template_formats_message_and_tags`
   - `test_blackboard_post_plain_message_remains_free_text`
+  - `test_mesh_send_inbox_ack`
+- `tests/coordination_filters_integration.rs`
+  - blackboard list personal/recent filters with status/tag/task interactions
+  - mesh inbox personal/recent filters with ack compatibility
+- `tests/mesh_feed_filters_integration.rs`
+  - mesh feed event-type/recent filters + default heartbeat suppression behavior
 - `src/commands/blackboard.rs`
   - template serialization and schema-warning unit tests

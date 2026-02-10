@@ -865,6 +865,21 @@ pub fn inbox(
     ack_before: Option<&str>,
     format: Format,
 ) -> Result<()> {
+    inbox_with_filters(
+        repo_root, name, ack, ack_ids, ack_before, None, None, format,
+    )
+}
+
+pub fn inbox_with_filters(
+    repo_root: &Path,
+    name: &str,
+    ack: bool,
+    ack_ids: Vec<String>,
+    ack_before: Option<&str>,
+    from_agent: Option<&str>,
+    recent_secs: Option<u64>,
+    format: Format,
+) -> Result<()> {
     let db = CoordinationDb::from_repo(repo_root)?;
     let msgs = db.read_inbox(name)?;
 
@@ -885,13 +900,25 @@ pub fn inbox(
         }
     }
 
+    let mut filtered_msgs = msgs.clone();
+
+    if let Some(from_agent) = from_agent {
+        filtered_msgs.retain(|msg| msg.from_agent == from_agent);
+    }
+
+    if let Some(recent_secs) = recent_secs {
+        let cutoff_secs = i64::try_from(recent_secs).unwrap_or(i64::MAX);
+        let cutoff = Utc::now() - chrono::Duration::seconds(cutoff_secs);
+        filtered_msgs.retain(|msg| msg.created_at >= cutoff);
+    }
+
     match format {
-        Format::Json => println!("{}", serde_json::to_string(&msgs)?),
+        Format::Json => println!("{}", serde_json::to_string(&filtered_msgs)?),
         Format::Pretty => {
-            if msgs.is_empty() {
+            if filtered_msgs.is_empty() {
                 println!("{}", "No messages.".dimmed());
             } else {
-                for m in &msgs {
+                for m in &filtered_msgs {
                     let short_id = m.id.get(..8).unwrap_or(&m.id);
                     println!(
                         "{} {} {}",
@@ -903,7 +930,7 @@ pub fn inbox(
             }
         }
         Format::Minimal => {
-            for m in &msgs {
+            for m in &filtered_msgs {
                 println!("{}: {}", m.from_agent, m.text);
             }
         }
@@ -1013,8 +1040,51 @@ pub fn release(
 }
 
 pub fn feed(repo_root: &Path, limit: Option<usize>, format: Format) -> Result<()> {
+    feed_with_filters(repo_root, limit, vec![], None, false, format)
+}
+
+pub fn feed_with_filters(
+    repo_root: &Path,
+    limit: Option<usize>,
+    event_types: Vec<String>,
+    recent_secs: Option<u64>,
+    include_heartbeat: bool,
+    format: Format,
+) -> Result<()> {
     let db = CoordinationDb::from_repo(repo_root)?;
-    let events = db.read_events(limit.map(|l| l as u32))?;
+    let mut events = db.read_events(None)?;
+
+    let normalized_event_types: Vec<String> = event_types
+        .iter()
+        .map(|raw| normalize_feed_event_type_filter(raw))
+        .collect();
+
+    if !normalized_event_types.is_empty() {
+        events.retain(|event| {
+            normalized_event_types
+                .iter()
+                .any(|kind| event.event_type.eq_ignore_ascii_case(kind))
+        });
+    }
+
+    let heartbeat_explicit = include_heartbeat
+        || normalized_event_types
+            .iter()
+            .any(|kind| kind.eq_ignore_ascii_case("mesh.heartbeat"));
+    if !heartbeat_explicit {
+        events.retain(|event| event.event_type != "mesh.heartbeat");
+    }
+
+    if let Some(recent_secs) = recent_secs {
+        let cutoff_secs = i64::try_from(recent_secs).unwrap_or(i64::MAX);
+        let cutoff = Utc::now() - chrono::Duration::seconds(cutoff_secs);
+        events.retain(|event| event.created_at >= cutoff);
+    }
+
+    if let Some(limit) = limit {
+        events.truncate(limit);
+    }
+
     match format {
         Format::Json => println!("{}", serde_json::to_string(&events)?),
         Format::Pretty => {
@@ -1044,6 +1114,14 @@ pub fn feed(repo_root: &Path, limit: Option<usize>, format: Format) -> Result<()
         }
     }
     Ok(())
+}
+
+fn normalize_feed_event_type_filter(raw: &str) -> String {
+    let lower = raw.trim().to_ascii_lowercase();
+    match lower.as_str() {
+        "heartbeat" => "mesh.heartbeat".to_string(),
+        other => other.to_string(),
+    }
 }
 
 // ---------------------------------------------------------------------------

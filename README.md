@@ -52,6 +52,10 @@ Examples:
 - `tak show ef94`
 - `tak depend b48b --on ef94`
 
+**Task ID output defaults (phase-2):** human-facing pretty/minimal/work-loop surfaces now default to canonical 16-char hex task IDs. JSON output remains machine-stable (task-id fields are canonical hex; existing error codes/contracts are unchanged).
+
+Migration tip: scripts should parse JSON fields (`id`, `parent`, `depends_on[*].id`, etc.) instead of scraping pretty/minimal text output.
+
 ### `tak work done` closeout helper
 
 Use `tak work done` when you want one command to close the current unit and clean up loop state.

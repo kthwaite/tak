@@ -2,6 +2,20 @@
 
 Use this playbook when you need reliable test evidence but the shared working tree is temporarily noisy (for example: unrelated in-progress edits make `cargo test` fail before your target tests run).
 
+Scoped verification now supports explicit scope paths:
+
+```bash
+tak verify <task-id> --path src/commands --path tests/verify_scope_integration.rs
+```
+
+When an explicit scope overlaps a peer reservation, `tak verify` fails with actionable diagnostics (owner/path/reason/age) and remediation hints such as:
+
+- `tak mesh blockers --path <held-path>`
+- `tak wait --path <held-path> --timeout 120`
+- `tak mesh reserve --name <agent> --path <scope-path> --reason task-<task-id>`
+
+Use these diagnostics first; fall back to isolated worktrees only when overlap/noise cannot be resolved quickly.
+
 ## When to use this
 
 Default behavior is still: **verify in the main working tree**.

@@ -29,6 +29,14 @@ impl BlackboardTemplate {
         }
     }
 
+    fn note_type(self) -> BlackboardNoteType {
+        match self {
+            Self::Blocker => BlackboardNoteType::Blocker,
+            Self::Handoff => BlackboardNoteType::Handoff,
+            Self::Status => BlackboardNoteType::Status,
+        }
+    }
+
     fn required_schema_fields(self) -> &'static [&'static str] {
         match self {
             Self::Blocker => &[
@@ -52,6 +60,35 @@ impl BlackboardTemplate {
                 "blocker",
                 "next",
             ],
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BlackboardNoteType {
+    Status,
+    Blocker,
+    Handoff,
+    Completion,
+}
+
+impl BlackboardNoteType {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Status => "status",
+            Self::Blocker => "blocker",
+            Self::Handoff => "handoff",
+            Self::Completion => "completion",
+        }
+    }
+
+    fn from_hint(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "status" => Some(Self::Status),
+            "blocker" => Some(Self::Blocker),
+            "handoff" => Some(Self::Handoff),
+            "completion" => Some(Self::Completion),
+            _ => None,
         }
     }
 }
@@ -150,8 +187,25 @@ pub fn post_with_options(
     // Links are derived but not stored in CoordinationDb (dropped at boundary)
     let _links = derive_transition_links(options.template, &rendered_message, options.since_note);
 
+    let note_type_hint = resolve_note_type_hint(options.template, &tags, &rendered_message)?;
+
     let task_id_strs: Vec<String> = task_ids.iter().map(|id| format_task_id(*id)).collect();
-    let note = db.post_note(from, &rendered_message, &tags, &task_id_strs)?;
+    let superseded_note_id =
+        select_superseded_note(&db, note_type_hint, &task_id_strs, options.since_note)?;
+
+    let mut note = db.post_note_with_type(
+        from,
+        &rendered_message,
+        &tags,
+        &task_id_strs,
+        note_type_hint.map(|note_type| note_type.as_str()),
+    )?;
+
+    if let Some(superseded_note_id) = superseded_note_id {
+        db.supersede_note(note.id, superseded_note_id, from)?;
+        note = db.get_note(note.id)?;
+    }
+
     print_note(&note, format)?;
     Ok(())
 }
@@ -324,6 +378,117 @@ fn parse_schema_fields(message: &str) -> HashMap<String, String> {
     fields
 }
 
+fn resolve_note_type_hint(
+    template: Option<BlackboardTemplate>,
+    tags: &[String],
+    message: &str,
+) -> Result<Option<BlackboardNoteType>> {
+    let mut hints: Vec<BlackboardNoteType> = Vec::new();
+
+    if let Some(template) = template {
+        hints.push(template.note_type());
+    }
+
+    for tag in tags {
+        if let Some(note_type) = BlackboardNoteType::from_hint(tag) {
+            hints.push(note_type);
+        }
+    }
+
+    let schema = parse_schema_fields(message);
+    if let Some(template_value) = schema.get("template") {
+        if let Some(note_type) = BlackboardNoteType::from_hint(template_value) {
+            hints.push(note_type);
+        }
+    }
+
+    hints.sort_by_key(|note_type| note_type.as_str());
+    hints.dedup();
+
+    if hints.len() > 1 {
+        return Err(TakError::BlackboardInvalidMessage);
+    }
+
+    Ok(hints.first().copied())
+}
+
+fn supersede_candidate_types(note_type: BlackboardNoteType) -> Option<&'static [&'static str]> {
+    match note_type {
+        BlackboardNoteType::Status => Some(&["status", "handoff"]),
+        BlackboardNoteType::Completion => Some(&["status", "handoff", "blocker", "completion"]),
+        BlackboardNoteType::Blocker | BlackboardNoteType::Handoff => None,
+    }
+}
+
+fn task_scopes_overlap(lhs: &[String], rhs: &[String]) -> bool {
+    if lhs.is_empty() || rhs.is_empty() {
+        return false;
+    }
+    lhs.iter().any(|id| rhs.iter().any(|other| other == id))
+}
+
+fn note_matches_supersede_scope(
+    candidate: &DbNote,
+    task_ids: &[String],
+    eligible: &[&str],
+) -> bool {
+    let Some(candidate_type) = candidate.note_type.as_deref() else {
+        return false;
+    };
+    if !eligible.iter().any(|kind| *kind == candidate_type) {
+        return false;
+    }
+    task_scopes_overlap(&candidate.task_ids, task_ids)
+}
+
+fn select_superseded_note(
+    db: &CoordinationDb,
+    note_type_hint: Option<BlackboardNoteType>,
+    task_ids: &[String],
+    since_note: Option<u64>,
+) -> Result<Option<i64>> {
+    let Some(note_type) = note_type_hint else {
+        return Ok(None);
+    };
+    let Some(eligible_types) = supersede_candidate_types(note_type) else {
+        return Ok(None);
+    };
+
+    if let Some(since_note) = since_note {
+        let candidate = db.get_note(since_note as i64)?;
+        if candidate.status != "open" {
+            return Ok(None);
+        }
+
+        let scope_matches = if task_ids.is_empty() {
+            candidate.task_ids.is_empty()
+        } else {
+            task_scopes_overlap(task_ids, &candidate.task_ids)
+        };
+
+        if scope_matches
+            && candidate
+                .note_type
+                .as_deref()
+                .is_some_and(|kind| eligible_types.iter().any(|eligible| eligible == &kind))
+        {
+            return Ok(Some(candidate.id));
+        }
+        return Ok(None);
+    }
+
+    if task_ids.is_empty() {
+        return Ok(None);
+    }
+
+    let notes = db.list_notes(Some("open"), None, None, None)?;
+    let candidate = notes
+        .into_iter()
+        .find(|note| note_matches_supersede_scope(note, task_ids, eligible_types));
+
+    Ok(candidate.map(|note| note.id))
+}
+
 fn is_placeholder_value(value: &str) -> bool {
     let value = value.trim();
     value.is_empty() || (value.contains('<') && value.contains('>'))
@@ -482,6 +647,19 @@ pub fn list(
     limit: Option<usize>,
     format: Format,
 ) -> Result<()> {
+    list_with_filters(repo_root, status, tag, task_id, None, None, limit, format)
+}
+
+pub fn list_with_filters(
+    repo_root: &Path,
+    status: Option<BlackboardStatus>,
+    tag: Option<String>,
+    task_id: Option<u64>,
+    from_agent: Option<String>,
+    recent_secs: Option<u64>,
+    limit: Option<usize>,
+    format: Format,
+) -> Result<()> {
     let db = CoordinationDb::from_repo(repo_root)?;
     let status_str = status.map(|s| s.to_string());
 
@@ -490,6 +668,16 @@ pub fn list(
     if let Some(task_id) = task_id {
         let candidates = vec![format_task_id(task_id), task_id.to_string()];
         notes.retain(|note| note_matches_task_candidates(note, &candidates));
+    }
+
+    if let Some(from_agent) = from_agent.as_deref() {
+        notes.retain(|note| note.from_agent == from_agent);
+    }
+
+    if let Some(recent_secs) = recent_secs {
+        let cutoff_secs = i64::try_from(recent_secs).unwrap_or(i64::MAX);
+        let cutoff = chrono::Utc::now() - chrono::Duration::seconds(cutoff_secs);
+        notes.retain(|note| note.created_at >= cutoff);
     }
 
     if let Some(limit) = limit {
@@ -542,6 +730,23 @@ fn print_note(note: &DbNote, format: Format) -> Result<()> {
                 status,
                 format!("by {}", note.from_agent).dimmed(),
             );
+            if let Some(note_type) = note.note_type.as_deref() {
+                println!("  {} {}", "type:".dimmed(), note_type.cyan());
+            }
+            if let Some(supersedes_note_id) = note.supersedes_note_id {
+                println!(
+                    "  {} {}",
+                    "supersedes:".dimmed(),
+                    format!("B{supersedes_note_id}").cyan()
+                );
+            }
+            if let Some(superseded_by_note_id) = note.superseded_by_note_id {
+                println!(
+                    "  {} {}",
+                    "superseded by:".dimmed(),
+                    format!("B{superseded_by_note_id}").cyan()
+                );
+            }
             println!("  {}", note.message);
             if !note.tags.is_empty() {
                 println!("  {} {}", "tags:".dimmed(), note.tags.join(", ").cyan());
@@ -581,13 +786,33 @@ fn print_notes(notes: &[DbNote], format: Format) -> Result<()> {
             } else {
                 for note in &normalized {
                     let status = style_status(&note.status);
+                    let type_label = note
+                        .note_type
+                        .as_deref()
+                        .map(|value| format!("{} ", format!("[{value}]").cyan()))
+                        .unwrap_or_default();
                     println!(
-                        "{} {} {} {}",
+                        "{} {} {}{} {}",
                         format!("[B{}]", note.id).magenta().bold(),
                         status,
+                        type_label,
                         format!("{}:", note.from_agent).cyan(),
                         note.message,
                     );
+                    if let Some(supersedes_note_id) = note.supersedes_note_id {
+                        println!(
+                            "  {} {}",
+                            "supersedes:".dimmed(),
+                            format!("B{supersedes_note_id}").cyan()
+                        );
+                    }
+                    if let Some(superseded_by_note_id) = note.superseded_by_note_id {
+                        println!(
+                            "  {} {}",
+                            "superseded by:".dimmed(),
+                            format!("B{superseded_by_note_id}").cyan()
+                        );
+                    }
                     if !note.tags.is_empty() {
                         println!("  {} {}", "tags:".dimmed(), note.tags.join(", ").cyan());
                     }
@@ -599,7 +824,23 @@ fn print_notes(notes: &[DbNote], format: Format) -> Result<()> {
         }
         Format::Minimal => {
             for note in &normalized {
-                println!("{} {} {}", note.id, note.status, note.from_agent);
+                let supersedes = note
+                    .supersedes_note_id
+                    .map(|id| id.to_string())
+                    .unwrap_or_else(|| "-".to_string());
+                let superseded_by = note
+                    .superseded_by_note_id
+                    .map(|id| id.to_string())
+                    .unwrap_or_else(|| "-".to_string());
+                println!(
+                    "{} {} {} {} {} {}",
+                    note.id,
+                    note.status,
+                    note.note_type.as_deref().unwrap_or("-"),
+                    note.from_agent,
+                    supersedes,
+                    superseded_by
+                );
             }
         }
     }
@@ -756,6 +997,167 @@ mod tests {
         let note = notes.iter().find(|n| n.id == 2).unwrap();
         // Links are no longer stored in CoordinationDb — verify note was posted
         assert!(note.message.contains("template: blocker"));
+    }
+
+    #[test]
+    fn resolve_note_type_hint_uses_template_defaults() {
+        let hint = resolve_note_type_hint(
+            Some(BlackboardTemplate::Handoff),
+            &[],
+            "summary: transferring",
+        )
+        .unwrap();
+
+        assert_eq!(hint, Some(BlackboardNoteType::Handoff));
+    }
+
+    #[test]
+    fn resolve_note_type_hint_supports_completion_tag_in_free_text_mode() {
+        let hint = resolve_note_type_hint(None, &["completion".to_string()], "done").unwrap();
+
+        assert_eq!(hint, Some(BlackboardNoteType::Completion));
+    }
+
+    #[test]
+    fn resolve_note_type_hint_rejects_conflicting_hints() {
+        let err = resolve_note_type_hint(
+            Some(BlackboardTemplate::Status),
+            &["blocker".to_string()],
+            "template: status",
+        )
+        .unwrap_err();
+
+        assert!(matches!(err, TakError::BlackboardInvalidMessage));
+    }
+
+    #[test]
+    fn post_with_options_persists_note_type_metadata() {
+        let dir = tempdir().unwrap();
+        FileStore::init(dir.path()).unwrap();
+
+        post_with_options(
+            dir.path(),
+            "agent_1",
+            "Coordination update",
+            BlackboardPostOptions {
+                template: Some(BlackboardTemplate::Status),
+                since_note: None,
+                no_change_since: false,
+            },
+            vec![],
+            vec![],
+            Format::Json,
+        )
+        .unwrap();
+
+        post_with_options(
+            dir.path(),
+            "agent_1",
+            "completed",
+            BlackboardPostOptions::default(),
+            vec!["completion".to_string()],
+            vec![],
+            Format::Json,
+        )
+        .unwrap();
+
+        let db = CoordinationDb::from_repo(dir.path()).unwrap();
+        let notes = db.list_notes(None, None, None, None).unwrap();
+
+        let status_note = notes.iter().find(|note| note.id == 1).unwrap();
+        assert_eq!(status_note.note_type.as_deref(), Some("status"));
+
+        let completion_note = notes.iter().find(|note| note.id == 2).unwrap();
+        assert_eq!(completion_note.note_type.as_deref(), Some("completion"));
+    }
+
+    #[test]
+    fn post_with_options_status_since_note_supersedes_prior_status() {
+        let dir = tempdir().unwrap();
+        FileStore::init(dir.path()).unwrap();
+
+        post_with_options(
+            dir.path(),
+            "agent_1",
+            "Initial status",
+            BlackboardPostOptions {
+                template: Some(BlackboardTemplate::Status),
+                since_note: None,
+                no_change_since: false,
+            },
+            vec![],
+            vec![],
+            Format::Json,
+        )
+        .unwrap();
+
+        post_with_options(
+            dir.path(),
+            "agent_1",
+            "Follow-up status",
+            BlackboardPostOptions {
+                template: Some(BlackboardTemplate::Status),
+                since_note: Some(1),
+                no_change_since: false,
+            },
+            vec![],
+            vec![],
+            Format::Json,
+        )
+        .unwrap();
+
+        let db = CoordinationDb::from_repo(dir.path()).unwrap();
+        let first = db.get_note(1).unwrap();
+        let second = db.get_note(2).unwrap();
+
+        assert_eq!(first.status, "closed");
+        assert_eq!(first.superseded_by_note_id, Some(2));
+        assert_eq!(second.supersedes_note_id, Some(1));
+        assert_eq!(first.closed_reason, Some("superseded by B2".to_string()));
+    }
+
+    #[test]
+    fn post_with_options_blocker_since_note_does_not_supersede() {
+        let dir = tempdir().unwrap();
+        FileStore::init(dir.path()).unwrap();
+
+        post_with_options(
+            dir.path(),
+            "agent_1",
+            "Initial blocker",
+            BlackboardPostOptions {
+                template: Some(BlackboardTemplate::Blocker),
+                since_note: None,
+                no_change_since: false,
+            },
+            vec![],
+            vec![],
+            Format::Json,
+        )
+        .unwrap();
+
+        post_with_options(
+            dir.path(),
+            "agent_1",
+            "Still blocked",
+            BlackboardPostOptions {
+                template: Some(BlackboardTemplate::Blocker),
+                since_note: Some(1),
+                no_change_since: false,
+            },
+            vec![],
+            vec![],
+            Format::Json,
+        )
+        .unwrap();
+
+        let db = CoordinationDb::from_repo(dir.path()).unwrap();
+        let first = db.get_note(1).unwrap();
+        let second = db.get_note(2).unwrap();
+
+        assert_eq!(first.status, "open");
+        assert!(first.superseded_by_note_id.is_none());
+        assert!(second.supersedes_note_id.is_none());
     }
 
     #[test]

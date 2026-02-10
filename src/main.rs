@@ -673,6 +673,12 @@ enum MeshAction {
         /// Agent name
         #[arg(long)]
         name: String,
+        /// Filter messages sent by this agent
+        #[arg(long = "from")]
+        from_agent: Option<String>,
+        /// Show only messages created in the last N seconds
+        #[arg(long = "recent-secs")]
+        recent_secs: Option<u64>,
         /// Acknowledge (delete) all messages after reading
         #[arg(long, conflicts_with_all = ["ack_ids", "ack_before"])]
         ack: bool,
@@ -745,9 +751,18 @@ enum MeshAction {
     },
     /// Show the activity feed
     Feed {
-        /// Show only the last N events
+        /// Show only the last N events (after filtering)
         #[arg(long)]
         limit: Option<usize>,
+        /// Filter by event type (repeatable/comma-separated, e.g. mesh.send,mesh.reserve)
+        #[arg(long = "event-type", value_delimiter = ',')]
+        event_types: Vec<String>,
+        /// Show only events created in the last N seconds
+        #[arg(long = "recent-secs")]
+        recent_secs: Option<u64>,
+        /// Include mesh heartbeat events (suppressed by default)
+        #[arg(long)]
+        include_heartbeat: bool,
     },
 }
 
@@ -791,6 +806,12 @@ enum BlackboardAction {
         /// Filter by linked task ID (canonical hex, unique prefix, or legacy decimal)
         #[arg(long = "task")]
         task_id: Option<String>,
+        /// Filter by author/agent name
+        #[arg(long = "from")]
+        from_agent: Option<String>,
+        /// Show only notes created in the last N seconds
+        #[arg(long = "recent-secs")]
+        recent_secs: Option<u64>,
         /// Show only the most recent N notes
         #[arg(long)]
         limit: Option<usize>,
@@ -1379,15 +1400,19 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
             }
             MeshAction::Inbox {
                 name,
+                from_agent,
+                recent_secs,
                 ack,
                 ack_ids,
                 ack_before,
-            } => tak::commands::mesh::inbox(
+            } => tak::commands::mesh::inbox_with_filters(
                 &root,
                 &name,
                 ack,
                 ack_ids,
                 ack_before.as_deref(),
+                from_agent.as_deref(),
+                recent_secs,
                 format,
             ),
             MeshAction::Heartbeat { name, session_id } => tak::commands::mesh::heartbeat(
@@ -1413,7 +1438,19 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
             MeshAction::Release { name, paths, all } => {
                 tak::commands::mesh::release(&root, &name, paths, all, format)
             }
-            MeshAction::Feed { limit } => tak::commands::mesh::feed(&root, limit, format),
+            MeshAction::Feed {
+                limit,
+                event_types,
+                recent_secs,
+                include_heartbeat,
+            } => tak::commands::mesh::feed_with_filters(
+                &root,
+                limit,
+                event_types,
+                recent_secs,
+                include_heartbeat,
+                format,
+            ),
         },
         Commands::Blackboard { action } => match action {
             BlackboardAction::Post {
@@ -1450,12 +1487,16 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
                 status,
                 tag,
                 task_id,
+                from_agent,
+                recent_secs,
                 limit,
-            } => tak::commands::blackboard::list(
+            } => tak::commands::blackboard::list_with_filters(
                 &root,
                 status,
                 tag,
                 resolve_optional_task_id_arg(&root, task_id)?,
+                from_agent,
+                recent_secs,
                 limit,
                 format,
             ),
@@ -1723,6 +1764,49 @@ mod tests {
     }
 
     #[test]
+    fn parse_blackboard_list_filter_flags() {
+        let cli = Cli::parse_from([
+            "tak",
+            "blackboard",
+            "list",
+            "--status",
+            "open",
+            "--tag",
+            "coordination",
+            "--task",
+            "42",
+            "--from",
+            "agent-1",
+            "--recent-secs",
+            "90",
+            "--limit",
+            "5",
+        ]);
+
+        match cli.command {
+            Commands::Blackboard {
+                action:
+                    BlackboardAction::List {
+                        status,
+                        tag,
+                        task_id,
+                        from_agent,
+                        recent_secs,
+                        limit,
+                    },
+            } => {
+                assert_eq!(status, Some(BlackboardStatus::Open));
+                assert_eq!(tag.as_deref(), Some("coordination"));
+                assert_eq!(task_id.as_deref(), Some("42"));
+                assert_eq!(from_agent.as_deref(), Some("agent-1"));
+                assert_eq!(recent_secs, Some(90));
+                assert_eq!(limit, Some(5));
+            }
+            _ => panic!("expected blackboard list command"),
+        }
+    }
+
+    #[test]
     fn parse_mesh_send_verbosity_flag() {
         let cli = Cli::parse_from([
             "tak",
@@ -1778,15 +1862,56 @@ mod tests {
                 action:
                     MeshAction::Inbox {
                         name,
+                        from_agent,
+                        recent_secs,
                         ack,
                         ack_ids,
                         ack_before,
                     },
             } => {
                 assert_eq!(name, "agent-1");
+                assert_eq!(from_agent, None);
+                assert_eq!(recent_secs, None);
                 assert!(!ack);
                 assert_eq!(ack_ids, vec!["msg-1", "msg-2"]);
                 assert_eq!(ack_before.as_deref(), Some("msg-9"));
+            }
+            _ => panic!("expected mesh inbox command"),
+        }
+    }
+
+    #[test]
+    fn parse_mesh_inbox_filter_flags() {
+        let cli = Cli::parse_from([
+            "tak",
+            "mesh",
+            "inbox",
+            "--name",
+            "agent-1",
+            "--from",
+            "agent-2",
+            "--recent-secs",
+            "120",
+        ]);
+
+        match cli.command {
+            Commands::Mesh {
+                action:
+                    MeshAction::Inbox {
+                        name,
+                        from_agent,
+                        recent_secs,
+                        ack,
+                        ack_ids,
+                        ack_before,
+                    },
+            } => {
+                assert_eq!(name, "agent-1");
+                assert_eq!(from_agent.as_deref(), Some("agent-2"));
+                assert_eq!(recent_secs, Some(120));
+                assert!(!ack);
+                assert!(ack_ids.is_empty());
+                assert!(ack_before.is_none());
             }
             _ => panic!("expected mesh inbox command"),
         }
@@ -1799,6 +1924,40 @@ mod tests {
         ]);
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_mesh_feed_filter_flags() {
+        let cli = Cli::parse_from([
+            "tak",
+            "mesh",
+            "feed",
+            "--limit",
+            "20",
+            "--event-type",
+            "mesh.send,mesh.reserve",
+            "--recent-secs",
+            "300",
+            "--include-heartbeat",
+        ]);
+
+        match cli.command {
+            Commands::Mesh {
+                action:
+                    MeshAction::Feed {
+                        limit,
+                        event_types,
+                        recent_secs,
+                        include_heartbeat,
+                    },
+            } => {
+                assert_eq!(limit, Some(20));
+                assert_eq!(event_types, vec!["mesh.send", "mesh.reserve"]);
+                assert_eq!(recent_secs, Some(300));
+                assert!(include_heartbeat);
+            }
+            _ => panic!("expected mesh feed command"),
+        }
     }
 
     #[test]

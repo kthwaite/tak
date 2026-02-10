@@ -109,6 +109,9 @@ pub enum TakError {
     #[error("verify: invalid scope path '{path}': {reason}")]
     VerifyInvalidScopePath { path: String, reason: String },
 
+    #[error("verify: scope blocked: {0}")]
+    VerifyScopeBlocked(String),
+
     #[error("metrics: invalid query options: {0}")]
     MetricsInvalidQuery(String),
 
@@ -168,6 +171,7 @@ impl TakError {
             Self::WaitInvalidTarget => "wait_invalid_target",
             Self::WaitTimeout(_) => "wait_timeout",
             Self::VerifyInvalidScopePath { .. } => "verify_invalid_scope_path",
+            Self::VerifyScopeBlocked(_) => "verify_scope_blocked",
             Self::MetricsInvalidQuery(_) => "metrics_invalid_query",
             Self::ImportInvalidSpec(_) => "import_invalid_spec",
             Self::WorkInvalidAgentName(_) => "work_invalid_agent_name",
