@@ -108,14 +108,25 @@ If there is an in-progress task, leave it in a truthful lifecycle state (`in_pro
 
 ## Verify mode semantics
 
-When `/tak work verify:isolated` (default):
+When `/tak work verify:isolated` (default), use **path-scoped** gating (not mesh-global):
 
-- Be conservative with local build/test/check commands while peers are active on mesh and may hold overlapping reservations.
-- Coordinate first via mesh/blackboard if verification likely touches shared paths.
+1. Derive verify scope (`V`) from your owned reservations.
+2. Collect foreign reservations (`F`) from other active agents.
+3. Decision model:
+   - `V` empty + `F` empty → allow.
+   - `V` empty + `F` non-empty → block with guidance to reserve scope or switch to local mode.
+   - overlap(`V`,`F`) → block.
+   - no-overlap(`V`,`F`) → allow.
+
+If blocked, include blocker details (agent/path/reason/age) and offer an explicit wait window, e.g.:
+
+```bash
+tak wait --path <blocking-path> --timeout 120
+```
 
 When `/tak work verify:local`:
 
-- Run normal local verification for the task.
+- Run normal local verification for the task (no reservation-based blocking).
 
 ## Standard (non-loop) workflow
 
