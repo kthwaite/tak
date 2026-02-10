@@ -35,3 +35,4 @@ Each page should include:
 - [`isolated-verification.md`](./isolated-verification.md) — when and how to use temporary git worktrees for targeted verification in noisy multi-agent lanes
 - [`meta-refinement-workflow.md`](./meta-refinement-workflow.md) — practical proposal -> `meta` refinement loops with handoff and closeout examples
 - [`pupal-phase-policy.md`](./pupal-phase-policy.md) — idea-first intake policy, promotion gates, and explicit defer/reject outcomes
+- [`pi-coordination-db-json-contract.md`](./pi-coordination-db-json-contract.md) — extension-facing JSON mapping contract for CoordinationDb-backed mesh/blackboard/work flows

@@ -179,13 +179,17 @@ Adding `--rekey-random` remaps all task IDs (including already-canonical reposit
   artifacts/{task_id}/                # Task artifacts (gitignored)
   learnings/*.json                    # Learning records (committed)
   migrations/task-id-map-*.json       # ID migration audit logs (written by migrate-ids --apply)
-  runtime/mesh/*                      # Agent registry/inbox/reservations/feed (gitignored)
-  runtime/blackboard/*                # Shared note board (gitignored)
+  runtime/coordination.db             # Coordination runtime DB (WAL, gitignored)
+  runtime/coordination.db-wal         # SQLite WAL sidecar (gitignored)
+  runtime/coordination.db-shm         # SQLite shared-memory sidecar (gitignored)
+  runtime/work/states/*.json          # Per-agent work-loop state (gitignored)
   therapist/observations.jsonl        # Workflow observations (committed)
   index.db                            # SQLite index (gitignored, rebuilt on demand)
 ```
 
 Task files are the source of truth. The SQLite index is derived and rebuilt automatically when missing (e.g., after a fresh clone).
+
+Coordination state is runtime-only and now backed by `.tak/runtime/coordination.db`. Legacy `.tak/runtime/mesh/` and `.tak/runtime/blackboard/` directories are inert after migration; `tak doctor --fix` can clean them up.
 
 ## Stigmergic Multi-Agent Workflow
 
@@ -268,8 +272,10 @@ Tak also ships a pi package under [`pi-plugin/`](./pi-plugin):
 - `/tak` task picker with filtering (`ready`, `blocked`, `all`, `mine`, `in_progress`) and default **urgent → oldest** ordering
 - `tak_cli` tool for structured task/mesh/blackboard command execution
 - Mesh + blackboard integration (`/tak mesh`, `/tak inbox`, `/tak blackboard`)
+- Guard inputs are CLI-backed (`tak mesh reservations`, `tak mesh list`) rather than direct runtime file reads
 - Auto `tak reindex` + mesh join/leave lifecycle behavior
 - System-prompt augmentation that enforces active tak usage and cross-agent coordination
+- Fail-safe guard behavior: when reservation snapshots are unavailable, guarded write/verify paths block with actionable remediation guidance
 
 Install project-local pi integration from the repo root:
 
