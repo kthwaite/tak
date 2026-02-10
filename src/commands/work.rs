@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use colored::Colorize;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::error::{Result, TakError};
 use crate::model::{Status, Task};
@@ -54,6 +54,173 @@ struct WorkResponse {
     #[serde(rename = "loop")]
     state: WorkState,
     current_task: Option<Task>,
+    #[serde(default)]
+    reservations: Vec<String>,
+    #[serde(default)]
+    blockers: Vec<String>,
+    suggested_action: String,
+}
+
+const RESUME_GATE_EXTENSION_KEY: &str = "resume_gate";
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum ResumeGateReason {
+    Handoff,
+    Blocked,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct ResumeGate {
+    task_id: u64,
+    reason: ResumeGateReason,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    blocked_dep_ids: Vec<u64>,
+    #[serde(default)]
+    handoff_skip_remaining: u8,
+}
+
+enum ResumeGateDecision {
+    Hold {
+        gate: ResumeGate,
+        blocker: String,
+        suggested_action: String,
+    },
+    Clear,
+}
+
+fn load_resume_gate(state: &WorkState) -> Option<ResumeGate> {
+    state
+        .extensions
+        .get(RESUME_GATE_EXTENSION_KEY)
+        .and_then(|value| serde_json::from_value(value.clone()).ok())
+}
+
+fn store_resume_gate(state: &mut WorkState, gate: Option<ResumeGate>) {
+    if let Some(gate) = gate {
+        state.extensions.insert(
+            RESUME_GATE_EXTENSION_KEY.to_string(),
+            serde_json::to_value(gate).unwrap_or(serde_json::Value::Null),
+        );
+    } else {
+        state.extensions.remove(RESUME_GATE_EXTENSION_KEY);
+    }
+}
+
+fn unresolved_dependency_ids(repo: &Repo, task: &Task) -> Result<Vec<u64>> {
+    let mut unresolved = Vec::new();
+
+    for dep in &task.depends_on {
+        match repo.store.read(dep.id) {
+            Ok(dep_task) => {
+                if !matches!(dep_task.status, Status::Done | Status::Cancelled) {
+                    unresolved.push(dep.id);
+                }
+            }
+            Err(TakError::TaskNotFound(_)) => unresolved.push(dep.id),
+            Err(err) => return Err(err),
+        }
+    }
+
+    unresolved.sort_unstable();
+    unresolved.dedup();
+    Ok(unresolved)
+}
+
+fn evaluate_resume_gate(repo: &Repo, gate: ResumeGate) -> Result<ResumeGateDecision> {
+    let task = match repo.store.read(gate.task_id) {
+        Ok(task) => task,
+        Err(TakError::TaskNotFound(_)) => return Ok(ResumeGateDecision::Clear),
+        Err(err) => return Err(err),
+    };
+
+    match gate.reason {
+        ResumeGateReason::Blocked => {
+            if !matches!(task.status, Status::Pending) {
+                return Ok(ResumeGateDecision::Clear);
+            }
+
+            let current_unresolved = unresolved_dependency_ids(repo, &task)?;
+            if current_unresolved.is_empty() || current_unresolved != gate.blocked_dep_ids {
+                return Ok(ResumeGateDecision::Clear);
+            }
+
+            let blocker = format!(
+                "task {} still blocked by deps: {}",
+                TaskId::from(task.id),
+                current_unresolved
+                    .iter()
+                    .map(|id| TaskId::from(*id).to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+            Ok(ResumeGateDecision::Hold {
+                gate,
+                blocker,
+                suggested_action: "wait for dependency change or use --force-reclaim".into(),
+            })
+        }
+        ResumeGateReason::Handoff => {
+            if gate.handoff_skip_remaining == 0 {
+                return Ok(ResumeGateDecision::Clear);
+            }
+
+            let mut updated = gate;
+            updated.handoff_skip_remaining = updated.handoff_skip_remaining.saturating_sub(1);
+            Ok(ResumeGateDecision::Hold {
+                gate: updated,
+                blocker: format!(
+                    "recent handoff from task {}; skipping one reclaim cycle",
+                    TaskId::from(task.id)
+                ),
+                suggested_action:
+                    "rerun `tak work` after updating context/blackboard or use --force-reclaim"
+                        .into(),
+            })
+        }
+    }
+}
+
+fn list_agent_reservations_best_effort(repo_root: &Path, agent: &str) -> Vec<String> {
+    let mesh = MeshStore::open(&repo_root.join(".tak"));
+    if !mesh.exists() {
+        return vec![];
+    }
+
+    let Ok(reservations) = mesh.list_reservations() else {
+        return vec![];
+    };
+
+    let mut paths = reservations
+        .into_iter()
+        .filter(|reservation| reservation.agent == agent)
+        .flat_map(|reservation| reservation.paths)
+        .collect::<Vec<_>>();
+
+    paths.sort();
+    paths.dedup();
+    paths
+}
+
+fn build_response(
+    repo_root: &Path,
+    event: WorkEvent,
+    agent: String,
+    state: WorkState,
+    current_task: Option<Task>,
+    blockers: Vec<String>,
+    suggested_action: String,
+) -> WorkResponse {
+    WorkResponse {
+        event,
+        reservations: list_agent_reservations_best_effort(repo_root, &agent),
+        blockers,
+        suggested_action,
+        agent,
+        ephemeral_identity: false,
+        state,
+        current_task,
+    }
 }
 
 pub fn start_or_resume(
@@ -64,7 +231,7 @@ pub fn start_or_resume(
     verify_mode: Option<WorkVerifyMode>,
     format: Format,
 ) -> Result<()> {
-    start_or_resume_with_strategy(
+    start_or_resume_with_strategy_force(
         repo_root,
         assignee,
         tag,
@@ -72,6 +239,7 @@ pub fn start_or_resume(
         verify_mode,
         None,
         None,
+        false,
         format,
     )
 }
@@ -86,8 +254,32 @@ pub fn start_or_resume_with_strategy(
     coordination_verbosity: Option<WorkCoordinationVerbosity>,
     format: Format,
 ) -> Result<()> {
+    start_or_resume_with_strategy_force(
+        repo_root,
+        assignee,
+        tag,
+        limit,
+        verify_mode,
+        claim_strategy,
+        coordination_verbosity,
+        false,
+        format,
+    )
+}
+
+pub fn start_or_resume_with_strategy_force(
+    repo_root: &Path,
+    assignee: Option<String>,
+    tag: Option<String>,
+    limit: Option<u32>,
+    verify_mode: Option<WorkVerifyMode>,
+    claim_strategy: Option<WorkClaimStrategy>,
+    coordination_verbosity: Option<WorkCoordinationVerbosity>,
+    force_reclaim: bool,
+    format: Format,
+) -> Result<()> {
     let resolved = resolve_agent_identity(assignee)?;
-    let mut response = reconcile_start_or_resume(
+    let mut response = reconcile_start_or_resume_with_force(
         repo_root,
         resolved.name,
         tag,
@@ -95,6 +287,7 @@ pub fn start_or_resume_with_strategy(
         verify_mode,
         claim_strategy,
         coordination_verbosity,
+        force_reclaim,
     )?;
     response.ephemeral_identity = resolved.ephemeral;
     print_response(response, format)
@@ -114,6 +307,7 @@ pub fn stop(repo_root: &Path, assignee: Option<String>, format: Format) -> Resul
     print_response(response, format)
 }
 
+#[cfg(test)]
 fn reconcile_start_or_resume(
     repo_root: &Path,
     agent: String,
@@ -122,6 +316,28 @@ fn reconcile_start_or_resume(
     verify_mode: Option<WorkVerifyMode>,
     claim_strategy: Option<WorkClaimStrategy>,
     coordination_verbosity: Option<WorkCoordinationVerbosity>,
+) -> Result<WorkResponse> {
+    reconcile_start_or_resume_with_force(
+        repo_root,
+        agent,
+        tag,
+        limit,
+        verify_mode,
+        claim_strategy,
+        coordination_verbosity,
+        false,
+    )
+}
+
+fn reconcile_start_or_resume_with_force(
+    repo_root: &Path,
+    agent: String,
+    tag: Option<String>,
+    limit: Option<u32>,
+    verify_mode: Option<WorkVerifyMode>,
+    claim_strategy: Option<WorkClaimStrategy>,
+    coordination_verbosity: Option<WorkCoordinationVerbosity>,
+    force_reclaim: bool,
 ) -> Result<WorkResponse> {
     let work_store = WorkStore::open(&repo_root.join(".tak"));
     let mut state = work_store
@@ -137,46 +353,119 @@ fn reconcile_start_or_resume(
     let repo = Repo::open(repo_root)?;
 
     if let Some(task) = load_current_owned_task(&repo, &agent, state.current_task_id)? {
+        store_resume_gate(&mut state, None);
         let state = work_store.save(&state)?;
-        return Ok(WorkResponse {
-            event: WorkEvent::Continued,
+        let task_id = TaskId::from(task.id);
+        return Ok(build_response(
+            repo_root,
+            WorkEvent::Continued,
             agent,
-            ephemeral_identity: false,
             state,
-            current_task: Some(task),
-        });
+            Some(task),
+            vec![],
+            format!("continue working on {task_id}"),
+        ));
     }
 
-    if state.current_task_id.is_some() {
+    if let Some(previous_task_id) = state.current_task_id {
         state.current_task_id = None;
         mark_previous_unit_processed(&mut state);
         release_reservations_best_effort(repo_root, &agent);
+
+        let previous_task = match repo.store.read(previous_task_id) {
+            Ok(task) => Some(task),
+            Err(TakError::TaskNotFound(_)) => None,
+            Err(err) => return Err(err),
+        };
+
+        let gate = if let Some(task) = previous_task {
+            if matches!(task.status, Status::Pending) {
+                let unresolved = unresolved_dependency_ids(&repo, &task)?;
+                if !unresolved.is_empty() {
+                    Some(ResumeGate {
+                        task_id: task.id,
+                        reason: ResumeGateReason::Blocked,
+                        blocked_dep_ids: unresolved,
+                        handoff_skip_remaining: 0,
+                    })
+                } else if task.assignee.is_none() {
+                    Some(ResumeGate {
+                        task_id: task.id,
+                        reason: ResumeGateReason::Handoff,
+                        blocked_dep_ids: vec![],
+                        handoff_skip_remaining: 1,
+                    })
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        store_resume_gate(&mut state, gate);
     }
 
     if state.remaining == Some(0) {
         state.active = false;
         state.current_task_id = None;
+        store_resume_gate(&mut state, None);
         let state = work_store.save(&state)?;
-        return Ok(WorkResponse {
-            event: WorkEvent::LimitReached,
+        return Ok(build_response(
+            repo_root,
+            WorkEvent::LimitReached,
             agent,
-            ephemeral_identity: false,
             state,
-            current_task: None,
-        });
+            None,
+            vec![],
+            "work-loop limit reached; run `tak work start --limit <n>` to continue".into(),
+        ));
     }
 
     if let Some(task) = find_owned_in_progress_task(&repo, &agent)? {
         state.active = true;
         state.current_task_id = Some(task.id);
+        store_resume_gate(&mut state, None);
         let state = work_store.save(&state)?;
-        return Ok(WorkResponse {
-            event: WorkEvent::Attached,
+        let task_id = TaskId::from(task.id);
+        return Ok(build_response(
+            repo_root,
+            WorkEvent::Attached,
             agent,
-            ephemeral_identity: false,
             state,
-            current_task: Some(task),
-        });
+            Some(task),
+            vec![],
+            format!("resume attached task {task_id}"),
+        ));
+    }
+
+    if force_reclaim {
+        store_resume_gate(&mut state, None);
+    } else if let Some(gate) = load_resume_gate(&state) {
+        match evaluate_resume_gate(&repo, gate)? {
+            ResumeGateDecision::Hold {
+                gate,
+                blocker,
+                suggested_action,
+            } => {
+                store_resume_gate(&mut state, Some(gate));
+                state.active = true;
+                state.current_task_id = None;
+                let state = work_store.save(&state)?;
+                return Ok(build_response(
+                    repo_root,
+                    WorkEvent::NoWork,
+                    agent,
+                    state,
+                    None,
+                    vec![blocker],
+                    suggested_action,
+                ));
+            }
+            ResumeGateDecision::Clear => store_resume_gate(&mut state, None),
+        }
     }
 
     if let Some(task) = crate::commands::claim::claim_next(
@@ -187,40 +476,76 @@ fn reconcile_start_or_resume(
     )? {
         state.active = true;
         state.current_task_id = Some(task.id);
+        store_resume_gate(&mut state, None);
         let state = work_store.save(&state)?;
-        return Ok(WorkResponse {
-            event: WorkEvent::Claimed,
+        let task_id = TaskId::from(task.id);
+        return Ok(build_response(
+            repo_root,
+            WorkEvent::Claimed,
             agent,
-            ephemeral_identity: false,
             state,
-            current_task: Some(task),
-        });
+            Some(task),
+            vec![],
+            format!("start claimed task {task_id}"),
+        ));
     }
 
     state.active = false;
     state.current_task_id = None;
     let state = work_store.save(&state)?;
-    Ok(WorkResponse {
-        event: WorkEvent::NoWork,
+    Ok(build_response(
+        repo_root,
+        WorkEvent::NoWork,
         agent,
-        ephemeral_identity: false,
         state,
-        current_task: None,
-    })
+        None,
+        vec![],
+        "no available work; run `tak next` or adjust filters".into(),
+    ))
 }
 
 fn status_response(repo_root: &Path, agent: String) -> Result<WorkResponse> {
     let store = WorkStore::open(&repo_root.join(".tak"));
     let state = store.status(&agent)?;
     let current_task = load_task_if_exists(repo_root, state.current_task_id)?;
+    let repo = Repo::open(repo_root)?;
 
-    Ok(WorkResponse {
-        event: WorkEvent::Status,
+    let mut blockers = vec![];
+    let suggested_action = if let Some(task) = current_task.as_ref() {
+        format!("continue working on {}", TaskId::from(task.id))
+    } else if let Some(gate) = load_resume_gate(&state) {
+        match evaluate_resume_gate(&repo, gate)? {
+            ResumeGateDecision::Hold {
+                blocker,
+                suggested_action,
+                ..
+            } => {
+                blockers.push(blocker);
+                suggested_action
+            }
+            ResumeGateDecision::Clear => {
+                if state.active {
+                    "run `tak work` to attach or claim available work".into()
+                } else {
+                    "run `tak work start` to activate loop".into()
+                }
+            }
+        }
+    } else if state.active {
+        "run `tak work` to attach or claim available work".into()
+    } else {
+        "run `tak work start` to activate loop".into()
+    };
+
+    Ok(build_response(
+        repo_root,
+        WorkEvent::Status,
         agent,
-        ephemeral_identity: false,
         state,
         current_task,
-    })
+        blockers,
+        suggested_action,
+    ))
 }
 
 fn stop_response(repo_root: &Path, agent: String) -> Result<WorkResponse> {
@@ -228,13 +553,15 @@ fn stop_response(repo_root: &Path, agent: String) -> Result<WorkResponse> {
     let state = store.deactivate(&agent)?;
     release_reservations_best_effort(repo_root, &agent);
 
-    Ok(WorkResponse {
-        event: WorkEvent::Stopped,
+    Ok(build_response(
+        repo_root,
+        WorkEvent::Stopped,
         agent,
-        ephemeral_identity: false,
         state,
-        current_task: None,
-    })
+        None,
+        vec![],
+        "run `tak work start` to resume loop".into(),
+    ))
 }
 
 fn load_current_owned_task(
@@ -365,8 +692,19 @@ fn render_response(response: &WorkResponse, format: Format) -> Result<String> {
                 .map(|v| v.to_string())
                 .unwrap_or_else(|| "-".to_string());
 
+            let reservations = if response.reservations.is_empty() {
+                "-".to_string()
+            } else {
+                response.reservations.join(", ")
+            };
+            let blockers = if response.blockers.is_empty() {
+                "-".to_string()
+            } else {
+                response.blockers.join(" | ")
+            };
+
             let mut out = format!(
-                "{} {} ({})\n  {} {}\n  {} {}\n  {} {}\n  {} {}\n  {} {}\n  {} {}\n  {} {}\n  {} {}",
+                "{} {} ({})\n  {} {}\n  {} {}\n  {} {}\n  {} {}\n  {} {}\n  {} {}\n  {} {}\n  {} {}\n  {} {}\n  {} {}\n  {} {}",
                 "work".cyan().bold(),
                 response.event.as_str().bold(),
                 response.agent.cyan(),
@@ -385,7 +723,13 @@ fn render_response(response: &WorkResponse, format: Format) -> Result<String> {
                 "strategy:".dimmed(),
                 response.state.claim_strategy,
                 "verbosity:".dimmed(),
-                response.state.coordination_verbosity
+                response.state.coordination_verbosity,
+                "reservations:".dimmed(),
+                reservations,
+                "blockers:".dimmed(),
+                blockers,
+                "next:".dimmed(),
+                response.suggested_action
             );
             if response.ephemeral_identity {
                 out.push_str(&format!(
@@ -453,6 +797,25 @@ mod tests {
                 None,
                 None,
                 vec![],
+                vec![],
+                Contract::default(),
+                Planning::default(),
+            )
+            .unwrap();
+        repo.index.upsert(&task).unwrap();
+        task.id
+    }
+
+    fn create_task_with_deps(repo_root: &Path, title: &str, depends_on: Vec<u64>) -> u64 {
+        let repo = Repo::open(repo_root).unwrap();
+        let task = repo
+            .store
+            .create(
+                title.to_string(),
+                Kind::Task,
+                None,
+                None,
+                depends_on,
                 vec![],
                 Contract::default(),
                 Planning::default(),
@@ -607,6 +970,112 @@ mod tests {
     }
 
     #[test]
+    fn reconcile_handoff_gate_skips_one_immediate_reclaim_cycle() {
+        let dir = setup_repo();
+        let handed_off_task_id = create_task(dir.path(), "handoff-ready");
+        let _other_task_id = create_task(dir.path(), "next-task");
+
+        let store = WorkStore::open(&dir.path().join(".tak"));
+        let mut state = store
+            .activate("agent-1", None, None, None, None, None)
+            .unwrap()
+            .state;
+        state.current_task_id = Some(handed_off_task_id);
+        store.save(&state).unwrap();
+
+        let first =
+            reconcile_start_or_resume(dir.path(), "agent-1".into(), None, None, None, None, None)
+                .unwrap();
+        assert_eq!(first.event, WorkEvent::NoWork);
+        assert!(first.current_task.is_none());
+        assert!(
+            first
+                .blockers
+                .iter()
+                .any(|line| line.contains("recent handoff"))
+        );
+        assert!(first.suggested_action.contains("--force-reclaim"));
+
+        let second =
+            reconcile_start_or_resume(dir.path(), "agent-1".into(), None, None, None, None, None)
+                .unwrap();
+        assert_eq!(second.event, WorkEvent::Claimed);
+        assert!(second.current_task.is_some());
+    }
+
+    #[test]
+    fn reconcile_blocked_gate_waits_until_dependency_predicate_changes() {
+        let dir = setup_repo();
+        let dep_id = create_task(dir.path(), "dep");
+        let blocked_id = create_task_with_deps(dir.path(), "blocked", vec![dep_id]);
+
+        let store = WorkStore::open(&dir.path().join(".tak"));
+        let mut state = store
+            .activate("agent-1", None, None, None, None, None)
+            .unwrap()
+            .state;
+        state.current_task_id = Some(blocked_id);
+        store.save(&state).unwrap();
+
+        let first =
+            reconcile_start_or_resume(dir.path(), "agent-1".into(), None, None, None, None, None)
+                .unwrap();
+        assert_eq!(first.event, WorkEvent::NoWork);
+        assert!(first.current_task.is_none());
+        assert!(
+            first
+                .blockers
+                .iter()
+                .any(|line| line.contains("still blocked by deps"))
+        );
+
+        mutate_task(dir.path(), dep_id, |task| {
+            task.status = Status::Done;
+        });
+
+        let second =
+            reconcile_start_or_resume(dir.path(), "agent-1".into(), None, None, None, None, None)
+                .unwrap();
+        assert_eq!(second.event, WorkEvent::Claimed);
+        assert_eq!(
+            second.current_task.as_ref().map(|task| task.id),
+            Some(blocked_id)
+        );
+    }
+
+    #[test]
+    fn reconcile_force_reclaim_bypasses_resume_gate() {
+        let dir = setup_repo();
+        let handed_off_task_id = create_task(dir.path(), "handoff-ready");
+
+        let store = WorkStore::open(&dir.path().join(".tak"));
+        let mut state = store
+            .activate("agent-1", None, None, None, None, None)
+            .unwrap()
+            .state;
+        state.current_task_id = Some(handed_off_task_id);
+        store.save(&state).unwrap();
+
+        let response = reconcile_start_or_resume_with_force(
+            dir.path(),
+            "agent-1".into(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            true,
+        )
+        .unwrap();
+
+        assert_eq!(response.event, WorkEvent::Claimed);
+        assert_eq!(
+            response.current_task.as_ref().map(|task| task.id),
+            Some(handed_off_task_id)
+        );
+    }
+
+    #[test]
     fn reconcile_hits_limit_after_previous_unit_processed() {
         let dir = setup_repo();
         let finished_task_id = create_task(dir.path(), "finished");
@@ -713,6 +1182,31 @@ mod tests {
             response.current_task.as_ref().map(|task| task.id),
             Some(task_id)
         );
+    }
+
+    #[test]
+    fn status_includes_reservations_and_next_action_snapshot() {
+        let dir = setup_repo();
+
+        let store = WorkStore::open(&dir.path().join(".tak"));
+        store
+            .activate("agent-1", None, None, None, None, None)
+            .unwrap();
+
+        let mesh = MeshStore::open(&dir.path().join(".tak"));
+        mesh.join(Some("agent-1"), Some("sid-1")).unwrap();
+        mesh.reserve(
+            "agent-1",
+            vec!["src/commands/work.rs".into()],
+            Some("status-snapshot"),
+        )
+        .unwrap();
+
+        let response = status_response(dir.path(), "agent-1".into()).unwrap();
+
+        assert_eq!(response.event, WorkEvent::Status);
+        assert_eq!(response.reservations, vec!["src/commands/work.rs"]);
+        assert!(response.suggested_action.contains("run `tak work`"));
     }
 
     #[test]
@@ -843,6 +1337,19 @@ mod tests {
             current_task.get("id").and_then(|v| v.as_u64()),
             Some(task_id)
         );
+
+        assert!(
+            value
+                .get("reservations")
+                .and_then(|v| v.as_array())
+                .is_some()
+        );
+        assert!(value.get("blockers").and_then(|v| v.as_array()).is_some());
+        let expected = format!("start claimed task {}", TaskId::from(task_id));
+        assert_eq!(
+            value.get("suggested_action").and_then(|v| v.as_str()),
+            Some(expected.as_str())
+        );
     }
 
     #[test]
@@ -864,6 +1371,9 @@ mod tests {
         assert!(plain.contains("verify: isolated"));
         assert!(plain.contains("strategy: priority_then_age"));
         assert!(plain.contains("verbosity: medium"));
+        assert!(plain.contains("reservations: -"));
+        assert!(plain.contains("blockers: -"));
+        assert!(plain.contains("next: start claimed task"));
     }
 
     #[test]
