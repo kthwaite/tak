@@ -885,6 +885,7 @@ dependencies = [
  "clap",
  "colored",
  "fs2",
+ "getrandom",
  "git2",
  "predicates",
  "rusqlite",

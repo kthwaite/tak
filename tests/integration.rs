@@ -1029,7 +1029,7 @@ fn test_setup_preserves_existing_settings() {
 fn test_doctor_healthy_repo_structure() {
     let dir = tempdir().unwrap();
     let store = FileStore::init(dir.path()).unwrap();
-    store
+    let task = store
         .create(
             "Task A".into(),
             Kind::Task,
@@ -1054,11 +1054,11 @@ fn test_doctor_healthy_repo_structure() {
         serde_json::from_str(&fs::read_to_string(dir.path().join(".tak/config.json")).unwrap())
             .unwrap();
     assert_eq!(config["version"], 2);
-    assert!(dir.path().join(".tak/counter.json").exists());
+    assert!(!dir.path().join(".tak/counter.json").exists());
     assert!(dir.path().join(".tak/tasks").is_dir());
     assert!(
         dir.path()
-            .join(format!(".tak/tasks/{}.json", task_id_hex(1)))
+            .join(format!(".tak/tasks/{}.json", task_id_hex(task.id)))
             .exists()
     );
     assert!(dir.path().join(".tak/index.db").exists());

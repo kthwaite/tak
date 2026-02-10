@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -15,11 +15,13 @@ use crate::store::repo::Repo;
 use crate::task_id::TaskId;
 
 const MIGRATED_CONFIG_VERSION: u64 = 3;
+const RANDOM_REKEY_MAX_ATTEMPTS_PER_TASK: usize = 128;
 
 #[derive(Debug, Serialize)]
 struct PreflightReport {
     dry_run: bool,
     apply_requested: bool,
+    rekey_random: bool,
     force: bool,
     task_count: usize,
     learning_count: usize,
@@ -44,6 +46,7 @@ struct ApplyReport {
     artifact_dirs_renamed: usize,
     config_version_before: Option<u64>,
     config_version_after: u64,
+    rekey_random: bool,
     audit_map_path: String,
     audit_entries: usize,
 }
@@ -63,9 +66,15 @@ struct AuditMapEntry {
     new_task_id: TaskId,
 }
 
-pub fn run(repo_root: &Path, dry_run: bool, force: bool, format: Format) -> Result<()> {
+pub fn run(
+    repo_root: &Path,
+    dry_run: bool,
+    force: bool,
+    rekey_random: bool,
+    format: Format,
+) -> Result<()> {
     let repo = Repo::open(repo_root)?;
-    let preflight = preflight(repo_root, &repo, dry_run, force)?;
+    let preflight = preflight(repo_root, &repo, dry_run, force, rekey_random)?;
 
     if !preflight.issues.is_empty() {
         let report = MigrationReport {
@@ -79,7 +88,7 @@ pub fn run(repo_root: &Path, dry_run: bool, force: bool, format: Format) -> Resu
     }
 
     let apply = if preflight.apply_requested {
-        Some(apply_migration(repo_root, &repo)?)
+        Some(apply_migration(repo_root, &repo, rekey_random)?)
     } else {
         None
     };
@@ -89,9 +98,13 @@ pub fn run(repo_root: &Path, dry_run: bool, force: bool, format: Format) -> Resu
     Ok(())
 }
 
-fn apply_migration(repo_root: &Path, repo: &Repo) -> Result<ApplyReport> {
+fn apply_migration(repo_root: &Path, repo: &Repo, rekey_random: bool) -> Result<ApplyReport> {
     let tasks = repo.store.list_all()?;
-    let id_map = build_identity_id_map(&tasks);
+    let id_map = if rekey_random {
+        build_random_id_map(&tasks)?
+    } else {
+        build_identity_id_map(&tasks)
+    };
 
     // Validate downstream rewrites before mutating task files.
     let _ = repo.learnings.migrate_task_links(&id_map, true)?;
@@ -110,6 +123,7 @@ fn apply_migration(repo_root: &Path, repo: &Repo) -> Result<ApplyReport> {
         &audit_entries,
         config_version_before,
         MIGRATED_CONFIG_VERSION,
+        rekey_random,
         task_summary.rewritten,
         learning_report.learnings_updated,
         learning_report.task_links_rewritten,
@@ -132,6 +146,7 @@ fn apply_migration(repo_root: &Path, repo: &Repo) -> Result<ApplyReport> {
         artifact_dirs_renamed: sidecar_report.artifact_dirs_renamed,
         config_version_before,
         config_version_after: MIGRATED_CONFIG_VERSION,
+        rekey_random,
         audit_map_path: audit_map_path.display().to_string(),
         audit_entries: audit_entries.len(),
     })
@@ -139,6 +154,49 @@ fn apply_migration(repo_root: &Path, repo: &Repo) -> Result<ApplyReport> {
 
 fn build_identity_id_map(tasks: &[Task]) -> HashMap<u64, u64> {
     tasks.iter().map(|task| (task.id, task.id)).collect()
+}
+
+fn build_random_id_map(tasks: &[Task]) -> Result<HashMap<u64, u64>> {
+    build_random_id_map_with(tasks, TaskId::generate)
+}
+
+fn build_random_id_map_with<F>(tasks: &[Task], mut generate: F) -> Result<HashMap<u64, u64>>
+where
+    F: FnMut() -> std::result::Result<TaskId, crate::task_id::TaskIdGenerationError>,
+{
+    let existing_ids: HashSet<u64> = tasks.iter().map(|task| task.id).collect();
+    let mut reserved_new_ids = existing_ids.clone();
+    let mut id_map = HashMap::with_capacity(tasks.len());
+
+    for task in tasks {
+        let mut allocated = None;
+
+        for _ in 0..RANDOM_REKEY_MAX_ATTEMPTS_PER_TASK {
+            let candidate = generate().map_err(|err| {
+                TakError::Locked(format!(
+                    "failed to generate random task id for migration: {err}"
+                ))
+            })?;
+            let candidate_id = candidate.as_u64();
+
+            if reserved_new_ids.insert(candidate_id) {
+                allocated = Some(candidate_id);
+                break;
+            }
+        }
+
+        let Some(new_id) = allocated else {
+            return Err(TakError::Locked(format!(
+                "failed to allocate unique random migration id for task {} after {} attempts",
+                TaskId::from(task.id),
+                RANDOM_REKEY_MAX_ATTEMPTS_PER_TASK
+            )));
+        };
+
+        id_map.insert(task.id, new_id);
+    }
+
+    Ok(id_map)
 }
 
 fn build_audit_entries(id_map: &HashMap<u64, u64>) -> Vec<AuditMapEntry> {
@@ -164,6 +222,7 @@ fn write_audit_map(
     entries: &[AuditMapEntry],
     config_version_before: Option<u64>,
     config_version_after: u64,
+    rekey_random: bool,
     task_files_rewritten: usize,
     learnings_updated: usize,
     learning_task_links_rewritten: usize,
@@ -185,6 +244,7 @@ fn write_audit_map(
         "generated_at": timestamp.to_rfc3339(),
         "config_version_before": config_version_before,
         "config_version_after": config_version_after,
+        "rekey_random": rekey_random,
         "task_files_rewritten": task_files_rewritten,
         "learnings_updated": learnings_updated,
         "learning_task_links_rewritten": learning_task_links_rewritten,
@@ -223,7 +283,13 @@ fn update_config_version(config_path: &Path, target_version: u64) -> Result<Opti
     Ok(previous)
 }
 
-fn preflight(repo_root: &Path, repo: &Repo, dry_run: bool, force: bool) -> Result<PreflightReport> {
+fn preflight(
+    repo_root: &Path,
+    repo: &Repo,
+    dry_run: bool,
+    force: bool,
+    rekey_random: bool,
+) -> Result<PreflightReport> {
     let tasks = repo.store.list_all()?;
     let task_count = tasks.len();
     let learning_count = repo.learnings.list_all()?.len();
@@ -246,7 +312,9 @@ fn preflight(repo_root: &Path, repo: &Repo, dry_run: bool, force: bool) -> Resul
         warnings.push("no tasks found in repository".into());
     }
 
-    if legacy_task_files == 0 {
+    if rekey_random {
+        warnings.push("random re-key requested: all task IDs will be rewritten".into());
+    } else if legacy_task_files == 0 {
         warnings.push("no legacy numeric task filenames detected".into());
     }
 
@@ -277,6 +345,7 @@ fn preflight(repo_root: &Path, repo: &Repo, dry_run: bool, force: bool) -> Resul
     Ok(PreflightReport {
         dry_run,
         apply_requested: !dry_run,
+        rekey_random,
         force,
         task_count,
         learning_count,
@@ -375,6 +444,7 @@ fn print_report(report: &MigrationReport, format: Format) -> Result<()> {
                 preflight.target_config_version
             );
             println!("  {} {}", "force:".dimmed(), preflight.force);
+            println!("  {} {}", "rekey random:".dimmed(), preflight.rekey_random);
 
             if !preflight.warnings.is_empty() {
                 println!("\n{}", "Warnings".yellow().bold());
@@ -421,6 +491,7 @@ fn print_report(report: &MigrationReport, format: Format) -> Result<()> {
                             .unwrap_or_else(|| "<missing>".to_string()),
                         apply.config_version_after
                     );
+                    println!("  {} {}", "rekey random:".dimmed(), apply.rekey_random);
                     println!("  {} {}", "audit map:".dimmed(), apply.audit_map_path);
                 } else {
                     println!("\n{}", "Preflight passed; dry-run made no changes.".green());
@@ -429,9 +500,10 @@ fn print_report(report: &MigrationReport, format: Format) -> Result<()> {
         }
         Format::Minimal => {
             println!(
-                "dry_run={} apply={} tasks={} legacy={} hash={} issues={} warnings={} applied={} audit_entries={}",
+                "dry_run={} apply={} rekey_random={} tasks={} legacy={} hash={} issues={} warnings={} applied={} audit_entries={}",
                 preflight.dry_run,
                 preflight.apply_requested,
+                preflight.rekey_random,
                 preflight.task_count,
                 preflight.legacy_task_files,
                 preflight.hash_task_files,
@@ -449,8 +521,9 @@ fn print_report(report: &MigrationReport, format: Format) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Contract, Kind, Planning, Status};
+    use crate::model::{Contract, Dependency, Kind, LearningCategory, Planning, Status};
     use crate::store::files::FileStore;
+    use crate::store::learnings::LearningStore;
     use chrono::Utc;
     use tempfile::tempdir;
 
@@ -492,7 +565,7 @@ mod tests {
         store.write(&task).unwrap();
 
         let repo = Repo::open(dir.path()).unwrap();
-        let report = preflight(dir.path(), &repo, true, false).unwrap();
+        let report = preflight(dir.path(), &repo, true, false, false).unwrap();
 
         assert!(
             report
@@ -524,7 +597,7 @@ mod tests {
         store.write(&task).unwrap();
 
         let repo = Repo::open(dir.path()).unwrap();
-        let report = preflight(dir.path(), &repo, true, true).unwrap();
+        let report = preflight(dir.path(), &repo, true, true, false).unwrap();
 
         assert!(
             !report
@@ -532,6 +605,236 @@ mod tests {
                 .iter()
                 .any(|issue| issue.contains("in-progress tasks must be resolved"))
         );
+    }
+
+    #[test]
+    fn preflight_rekey_random_skips_missing_legacy_warning() {
+        let dir = tempdir().unwrap();
+        let store = FileStore::init(dir.path()).unwrap();
+
+        let _task = store
+            .create(
+                "canonical task".into(),
+                Kind::Task,
+                None,
+                None,
+                vec![],
+                vec![],
+                Contract::default(),
+                Planning::default(),
+            )
+            .unwrap();
+
+        let repo = Repo::open(dir.path()).unwrap();
+        let report = preflight(dir.path(), &repo, true, false, true).unwrap();
+
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("random re-key requested"))
+        );
+        assert!(
+            !report
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("no legacy numeric task filenames"))
+        );
+    }
+
+    #[test]
+    fn build_random_id_map_with_avoids_existing_ids_and_retries_collisions() {
+        let dir = tempdir().unwrap();
+        let store = FileStore::init(dir.path()).unwrap();
+
+        let first = store
+            .create(
+                "first".into(),
+                Kind::Task,
+                None,
+                None,
+                vec![],
+                vec![],
+                Contract::default(),
+                Planning::default(),
+            )
+            .unwrap();
+        let second = store
+            .create(
+                "second".into(),
+                Kind::Task,
+                None,
+                None,
+                vec![],
+                vec![],
+                Contract::default(),
+                Planning::default(),
+            )
+            .unwrap();
+
+        let tasks = store.list_all().unwrap();
+        let existing: std::collections::HashSet<u64> = tasks.iter().map(|task| task.id).collect();
+
+        let mut next_fresh = 1_u64;
+        while existing.contains(&next_fresh) {
+            next_fresh += 1;
+        }
+        let fresh_a = next_fresh;
+
+        next_fresh += 1;
+        while existing.contains(&next_fresh) || next_fresh == fresh_a {
+            next_fresh += 1;
+        }
+        let fresh_b = next_fresh;
+
+        let sequence = [first.id, fresh_a, second.id, fresh_b];
+        let mut idx = 0;
+        let map = build_random_id_map_with(&tasks, || {
+            let value = sequence[idx];
+            idx += 1;
+            Ok(TaskId::from(value))
+        })
+        .unwrap();
+
+        assert_eq!(map.len(), 2);
+        let mapped_ids: std::collections::HashSet<u64> = map.values().copied().collect();
+        assert_eq!(mapped_ids.len(), 2);
+        assert!(mapped_ids.iter().all(|id| !existing.contains(id)));
+    }
+
+    #[test]
+    fn apply_mode_with_rekey_random_rewrites_canonical_task_ids() {
+        let dir = tempdir().unwrap();
+        let store = FileStore::init(dir.path()).unwrap();
+
+        let root = store
+            .create(
+                "root".into(),
+                Kind::Task,
+                None,
+                None,
+                vec![],
+                vec![],
+                Contract::default(),
+                Planning::default(),
+            )
+            .unwrap();
+        let child = store
+            .create(
+                "child".into(),
+                Kind::Task,
+                None,
+                Some(root.id),
+                vec![root.id],
+                vec![],
+                Contract::default(),
+                Planning::default(),
+            )
+            .unwrap();
+
+        fs::create_dir_all(store.root().join("context")).unwrap();
+        fs::write(
+            store
+                .root()
+                .join("context")
+                .join(format!("{}.md", TaskId::from(child.id))),
+            "context",
+        )
+        .unwrap();
+
+        let learning_store = LearningStore::open(store.root());
+        let learning = learning_store
+            .create(
+                "child-link".into(),
+                Some("linked to child task".into()),
+                LearningCategory::Insight,
+                vec!["migration".into()],
+                vec![child.id],
+            )
+            .unwrap();
+
+        run(dir.path(), false, false, true, Format::Json).unwrap();
+
+        let repo = Repo::open(dir.path()).unwrap();
+        let tasks = repo.store.list_all().unwrap();
+        assert_eq!(tasks.len(), 2);
+
+        let migrated_root = tasks.iter().find(|task| task.title == "root").unwrap();
+        let migrated_child = tasks.iter().find(|task| task.title == "child").unwrap();
+
+        assert_ne!(migrated_root.id, root.id);
+        assert_ne!(migrated_child.id, child.id);
+        assert_eq!(migrated_child.parent, Some(migrated_root.id));
+        assert_eq!(
+            migrated_child.depends_on,
+            vec![Dependency::simple(migrated_root.id)]
+        );
+
+        let migrated_learning = repo.learnings.read(learning.id).unwrap();
+        assert_eq!(migrated_learning.task_ids, vec![migrated_child.id]);
+
+        let tasks_dir = store.root().join("tasks");
+        assert!(
+            !tasks_dir
+                .join(format!("{}.json", TaskId::from(root.id)))
+                .exists()
+        );
+        assert!(
+            !tasks_dir
+                .join(format!("{}.json", TaskId::from(child.id)))
+                .exists()
+        );
+        assert!(
+            tasks_dir
+                .join(format!("{}.json", TaskId::from(migrated_root.id)))
+                .exists()
+        );
+        assert!(
+            tasks_dir
+                .join(format!("{}.json", TaskId::from(migrated_child.id)))
+                .exists()
+        );
+
+        let old_context = store
+            .root()
+            .join("context")
+            .join(format!("{}.md", TaskId::from(child.id)));
+        let new_context = store
+            .root()
+            .join("context")
+            .join(format!("{}.md", TaskId::from(migrated_child.id)));
+        assert!(!old_context.exists());
+        assert!(new_context.exists());
+
+        let config: Value =
+            serde_json::from_str(&fs::read_to_string(store.root().join("config.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            config["version"],
+            serde_json::json!(MIGRATED_CONFIG_VERSION)
+        );
+
+        let mut audit_files = fs::read_dir(store.root().join("migrations"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect::<Vec<_>>();
+        audit_files.sort();
+        assert_eq!(audit_files.len(), 1);
+
+        let audit: Value =
+            serde_json::from_str(&fs::read_to_string(&audit_files[0]).unwrap()).unwrap();
+        assert_eq!(audit["rekey_random"], serde_json::json!(true));
+
+        let id_map = audit["id_map"].as_array().unwrap();
+        assert_eq!(id_map.len(), 2);
+        assert!(id_map.iter().all(|entry| {
+            entry
+                .get("old_id")
+                .and_then(Value::as_u64)
+                .zip(entry.get("new_id").and_then(Value::as_u64))
+                .map(|(old_id, new_id)| old_id != new_id)
+                .unwrap_or(false)
+        }));
     }
 
     #[test]
@@ -565,7 +868,7 @@ mod tests {
         )
         .unwrap();
 
-        run(dir.path(), false, false, Format::Json).unwrap();
+        run(dir.path(), false, false, false, Format::Json).unwrap();
 
         let config: Value =
             serde_json::from_str(&fs::read_to_string(store.root().join("config.json")).unwrap())

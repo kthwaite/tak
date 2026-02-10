@@ -8,6 +8,8 @@ use crate::model::{Contract, Dependency, Execution, GitInfo, Kind, Planning, Sta
 use crate::store::lock;
 use crate::task_id::TaskId;
 
+const TASK_ID_ALLOCATION_MAX_ATTEMPTS: usize = 128;
+
 /// Root of the .tak directory for a repository.
 pub struct FileStore {
     root: PathBuf,
@@ -31,7 +33,6 @@ impl FileStore {
         }
 
         fs::create_dir_all(root.join("tasks"))?;
-        fs::write(root.join("counter.json"), r#"{"next_id": 1}"#)?;
         fs::write(root.join("config.json"), r#"{"version": 2}"#)?;
 
         Ok(Self { root })
@@ -86,15 +87,29 @@ impl FileStore {
     }
 
     fn allocation_lock_path(&self) -> PathBuf {
-        // Keep legacy lock filename for compatibility; allocation no longer depends on counter.json.
-        self.root.join("counter.lock")
+        self.root.join("task-id.lock")
     }
 
     fn next_available_id(&self) -> Result<u64> {
-        let max_id = self.list_ids()?.into_iter().max().unwrap_or(0);
-        max_id.checked_add(1).ok_or_else(|| {
-            std::io::Error::other("task id overflow while allocating next task id").into()
-        })
+        self.next_available_id_with(TaskId::generate)
+    }
+
+    fn next_available_id_with<F>(&self, mut generate: F) -> Result<u64>
+    where
+        F: FnMut() -> std::result::Result<TaskId, crate::task_id::TaskIdGenerationError>,
+    {
+        for _ in 0..TASK_ID_ALLOCATION_MAX_ATTEMPTS {
+            let candidate = generate().map_err(|err| std::io::Error::other(err.to_string()))?;
+            let id = candidate.as_u64();
+            if self.resolve_task_path(id).is_none() {
+                return Ok(id);
+            }
+        }
+
+        Err(std::io::Error::other(format!(
+            "failed to allocate unique task id after {TASK_ID_ALLOCATION_MAX_ATTEMPTS} attempts"
+        ))
+        .into())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -116,7 +131,7 @@ impl FileStore {
             self.read(dep)?;
         }
 
-        let lock_file = lock::acquire_lock(&self.allocation_lock_path())?;
+        let _allocation_lock = lock::acquire_lock(&self.allocation_lock_path())?;
         let id = self.next_available_id()?;
 
         let now = Utc::now();
@@ -143,7 +158,6 @@ impl FileStore {
 
         let json = serde_json::to_string_pretty(&task)?;
         fs::write(self.task_path(id), json)?;
-        lock::release_lock(lock_file)?;
         Ok(task)
     }
 
@@ -243,7 +257,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let store = FileStore::init(dir.path()).unwrap();
         assert!(store.root().join("config.json").exists());
-        assert!(store.root().join("counter.json").exists());
+        assert!(!store.root().join("counter.json").exists());
         assert!(store.root().join("tasks").is_dir());
     }
 
@@ -270,19 +284,18 @@ mod tests {
                 Planning::default(),
             )
             .unwrap();
-        assert_eq!(task.id, 1);
+        assert_eq!(TaskId::from(task.id).as_str().len(), TaskId::HEX_LEN);
         assert_eq!(task.title, "First task");
-        let read = store.read(1).unwrap();
+        let read = store.read(task.id).unwrap();
         assert_eq!(read.title, "First task");
     }
 
     #[test]
-    fn create_does_not_depend_on_counter_json() {
+    fn create_does_not_create_counter_artifacts() {
         let dir = tempdir().unwrap();
         let store = FileStore::init(dir.path()).unwrap();
-        fs::remove_file(store.root().join("counter.json")).unwrap();
 
-        let task = store
+        let _task = store
             .create(
                 "No counter".into(),
                 Kind::Task,
@@ -295,7 +308,8 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(task.id, 1);
+        assert!(!store.root().join("counter.json").exists());
+        assert!(!store.root().join("counter.lock").exists());
     }
 
     #[test]
@@ -354,7 +368,7 @@ mod tests {
     }
 
     #[test]
-    fn sequential_ids() {
+    fn generated_ids_are_unique() {
         let dir = tempdir().unwrap();
         let store = FileStore::init(dir.path()).unwrap();
         let t1 = store
@@ -393,9 +407,9 @@ mod tests {
                 Planning::default(),
             )
             .unwrap();
-        assert_eq!(t1.id, 1);
-        assert_eq!(t2.id, 2);
-        assert_eq!(t3.id, 3);
+        assert_ne!(t1.id, t2.id);
+        assert_ne!(t1.id, t3.id);
+        assert_ne!(t2.id, t3.id);
     }
 
     #[test]
@@ -435,7 +449,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let store = FileStore::init(dir.path()).unwrap();
 
-        store
+        let t1 = store
             .create(
                 "A".into(),
                 Kind::Task,
@@ -447,7 +461,7 @@ mod tests {
                 Planning::default(),
             )
             .unwrap();
-        store
+        let t2 = store
             .create(
                 "B".into(),
                 Kind::Task,
@@ -459,7 +473,7 @@ mod tests {
                 Planning::default(),
             )
             .unwrap();
-        store
+        let t3 = store
             .create(
                 "C".into(),
                 Kind::Task,
@@ -473,31 +487,35 @@ mod tests {
             .unwrap();
 
         let base = Utc::now();
-        let mut t1 = store.read(1).unwrap();
-        t1.created_at = base + chrono::Duration::seconds(20);
-        t1.updated_at = t1.created_at;
-        store.write(&t1).unwrap();
+        let mut task1 = store.read(t1.id).unwrap();
+        task1.created_at = base + chrono::Duration::seconds(20);
+        task1.updated_at = task1.created_at;
+        store.write(&task1).unwrap();
 
-        let mut t2 = store.read(2).unwrap();
-        t2.created_at = base + chrono::Duration::seconds(10);
-        t2.updated_at = t2.created_at;
-        store.write(&t2).unwrap();
+        let mut task2 = store.read(t2.id).unwrap();
+        task2.created_at = base + chrono::Duration::seconds(10);
+        task2.updated_at = task2.created_at;
+        store.write(&task2).unwrap();
 
-        let mut t3 = store.read(3).unwrap();
-        t3.created_at = base + chrono::Duration::seconds(10);
-        t3.updated_at = t3.created_at;
-        store.write(&t3).unwrap();
+        let mut task3 = store.read(t3.id).unwrap();
+        task3.created_at = base + chrono::Duration::seconds(10);
+        task3.updated_at = task3.created_at;
+        store.write(&task3).unwrap();
 
         let all = store.list_all().unwrap();
         let ids: Vec<u64> = all.into_iter().map(|t| t.id).collect();
-        assert_eq!(ids, vec![2, 3, 1]);
+        let mut expected_same_timestamp = vec![t2.id, t3.id];
+        expected_same_timestamp.sort_unstable();
+        let mut expected = expected_same_timestamp;
+        expected.push(t1.id);
+        assert_eq!(ids, expected);
     }
 
     #[test]
     fn list_ids_uses_task_payload_not_filename() {
         let dir = tempdir().unwrap();
         let store = FileStore::init(dir.path()).unwrap();
-        store
+        let task = store
             .create(
                 "Task".into(),
                 Kind::Task,
@@ -511,19 +529,21 @@ mod tests {
             .unwrap();
 
         fs::rename(
-            store.tasks_dir().join(format!("{}.json", TaskId::from(1))),
+            store
+                .tasks_dir()
+                .join(format!("{}.json", TaskId::from(task.id))),
             store.tasks_dir().join("deadbeefdeadbeef.json"),
         )
         .unwrap();
 
-        assert_eq!(store.list_ids().unwrap(), vec![1]);
+        assert_eq!(store.list_ids().unwrap(), vec![task.id]);
     }
 
     #[test]
     fn list_all_reads_tasks_from_non_numeric_filenames() {
         let dir = tempdir().unwrap();
         let store = FileStore::init(dir.path()).unwrap();
-        store
+        let task = store
             .create(
                 "Task".into(),
                 Kind::Task,
@@ -537,14 +557,16 @@ mod tests {
             .unwrap();
 
         fs::rename(
-            store.tasks_dir().join(format!("{}.json", TaskId::from(1))),
+            store
+                .tasks_dir()
+                .join(format!("{}.json", TaskId::from(task.id))),
             store.tasks_dir().join("deadbeefdeadbeef.json"),
         )
         .unwrap();
 
         let all = store.list_all().unwrap();
         assert_eq!(all.len(), 1);
-        assert_eq!(all[0].id, 1);
+        assert_eq!(all[0].id, task.id);
         assert_eq!(all[0].title, "Task");
     }
 
@@ -552,7 +574,7 @@ mod tests {
     fn fingerprint_includes_non_numeric_filenames() {
         let dir = tempdir().unwrap();
         let store = FileStore::init(dir.path()).unwrap();
-        store
+        let task = store
             .create(
                 "Task".into(),
                 Kind::Task,
@@ -566,7 +588,9 @@ mod tests {
             .unwrap();
 
         fs::rename(
-            store.tasks_dir().join(format!("{}.json", TaskId::from(1))),
+            store
+                .tasks_dir()
+                .join(format!("{}.json", TaskId::from(task.id))),
             store.tasks_dir().join("deadbeefdeadbeef.json"),
         )
         .unwrap();
@@ -579,7 +603,7 @@ mod tests {
     fn delete_task() {
         let dir = tempdir().unwrap();
         let store = FileStore::init(dir.path()).unwrap();
-        store
+        let task = store
             .create(
                 "Doomed".into(),
                 Kind::Task,
@@ -591,8 +615,8 @@ mod tests {
                 Planning::default(),
             )
             .unwrap();
-        store.delete(1).unwrap();
-        assert!(store.read(1).is_err());
+        store.delete(task.id).unwrap();
+        assert!(store.read(task.id).is_err());
     }
 
     #[test]
@@ -608,7 +632,7 @@ mod tests {
         let store = FileStore::init(dir.path()).unwrap();
 
         // Create two tasks so dep references are valid
-        store
+        let dep_a = store
             .create(
                 "Dep A".into(),
                 Kind::Task,
@@ -620,7 +644,7 @@ mod tests {
                 Planning::default(),
             )
             .unwrap();
-        store
+        let dep_b = store
             .create(
                 "Dep B".into(),
                 Kind::Task,
@@ -640,33 +664,154 @@ mod tests {
                 Kind::Task,
                 None,
                 None,
-                vec![1, 2, 1, 2, 1],
+                vec![dep_a.id, dep_b.id, dep_a.id, dep_b.id, dep_a.id],
                 vec!["x".into(), "y".into(), "x".into()],
                 Contract::default(),
                 Planning::default(),
             )
             .unwrap();
 
-        assert_eq!(
-            task.depends_on,
-            vec![Dependency::simple(1), Dependency::simple(2)]
-        );
+        let mut expected_dep_ids = vec![dep_a.id, dep_b.id];
+        expected_dep_ids.sort_unstable();
+        let expected_deps: Vec<Dependency> = expected_dep_ids
+            .into_iter()
+            .map(Dependency::simple)
+            .collect();
+
+        assert_eq!(task.depends_on, expected_deps);
         assert_eq!(task.tags, vec!["x", "y"]);
 
         // Verify the persisted file is also deduped
         let read = store.read(task.id).unwrap();
-        assert_eq!(
-            read.depends_on,
-            vec![Dependency::simple(1), Dependency::simple(2)]
-        );
+        assert_eq!(read.depends_on, expected_deps);
         assert_eq!(read.tags, vec!["x", "y"]);
+    }
+
+    #[test]
+    fn next_available_id_retries_on_collision() {
+        let dir = tempdir().unwrap();
+        let store = FileStore::init(dir.path()).unwrap();
+        let existing = store
+            .create(
+                "Existing".into(),
+                Kind::Task,
+                None,
+                None,
+                vec![],
+                vec![],
+                Contract::default(),
+                Planning::default(),
+            )
+            .unwrap();
+
+        let available_id = existing.id ^ 1;
+        let mut calls = 0;
+        let allocated = store
+            .next_available_id_with(|| {
+                calls += 1;
+                if calls == 1 {
+                    Ok(TaskId::from(existing.id))
+                } else {
+                    Ok(TaskId::from(available_id))
+                }
+            })
+            .unwrap();
+
+        assert_eq!(calls, 2);
+        assert_eq!(allocated, available_id);
+    }
+
+    #[test]
+    fn next_available_id_succeeds_on_final_retry_attempt() {
+        let dir = tempdir().unwrap();
+        let store = FileStore::init(dir.path()).unwrap();
+        let existing = store
+            .create(
+                "Existing".into(),
+                Kind::Task,
+                None,
+                None,
+                vec![],
+                vec![],
+                Contract::default(),
+                Planning::default(),
+            )
+            .unwrap();
+
+        let available_id = existing.id ^ 1;
+        let mut calls = 0;
+        let allocated = store
+            .next_available_id_with(|| {
+                calls += 1;
+                if calls < TASK_ID_ALLOCATION_MAX_ATTEMPTS {
+                    Ok(TaskId::from(existing.id))
+                } else {
+                    Ok(TaskId::from(available_id))
+                }
+            })
+            .unwrap();
+
+        assert_eq!(allocated, available_id);
+        assert_eq!(calls, TASK_ID_ALLOCATION_MAX_ATTEMPTS);
+    }
+
+    #[test]
+    fn next_available_id_fails_after_retry_limit() {
+        let dir = tempdir().unwrap();
+        let store = FileStore::init(dir.path()).unwrap();
+        let existing = store
+            .create(
+                "Existing".into(),
+                Kind::Task,
+                None,
+                None,
+                vec![],
+                vec![],
+                Contract::default(),
+                Planning::default(),
+            )
+            .unwrap();
+
+        let mut calls = 0;
+        let err = store
+            .next_available_id_with(|| {
+                calls += 1;
+                Ok(TaskId::from(existing.id))
+            })
+            .unwrap_err();
+
+        assert_eq!(calls, TASK_ID_ALLOCATION_MAX_ATTEMPTS);
+        assert!(
+            err.to_string()
+                .contains("failed to allocate unique task id"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn next_available_id_propagates_generator_errors() {
+        let dir = tempdir().unwrap();
+        let store = FileStore::init(dir.path()).unwrap();
+
+        let err = store
+            .next_available_id_with(|| {
+                Err(crate::task_id::TaskIdGenerationError::RandomSource(
+                    "entropy unavailable".to_string(),
+                ))
+            })
+            .unwrap_err();
+
+        assert!(
+            err.to_string().contains("task id generation failed"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
     fn lock_file_persists_after_id_allocation() {
         let dir = tempdir().unwrap();
         let store = FileStore::init(dir.path()).unwrap();
-        let lock_path = dir.path().join(".tak").join("counter.lock");
+        let lock_path = dir.path().join(".tak").join("task-id.lock");
 
         store
             .create(

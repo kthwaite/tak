@@ -43,8 +43,8 @@ Tasks are JSON files in `.tak/tasks/` (the git-committed source of truth). A git
 - **`src/git.rs`** — `current_head_info()` returns branch + SHA; `commits_since()` returns one-line summaries between two SHAs via git2 revwalk
 - **`src/error.rs`** — `TakError` enum via thiserror; `Result<T>` alias used everywhere
 - **`src/output.rs`** — `Format` enum (Json/Pretty/Minimal); `print_task(s)` functions
-- **`src/task_id.rs`** — `TaskId` wrapper (canonical 16-hex IDs), CLI parsing for canonical/prefix/legacy numeric input, serde + rusqlite compatibility helpers
-- **`src/store/files.rs`** — `FileStore`: CRUD on `.tak/tasks/*.json`; allocates next numeric task id as `max(existing)+1` under `counter.lock`; writes canonical hash-style filenames while reading legacy numeric filenames for compatibility
+- **`src/task_id.rs`** — `TaskId` wrapper (canonical 16-hex IDs), CSPRNG generation API (`TaskId::generate`) with deterministic test hook (`generate_with`), CLI parsing for canonical/prefix/legacy numeric input, serde + rusqlite compatibility helpers
+- **`src/store/files.rs`** — `FileStore`: CRUD on `.tak/tasks/*.json`; allocates random task IDs via CSPRNG with bounded collision retry under `task-id.lock`; writes canonical hash-style filenames while reading legacy numeric filenames for compatibility
 - **`src/store/index.rs`** — `Index`: SQLite with WAL mode, FK-enabled. Cycle detection via recursive CTEs. Two-pass rebuild to handle forward references. FTS5 full-text search for learnings.
 - **`src/store/learnings.rs`** — `LearningStore`: CRUD on `.tak/learnings/*.json`, atomic ID allocation via counter.json + fs2 lock; separate from task ID sequence
 - **`src/store/sidecars.rs`** — `SidecarStore`: manages per-task context notes (`.tak/context/{task_id}.md`), structured history logs (`.tak/history/{task_id}.jsonl`), verification results (`.tak/verification_results/{task_id}.json`), and artifact directories (`.tak/artifacts/{task_id}/`); supports legacy numeric path migration; defines `HistoryEvent` (timestamp/event/agent/detail), `VerificationResult` (timestamp/results/passed), `CommandResult` (command/exit_code/stdout/stderr/passed)
@@ -56,7 +56,7 @@ Tasks are JSON files in `.tak/tasks/` (the git-committed source of truth). A git
 - **`src/commands/mesh.rs`** — 9 mesh subcommand handlers: join, leave, list, send, broadcast, inbox, reserve, release, feed
 - **`src/commands/blackboard.rs`** — 5 blackboard subcommand handlers: post, list, show, close, reopen
 - **`src/commands/therapist.rs`** — therapist handlers: offline diagnosis, online RPC interview, and observation log listing
-- **`src/commands/migrate_ids.rs`** — legacy numeric filename migration workflow: preflight, apply rewrite, config-version bump, and audit-map generation
+- **`src/commands/migrate_ids.rs`** — task ID migration workflow: preflight, apply rewrite, optional `--rekey-random` remapping to fresh random IDs, config-version bump, and audit-map generation
 - **`src/main.rs`** — Clap derive CLI with global `--format`/`--pretty` flags. Uses `ValueEnum` for `Format`, `Kind`, `Status`; `conflicts_with` for `--available`/`--blocked`; resolves task-id args through canonical/prefix/legacy-compatible parsing before command execution.
 
 ### CLI Commands
@@ -112,7 +112,7 @@ For task-taking commands, `TASK_ID` accepts canonical 16-hex IDs, unique hex pre
 | `therapist offline` | Diagnose workflow friction from mesh + blackboard and append an observation (`--by`, `--limit`) |
 | `therapist online` | Resume a pi session via RPC for interview-style workflow diagnosis (`--session`, `--session-dir`, `--by`) |
 | `therapist log` | Read therapist observation log (`--limit`) |
-| `migrate-ids` | Preflight/apply legacy numeric filename migration (`--dry-run`, `--apply`, `--force`); writes audit map + bumps config version |
+| `migrate-ids` | Preflight/apply task-ID migration (`--dry-run`, `--apply`, `--rekey-random`, `--force`); writes audit map + bumps config version |
 | `reindex` | Rebuild SQLite index from files |
 | `setup` | Install agent integrations (`--global`, `--check`, `--remove`, `--plugin`, `--skills`, `--pi`) |
 | `doctor` | Validate installation health (`--fix`) |
@@ -130,7 +130,7 @@ Errors are structured JSON on stderr when `--format json`: `{"error":"<code>","m
 - `Index::upsert()` is transactional (delete old deps/tags, insert new); uses `INSERT OR IGNORE` for resilience against duplicates
 - `Index::rebuild()` uses two-pass insertion: first insert tasks without parent_id, then update parent_id (handles forward references and FK constraints); uses `INSERT OR IGNORE` for deps/tags
 - `delete` validates referential integrity (children + dependents); `--force` cascades (orphans children, removes incoming deps); cleans up sidecar files
-- Task numeric IDs remain sequential (`u64`) and are allocated as `max(existing)+1` under `counter.lock`; `counter.json` is legacy/optional in hash-id mode
+- Task IDs are allocated via OS-backed CSPRNG (`TaskId::generate`) and stored as canonical 16-hex filenames; FileStore retries collisions up to a bounded attempt limit under `task-id.lock`
 - Task-id CLI resolution is exact-first (canonical hex or legacy decimal), then unique hex-prefix fallback (case-insensitive)
 - Stale index detection via file fingerprint: `Repo::open()` compares task filename + size + nanosecond mtime against stored metadata, auto-rebuilds on mismatch
 - Tree command pre-loads all tasks into a HashMap — no per-node file I/O or SQL queries
@@ -152,7 +152,7 @@ Errors are structured JSON on stderr when `--format json`: `{"error":"<code>","m
 - `handoff` transitions in_progress -> pending, clears assignee, records `execution.handoff_summary`
 - `cancel --reason` stores the reason in `execution.last_error`
 - Sidecar files: `SidecarStore` manages per-task `context/{task_id}.md` (free-form notes, git-committed), `history/{task_id}.jsonl` (structured JSONL event log, git-committed), `verification_results/{task_id}.json` (gitignored), and `artifacts/{task_id}/` (gitignored)
-- `migrate-ids` runs a preflight gate by default (dry-run), blocks when in-progress tasks exist unless `--force`, and on apply rewrites filenames + sidecars, bumps config version, and writes `.tak/migrations/task-id-map-*.json`
+- `migrate-ids` runs a preflight gate by default (dry-run), blocks when in-progress tasks exist unless `--force`, and on apply rewrites filenames + sidecars, bumps config version, and writes `.tak/migrations/task-id-map-*.json`; `--rekey-random` remaps canonical task IDs to fresh random IDs while preserving references
 - Lifecycle commands (start, finish, cancel, handoff, reopen, unassign, claim) auto-append structured `HistoryEvent` entries to JSONL history logs; failures are best-effort (never fail the main command)
 - `verify` command stores `VerificationResult` to `.tak/verification_results/{task_id}.json` after running contract verification commands
 - `context` command reads/writes free-form context notes; `--set` overwrites, `--clear` deletes
@@ -182,8 +182,7 @@ Errors are structured JSON on stderr when `--format json`: `{"error":"<code>","m
 .tak/
   .gitignore                     # Ignores index.db, *.lock, artifacts/, verification_results/, runtime/
   config.json                    # {"version": 2} (migrate-ids --apply bumps to 3)
-  counter.json                   # Legacy {"next_id": N} file (optional in hash-id mode)
-  counter.lock                   # Persistent lock file for task ID allocation (gitignored)
+  task-id.lock                   # Persistent lock file for random task ID allocation (gitignored)
   claim.lock                     # Persistent lock file for atomic claim (gitignored)
   tasks/*.json                   # One file per task (canonical 16-char lowercase hex filenames)
   context/{task_id}.md           # Per-task context notes (committed to git)

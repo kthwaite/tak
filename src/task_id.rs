@@ -11,6 +11,25 @@ pub struct TaskId(String);
 impl TaskId {
     pub const HEX_LEN: usize = 16;
 
+    /// Generate a fresh task ID using OS-backed CSPRNG entropy.
+    pub fn generate() -> std::result::Result<Self, TaskIdGenerationError> {
+        Self::generate_with(|bytes| {
+            getrandom::fill(bytes).map_err(TaskIdGenerationError::random_source)
+        })
+    }
+
+    /// Test hook: inject deterministic random bytes when needed.
+    pub(crate) fn generate_with<F>(
+        mut fill_random: F,
+    ) -> std::result::Result<Self, TaskIdGenerationError>
+    where
+        F: FnMut(&mut [u8]) -> std::result::Result<(), TaskIdGenerationError>,
+    {
+        let mut bytes = [0_u8; std::mem::size_of::<u64>()];
+        fill_random(&mut bytes)?;
+        Ok(Self::from(u64::from_be_bytes(bytes)))
+    }
+
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -222,6 +241,27 @@ impl<'de> Deserialize<'de> for TaskId {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TaskIdGenerationError {
+    RandomSource(String),
+}
+
+impl TaskIdGenerationError {
+    fn random_source(error: impl fmt::Display) -> Self {
+        Self::RandomSource(error.to_string())
+    }
+}
+
+impl fmt::Display for TaskIdGenerationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::RandomSource(message) => write!(f, "task id generation failed: {message}"),
+        }
+    }
+}
+
+impl std::error::Error for TaskIdGenerationError {}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TaskIdParseError {
     Empty,
     InvalidLength(usize),
@@ -278,6 +318,40 @@ mod tests {
     fn display_round_trips() {
         let id: TaskId = "00000000000000ff".parse().unwrap();
         assert_eq!(id.to_string(), "00000000000000ff");
+    }
+
+    #[test]
+    fn generate_produces_canonical_lower_hex_id() {
+        let id = TaskId::generate().unwrap();
+        assert_eq!(id.as_str().len(), TaskId::HEX_LEN);
+        assert!(id.as_str().bytes().all(|b| b.is_ascii_hexdigit()));
+        assert_eq!(id.as_str(), id.as_str().to_ascii_lowercase());
+    }
+
+    #[test]
+    fn generate_with_allows_deterministic_bytes_for_tests() {
+        let id = TaskId::generate_with(|bytes| {
+            bytes.copy_from_slice(&[0xde, 0xad, 0xbe, 0xef, 0xca, 0xfe, 0xba, 0xbe]);
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(id.as_str(), "deadbeefcafebabe");
+    }
+
+    #[test]
+    fn generate_with_propagates_random_source_errors() {
+        let err = TaskId::generate_with(|_| {
+            Err(TaskIdGenerationError::RandomSource(
+                "test entropy failure".to_string(),
+            ))
+        })
+        .unwrap_err();
+
+        assert_eq!(
+            err,
+            TaskIdGenerationError::RandomSource("test entropy failure".to_string())
+        );
     }
 
     #[test]

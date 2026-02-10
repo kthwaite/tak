@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -132,10 +133,13 @@ fn setup_legacy_fixture() -> (tempfile::TempDir, FileStore, FixtureIds) {
 }
 
 fn assert_graph_queries(repo: &Repo, ids: FixtureIds) {
-    assert_eq!(
-        repo.index.available(None).unwrap(),
-        vec![tid(ids.root), tid(ids.child)]
-    );
+    let mut available = repo.index.available(None).unwrap();
+    available.sort();
+
+    let mut expected_available = vec![tid(ids.root), tid(ids.child)];
+    expected_available.sort();
+
+    assert_eq!(available, expected_available);
     assert_eq!(repo.index.blocked().unwrap(), vec![tid(ids.downstream)]);
     assert_eq!(
         repo.index.children_of(ids.root).unwrap(),
@@ -157,6 +161,41 @@ fn assert_graph_queries(repo: &Repo, ids: FixtureIds) {
     );
 }
 
+fn read_single_audit_file(store: &FileStore) -> Value {
+    let mut audit_files = fs::read_dir(store.root().join("migrations"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect::<Vec<_>>();
+    audit_files.sort();
+    assert_eq!(audit_files.len(), 1);
+
+    serde_json::from_str(&fs::read_to_string(&audit_files[0]).unwrap()).unwrap()
+}
+
+fn extract_id_map(audit: &Value) -> HashMap<u64, u64> {
+    audit["id_map"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| {
+            (
+                entry["old_id"].as_u64().unwrap(),
+                entry["new_id"].as_u64().unwrap(),
+            )
+        })
+        .collect()
+}
+
+fn remap_fixture_ids(ids: FixtureIds, id_map: &HashMap<u64, u64>) -> FixtureIds {
+    FixtureIds {
+        root: *id_map.get(&ids.root).unwrap(),
+        dep_done: *id_map.get(&ids.dep_done).unwrap(),
+        child: *id_map.get(&ids.child).unwrap(),
+        downstream: *id_map.get(&ids.downstream).unwrap(),
+        learning: ids.learning,
+    }
+}
+
 #[test]
 fn migrate_ids_apply_preserves_graph_semantics() {
     let (dir, store, ids) = setup_legacy_fixture();
@@ -165,7 +204,7 @@ fn migrate_ids_apply_preserves_graph_semantics() {
     let before = Repo::open(dir.path()).unwrap();
     assert_graph_queries(&before, ids);
 
-    commands::migrate_ids::run(dir.path(), false, false, Format::Json).unwrap();
+    commands::migrate_ids::run(dir.path(), false, false, false, Format::Json).unwrap();
 
     let config: Value =
         serde_json::from_str(&fs::read_to_string(store.root().join("config.json")).unwrap())
@@ -215,14 +254,7 @@ fn migrate_ids_apply_preserves_graph_semantics() {
     assert!(canonical_verification.exists());
     assert!(canonical_artifacts.join("artifact.txt").exists());
 
-    let mut audit_files = fs::read_dir(store.root().join("migrations"))
-        .unwrap()
-        .map(|entry| entry.unwrap().path())
-        .collect::<Vec<_>>();
-    audit_files.sort();
-    assert_eq!(audit_files.len(), 1);
-
-    let audit: Value = serde_json::from_str(&fs::read_to_string(&audit_files[0]).unwrap()).unwrap();
+    let audit: Value = read_single_audit_file(&store);
     assert_eq!(audit["id_map"].as_array().unwrap().len(), 4);
     assert_eq!(audit["config_version_after"], serde_json::json!(3));
 
@@ -231,10 +263,71 @@ fn migrate_ids_apply_preserves_graph_semantics() {
 }
 
 #[test]
+fn migrate_ids_apply_with_rekey_random_preserves_graph_semantics() {
+    let (dir, store, ids) = setup_legacy_fixture();
+
+    commands::migrate_ids::run(dir.path(), false, false, true, Format::Json).unwrap();
+
+    let audit: Value = read_single_audit_file(&store);
+    assert_eq!(audit["rekey_random"], serde_json::json!(true));
+
+    let id_map = extract_id_map(&audit);
+    assert_eq!(id_map.len(), 4);
+
+    let remapped = remap_fixture_ids(ids, &id_map);
+    for old_id in [ids.root, ids.dep_done, ids.child, ids.downstream] {
+        assert!(!legacy_task_path(&store, old_id).exists());
+        assert!(!canonical_task_path(&store, old_id).exists());
+    }
+
+    for new_id in [
+        remapped.root,
+        remapped.dep_done,
+        remapped.child,
+        remapped.downstream,
+    ] {
+        assert!(canonical_task_path(&store, new_id).exists());
+    }
+
+    let old_context = store
+        .root()
+        .join("context")
+        .join(format!("{}.md", ids.child));
+    let new_context = store
+        .root()
+        .join("context")
+        .join(format!("{}.md", tid(remapped.child)));
+    assert!(!old_context.exists());
+    assert!(new_context.exists());
+
+    let after = Repo::open(dir.path()).unwrap();
+    assert_graph_queries(&after, remapped);
+}
+
+#[test]
+fn reindex_command_rebuilds_rekey_random_migrated_repository_index() {
+    let (dir, store, ids) = setup_legacy_fixture();
+
+    commands::migrate_ids::run(dir.path(), false, false, true, Format::Json).unwrap();
+
+    let audit: Value = read_single_audit_file(&store);
+    let remapped = remap_fixture_ids(ids, &extract_id_map(&audit));
+
+    fs::remove_file(store.root().join("index.db")).unwrap();
+    assert!(!store.root().join("index.db").exists());
+
+    commands::reindex::run(dir.path()).unwrap();
+    assert!(store.root().join("index.db").exists());
+
+    let repo = Repo::open(dir.path()).unwrap();
+    assert_graph_queries(&repo, remapped);
+}
+
+#[test]
 fn reindex_command_rebuilds_migrated_repository_index() {
     let (dir, store, ids) = setup_legacy_fixture();
 
-    commands::migrate_ids::run(dir.path(), false, false, Format::Json).unwrap();
+    commands::migrate_ids::run(dir.path(), false, false, false, Format::Json).unwrap();
 
     fs::remove_file(store.root().join("index.db")).unwrap();
     assert!(!store.root().join("index.db").exists());

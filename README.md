@@ -52,7 +52,7 @@ tak list --available
 | `tak mesh <subcommand>` | Agent presence, messaging, reservations, activity feed |
 | `tak blackboard <subcommand>` | Shared coordination notes (`post/list/show/close/reopen`) |
 | `tak therapist <subcommand>` | Workflow diagnosis (`offline`, `online`, `log`) |
-| `tak migrate-ids [--dry-run\|--apply]` | Preflight/apply legacy numeric → hash-style task filename migration |
+| `tak migrate-ids [--dry-run\|--apply]` | Task ID migration workflow (preflight/apply rewrite + audit map + config bump) |
 | `tak delete <task-id>` | Delete task (`--force` to cascade orphan/removal behavior) |
 | `tak reindex` | Rebuild SQLite index from task files |
 | `tak setup` / `tak doctor` | Install/check integrations and environment health |
@@ -62,6 +62,8 @@ All commands output JSON by default. Use `--format pretty` for human-readable ou
 ## Task IDs and Migration
 
 Canonical task IDs are 16-character lowercase hex strings (for example `000000000000002a`).
+
+New task IDs are allocated from OS-backed CSPRNG entropy (counterless allocation). On create, tak retries on filename collision under a task-ID allocation lock.
 
 When a command expects a task ID, tak resolves input as:
 1. exact canonical hex or legacy decimal match,
@@ -76,11 +78,16 @@ tak migrate-ids --dry-run --format pretty
 # Apply migration once preflight is clean
 tak migrate-ids --apply --format pretty
 
+# Optionally re-key already-canonical repositories to fresh random IDs
+tak migrate-ids --apply --rekey-random --format pretty
+
 # Refresh derived index metadata
 tak reindex
 ```
 
 `tak migrate-ids --apply` rewrites task + sidecar filenames, updates learning task links, bumps `.tak/config.json` to version 3, and writes an audit map under `.tak/migrations/task-id-map-<timestamp>.json`.
+
+Adding `--rekey-random` remaps all task IDs (including already-canonical repositories) to fresh random IDs while preserving parent/dependency/learnings/sidecar references.
 
 ## Data Model
 
@@ -99,7 +106,7 @@ tak reindex
 ```
 .tak/
   config.json                         # Repository configuration
-  counter.json                        # Legacy counter file (optional in hash-id mode)
+  task-id.lock                        # Task ID allocation lock file (created on first task create)
   tasks/*.json                        # Task source of truth (16-char lowercase hex filenames)
   context/{task_id}.md                # Task notes sidecars (committed)
   history/{task_id}.jsonl             # Lifecycle history sidecars (committed)

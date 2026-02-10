@@ -181,30 +181,38 @@ fn run_core_checks(checks: &mut Vec<Check>, tak_dir: Option<&Path>) {
         checks.push(Check::error("Core", "missing config.json"));
     }
 
-    // counter.json (legacy): optional in hash-id storage mode
+    // counter.json is a legacy artifact from pre-random-id allocation and is ignored now.
     let counter_path = tak.join("counter.json");
     if counter_path.exists() {
         match fs::read_to_string(&counter_path) {
             Ok(data) => match serde_json::from_str::<Value>(&data) {
                 Ok(val) => {
                     if let Some(n) = val.get("next_id").and_then(|v| v.as_u64()) {
-                        checks.push(Check::ok("Core", format!("legacy counter present at {n}")));
+                        checks.push(Check::warn(
+                            "Core",
+                            format!(
+                                "legacy counter.json present (ignored by random task-id allocator, next_id={n})"
+                            ),
+                        ));
                     } else {
-                        checks.push(Check::warn("Core", "counter.json missing next_id field"));
+                        checks.push(Check::warn(
+                            "Core",
+                            "legacy counter.json present (ignored by random task-id allocator)",
+                        ));
                     }
                 }
-                Err(_) => checks.push(Check::warn("Core", "corrupt counter.json (legacy file)")),
+                Err(_) => checks.push(Check::warn(
+                    "Core",
+                    "corrupt legacy counter.json (ignored by random task-id allocator)",
+                )),
             },
             Err(_) => checks.push(Check::warn(
                 "Core",
-                "cannot read counter.json (legacy file)",
+                "cannot read legacy counter.json (ignored by random task-id allocator)",
             )),
         }
     } else {
-        checks.push(Check::ok(
-            "Core",
-            "counter.json not required (hash-id task allocation)",
-        ));
+        checks.push(Check::ok("Core", "counterless task-id allocation enabled"));
     }
 
     // tasks/ directory

@@ -290,14 +290,17 @@ enum Commands {
         #[command(subcommand)]
         action: TherapistAction,
     },
-    /// Migrate legacy numeric task IDs (scaffold; dry-run by default)
+    /// Migrate task IDs (legacy numeric filename migration and optional random re-key)
     MigrateIds {
         /// Preview migration preflight (default when --apply is not provided)
         #[arg(long, conflicts_with = "apply")]
         dry_run: bool,
-        /// Apply migration changes (preflight-only scaffold for now)
+        /// Apply migration changes
         #[arg(long, conflicts_with = "dry_run")]
         apply: bool,
+        /// Re-key all task IDs to fresh random IDs (works on already-canonical repos)
+        #[arg(long)]
+        rekey_random: bool,
         /// Skip in-progress task safety gate
         #[arg(long)]
         force: bool,
@@ -938,10 +941,11 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
         Commands::MigrateIds {
             dry_run,
             apply,
+            rekey_random,
             force,
         } => {
             let dry_run = dry_run || !apply;
-            tak::commands::migrate_ids::run(&root, dry_run, force, format)
+            tak::commands::migrate_ids::run(&root, dry_run, force, rekey_random, format)
         }
         Commands::Reindex => tak::commands::reindex::run(&root),
     }
