@@ -18,6 +18,7 @@ tak init
 
 # Create tasks
 tak create "Set up database" --kind task
+tak create "Refine epic scope" --kind meta
 tak create "Write API endpoints" --depends-on 0000000000000001
 tak create "Add tests" --depends-on 0000000000000002
 
@@ -124,7 +125,7 @@ Adding `--rekey-random` remaps all task IDs (including already-canonical reposit
 
 ## Data Model
 
-**Task kinds:** `epic`, `feature`, `task`, `bug`
+**Task kinds:** `epic`, `feature`, `task`, `bug`, `meta`
 
 **Statuses:** `pending` → `in_progress` → `done` / `cancelled`
 
