@@ -15,11 +15,11 @@ use ratatui::backend::{Backend, CrosstermBackend};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::prelude::*;
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::Line;
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Tabs, Wrap};
 
 use crate::error::Result;
-use crate::model::{Learning, Priority, Status, Task};
+use crate::model::{Kind, Learning, Priority, Status, Task};
 use crate::output::Format;
 use crate::store::coordination_db::{
     CoordinationDb, DbEvent, DbMessage, DbNote, DbRegistration, DbReservation,
@@ -30,6 +30,7 @@ use crate::task_id::TaskId;
 
 const SECTION_COUNT: usize = 5;
 const DETAIL_SCROLL_STEP: usize = 8;
+const DETAIL_KEY_WIDTH: usize = 18;
 const MAX_NOTES: u32 = 200;
 const MAX_EVENTS: u32 = 200;
 const MAX_ARTIFACT_PATHS: usize = 64;
@@ -167,6 +168,29 @@ struct TaskStatusCounts {
     cancelled: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum DensityMode {
+    Compact,
+    #[default]
+    Comfortable,
+}
+
+impl DensityMode {
+    fn toggle(self) -> Self {
+        match self {
+            Self::Compact => Self::Comfortable,
+            Self::Comfortable => Self::Compact,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Compact => "compact",
+            Self::Comfortable => "comfortable",
+        }
+    }
+}
+
 impl TakSnapshot {
     fn status_counts(&self) -> TaskStatusCounts {
         let mut counts = TaskStatusCounts::default();
@@ -183,10 +207,188 @@ impl TakSnapshot {
 }
 
 #[derive(Debug, Clone)]
+struct TuiTheme {
+    text: Style,
+    muted: Style,
+    tab_idle: Style,
+    tab_active: Style,
+    panel_idle_border: Style,
+    panel_search_border: Style,
+    list_selected: Style,
+    badge_neutral: Style,
+    badge_ready: Style,
+    badge_blocked: Style,
+    badge_warning: Style,
+    status_pending: Style,
+    status_in_progress: Style,
+    status_done: Style,
+    status_cancelled: Style,
+    priority_critical: Style,
+    priority_high: Style,
+    priority_medium: Style,
+    priority_low: Style,
+    priority_none: Style,
+    kind_epic: Style,
+    kind_feature: Style,
+    kind_task: Style,
+    kind_bug: Style,
+    kind_meta: Style,
+    kind_idea: Style,
+    detail_heading: Style,
+    detail_key: Style,
+    detail_value: Style,
+    detail_separator: Style,
+    match_highlight: Style,
+}
+
+impl Default for TuiTheme {
+    fn default() -> Self {
+        Self {
+            text: Style::default().fg(Color::White),
+            muted: Style::default().fg(Color::DarkGray),
+            tab_idle: Style::default().fg(Color::Gray),
+            tab_active: Style::default()
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+            panel_idle_border: Style::default().fg(Color::DarkGray),
+            panel_search_border: Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+            list_selected: Style::default()
+                .bg(Color::DarkGray)
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+            badge_neutral: Style::default().fg(Color::Cyan),
+            badge_ready: Style::default().fg(Color::Green),
+            badge_blocked: Style::default().fg(Color::Red),
+            badge_warning: Style::default().fg(Color::Yellow),
+            status_pending: Style::default().fg(Color::Yellow),
+            status_in_progress: Style::default().fg(Color::Blue),
+            status_done: Style::default().fg(Color::Green),
+            status_cancelled: Style::default().fg(Color::DarkGray),
+            priority_critical: Style::default().fg(Color::Red),
+            priority_high: Style::default().fg(Color::Yellow),
+            priority_medium: Style::default().fg(Color::Cyan),
+            priority_low: Style::default().fg(Color::Gray),
+            priority_none: Style::default().fg(Color::DarkGray),
+            kind_epic: Style::default().fg(Color::Magenta),
+            kind_feature: Style::default().fg(Color::Cyan),
+            kind_task: Style::default().fg(Color::White),
+            kind_bug: Style::default().fg(Color::Red),
+            kind_meta: Style::default().fg(Color::Blue),
+            kind_idea: Style::default().fg(Color::Yellow),
+            detail_heading: Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+            detail_key: Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+            detail_value: Style::default().fg(Color::White),
+            detail_separator: Style::default().fg(Color::DarkGray),
+            match_highlight: Style::default()
+                .fg(Color::Black)
+                .bg(Color::Yellow)
+                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+        }
+    }
+}
+
+impl TuiTheme {
+    fn section_style(&self, section: TuiSection) -> Style {
+        match section {
+            TuiSection::Tasks => Style::default().fg(Color::Cyan),
+            TuiSection::Learnings => Style::default().fg(Color::Magenta),
+            TuiSection::Blackboard => Style::default().fg(Color::Yellow),
+            TuiSection::Mesh => Style::default().fg(Color::Blue),
+            TuiSection::Feed => Style::default().fg(Color::Green),
+        }
+    }
+
+    fn panel_focus_border(&self, section: TuiSection) -> Style {
+        self.section_style(section).add_modifier(Modifier::BOLD)
+    }
+
+    fn section_highlight_style(&self, section: TuiSection) -> Style {
+        match section {
+            TuiSection::Tasks => self.list_selected.fg(Color::Cyan),
+            TuiSection::Learnings => self.list_selected.fg(Color::Magenta),
+            TuiSection::Blackboard => self.list_selected.fg(Color::Yellow),
+            TuiSection::Mesh => self.list_selected.fg(Color::Blue),
+            TuiSection::Feed => self.list_selected.fg(Color::Green),
+        }
+    }
+
+    fn status_style(&self, status: Status) -> Style {
+        match status {
+            Status::Pending => self.status_pending,
+            Status::InProgress => self.status_in_progress,
+            Status::Done => self.status_done,
+            Status::Cancelled => self.status_cancelled,
+        }
+    }
+
+    fn priority_style(&self, priority: Option<Priority>) -> Style {
+        match priority {
+            Some(Priority::Critical) => self.priority_critical,
+            Some(Priority::High) => self.priority_high,
+            Some(Priority::Medium) => self.priority_medium,
+            Some(Priority::Low) => self.priority_low,
+            None => self.priority_none,
+        }
+    }
+
+    fn kind_style(&self, kind: Kind) -> Style {
+        match kind {
+            Kind::Epic => self.kind_epic,
+            Kind::Feature => self.kind_feature,
+            Kind::Task => self.kind_task,
+            Kind::Bug => self.kind_bug,
+            Kind::Meta => self.kind_meta,
+            Kind::Idea => self.kind_idea,
+        }
+    }
+
+    fn note_status_style(&self, status: &str) -> Style {
+        if status.eq_ignore_ascii_case("open") {
+            self.status_in_progress
+        } else if status.eq_ignore_ascii_case("closed") {
+            self.status_done
+        } else {
+            self.badge_warning
+        }
+    }
+
+    fn agent_status_style(&self, status: &str) -> Style {
+        if status.eq_ignore_ascii_case("active") {
+            self.status_in_progress
+        } else {
+            self.status_cancelled
+        }
+    }
+
+    fn feed_event_style(&self, event_type: &str) -> Style {
+        let normalized = event_type.to_ascii_lowercase();
+
+        if normalized.contains("error") || normalized.contains("fail") {
+            self.badge_blocked
+        } else if normalized.contains("heartbeat") {
+            self.muted
+        } else if normalized.contains("reserve") || normalized.contains("release") {
+            self.kind_feature
+        } else if normalized.contains("join") || normalized.contains("leave") {
+            self.kind_meta
+        } else {
+            self.badge_neutral
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 struct SectionView {
     list_title: String,
     detail_title: String,
-    rows: Vec<String>,
+    rows: Vec<Line<'static>>,
     selected: Option<usize>,
     detail: String,
 }
@@ -207,7 +409,9 @@ struct TakTuiApp {
     auto_refresh: StdDuration,
     selected: [usize; SECTION_COUNT],
     detail_scroll: usize,
+    density_mode: DensityMode,
     snapshot: TakSnapshot,
+    theme: TuiTheme,
 }
 
 impl TakTuiApp {
@@ -227,7 +431,9 @@ impl TakTuiApp {
             auto_refresh: config.auto_refresh,
             selected: [0; SECTION_COUNT],
             detail_scroll: 0,
+            density_mode: DensityMode::default(),
             snapshot: TakSnapshot::default(),
+            theme: TuiTheme::default(),
         }
     }
 
@@ -281,6 +487,10 @@ impl TakTuiApp {
             }
             KeyCode::Char('r') => {
                 self.needs_refresh = true;
+                false
+            }
+            KeyCode::Char('z') => {
+                self.density_mode = self.density_mode.toggle();
                 false
             }
             KeyCode::Tab | KeyCode::Right | KeyCode::Char('l') => {
@@ -561,23 +771,51 @@ impl TakTuiApp {
         contains_all_tokens(&candidate, tokens)
     }
 
-    fn current_view(&self) -> SectionView {
+    fn adaptive_list_limit(
+        &self,
+        list_width: u16,
+        compact_cap: usize,
+        comfortable_cap: usize,
+    ) -> usize {
+        let width = usize::from(list_width).max(28);
+        let (cap, reserved_columns) = match self.density_mode {
+            DensityMode::Compact => (compact_cap, 30),
+            DensityMode::Comfortable => (comfortable_cap, 38),
+        };
+
+        let min_chars = cap.min(12).max(4);
+        width
+            .saturating_sub(reserved_columns)
+            .clamp(min_chars, cap.max(min_chars))
+    }
+
+    fn adaptive_detail_limit(&self, detail_width: u16) -> usize {
+        let width = usize::from(detail_width).max(40);
+        let reserved = match self.density_mode {
+            DensityMode::Compact => 10,
+            DensityMode::Comfortable => 4,
+        };
+
+        width.saturating_sub(reserved).max(24)
+    }
+
+    fn current_view(&self, list_width: u16) -> SectionView {
         match self.focus {
-            TuiSection::Tasks => self.tasks_view(),
-            TuiSection::Learnings => self.learnings_view(),
-            TuiSection::Blackboard => self.blackboard_view(),
-            TuiSection::Mesh => self.mesh_view(),
-            TuiSection::Feed => self.feed_view(),
+            TuiSection::Tasks => self.tasks_view(list_width),
+            TuiSection::Learnings => self.learnings_view(list_width),
+            TuiSection::Blackboard => self.blackboard_view(list_width),
+            TuiSection::Mesh => self.mesh_view(list_width),
+            TuiSection::Feed => self.feed_view(list_width),
         }
     }
 
-    fn tasks_view(&self) -> SectionView {
+    fn tasks_view(&self, list_width: u16) -> SectionView {
         let filtered = self.filtered_indices(TuiSection::Tasks);
         let selected = pick_selected(filtered.len(), self.selected[TuiSection::Tasks.index()]);
 
         let rows = filtered
             .iter()
-            .map(|idx| self.task_row(&self.snapshot.tasks[*idx]))
+            .map(|idx| self.task_row(&self.snapshot.tasks[*idx], list_width))
             .collect::<Vec<_>>();
 
         let detail = if let Some(position) = selected {
@@ -603,13 +841,13 @@ impl TakTuiApp {
         }
     }
 
-    fn learnings_view(&self) -> SectionView {
+    fn learnings_view(&self, list_width: u16) -> SectionView {
         let filtered = self.filtered_indices(TuiSection::Learnings);
         let selected = pick_selected(filtered.len(), self.selected[TuiSection::Learnings.index()]);
 
         let rows = filtered
             .iter()
-            .map(|idx| self.learning_row(&self.snapshot.learnings[*idx]))
+            .map(|idx| self.learning_row(&self.snapshot.learnings[*idx], list_width))
             .collect::<Vec<_>>();
 
         let detail = if let Some(position) = selected {
@@ -639,7 +877,7 @@ impl TakTuiApp {
         }
     }
 
-    fn blackboard_view(&self) -> SectionView {
+    fn blackboard_view(&self, list_width: u16) -> SectionView {
         let filtered = self.filtered_indices(TuiSection::Blackboard);
         let selected = pick_selected(
             filtered.len(),
@@ -648,7 +886,7 @@ impl TakTuiApp {
 
         let rows = filtered
             .iter()
-            .map(|idx| self.note_row(&self.snapshot.notes[*idx]))
+            .map(|idx| self.note_row(&self.snapshot.notes[*idx], list_width))
             .collect::<Vec<_>>();
 
         let detail = if let Some(position) = selected {
@@ -678,13 +916,13 @@ impl TakTuiApp {
         }
     }
 
-    fn mesh_view(&self) -> SectionView {
+    fn mesh_view(&self, list_width: u16) -> SectionView {
         let filtered = self.filtered_indices(TuiSection::Mesh);
         let selected = pick_selected(filtered.len(), self.selected[TuiSection::Mesh.index()]);
 
         let rows = filtered
             .iter()
-            .map(|idx| self.agent_row(&self.snapshot.agents[*idx]))
+            .map(|idx| self.agent_row(&self.snapshot.agents[*idx], list_width))
             .collect::<Vec<_>>();
 
         let detail = if let Some(position) = selected {
@@ -714,13 +952,13 @@ impl TakTuiApp {
         }
     }
 
-    fn feed_view(&self) -> SectionView {
+    fn feed_view(&self, list_width: u16) -> SectionView {
         let filtered = self.filtered_indices(TuiSection::Feed);
         let selected = pick_selected(filtered.len(), self.selected[TuiSection::Feed.index()]);
 
         let rows = filtered
             .iter()
-            .map(|idx| self.feed_row(&self.snapshot.feed[*idx]))
+            .map(|idx| self.feed_row(&self.snapshot.feed[*idx], list_width))
             .collect::<Vec<_>>();
 
         let detail = if let Some(position) = selected {
@@ -746,53 +984,103 @@ impl TakTuiApp {
         }
     }
 
-    fn task_row(&self, task: &Task) -> String {
-        let id = TaskId::from(task.id);
+    fn task_row(&self, task: &Task, list_width: u16) -> Line<'static> {
+        let id = TaskId::from(task.id).to_string();
+        let blocked = self.snapshot.blocked_ids.contains(&task.id);
         let priority = task
             .planning
             .priority
             .map(|priority| priority.to_string())
-            .unwrap_or_else(|| "-".to_string());
-        let blocked = if self.snapshot.blocked_ids.contains(&task.id) {
-            "B"
-        } else {
-            "-"
-        };
-        let assignee = task.assignee.as_deref().unwrap_or("-");
+            .unwrap_or_else(|| "none".to_string());
+        let assignee = truncate_display(
+            task.assignee.as_deref().unwrap_or("unassigned"),
+            self.adaptive_list_limit(list_width, 10, 14),
+        );
+        let title = truncate_display(&task.title, self.adaptive_list_limit(list_width, 24, 56));
 
-        format!(
-            "{} [{}] {:11} {:7} p:{:<8} @{:12} {}",
-            id,
-            blocked,
-            task.status,
-            task.kind,
-            priority,
-            truncate_display(assignee, 12),
-            truncate_display(&task.title, 60),
-        )
+        let mut spans = vec![
+            self.badge(id, self.theme.badge_neutral),
+            Span::raw(" "),
+            self.badge(
+                if blocked { "blocked" } else { "ready" },
+                if blocked {
+                    self.theme.badge_blocked
+                } else {
+                    self.theme.badge_ready
+                },
+            ),
+            Span::raw(" "),
+            self.badge(
+                task.status.to_string(),
+                self.theme.status_style(task.status),
+            ),
+            Span::raw(" "),
+            self.badge(task.kind.to_string(), self.theme.kind_style(task.kind)),
+            Span::raw(" "),
+            self.badge(
+                format!("p:{priority}"),
+                self.theme.priority_style(task.planning.priority),
+            ),
+            Span::raw(" "),
+        ];
+
+        spans.extend(self.highlighted_text(&format!("@{} ", assignee), self.theme.muted));
+        spans.extend(self.highlighted_text(&title, self.theme.text));
+
+        Line::from(spans)
     }
 
-    fn learning_row(&self, learning: &Learning) -> String {
-        format!(
-            "#{:<4} {:8} {:>2} tasks  {}",
-            learning.id,
-            learning.category,
-            learning.task_ids.len(),
-            truncate_display(&learning.title, 60),
-        )
+    fn learning_row(&self, learning: &Learning, list_width: u16) -> Line<'static> {
+        let title = truncate_display(
+            &learning.title,
+            self.adaptive_list_limit(list_width, 26, 60),
+        );
+        let mut spans = vec![
+            self.badge(format!("#{}", learning.id), self.theme.badge_neutral),
+            Span::raw(" "),
+            self.badge(learning.category.to_string(), self.theme.kind_meta),
+            Span::raw(" "),
+            self.badge(
+                format!("tasks:{}", learning.task_ids.len()),
+                self.theme.priority_medium,
+            ),
+            Span::raw(" "),
+        ];
+
+        spans.extend(self.highlighted_text(&title, self.theme.text));
+        Line::from(spans)
     }
 
-    fn note_row(&self, note: &DbNote) -> String {
-        format!(
-            "B{:<4} {:8} {:14} {}",
-            note.id,
-            note.status,
-            truncate_display(&note.from_agent, 14),
-            truncate_display(note.message.lines().next().unwrap_or_default(), 58),
-        )
+    fn note_row(&self, note: &DbNote, list_width: u16) -> Line<'static> {
+        let author = format!(
+            "{} ",
+            truncate_display(
+                &note.from_agent,
+                self.adaptive_list_limit(list_width, 10, 16)
+            ),
+        );
+        let message = truncate_display(
+            note.message.lines().next().unwrap_or_default(),
+            self.adaptive_list_limit(list_width, 24, 56),
+        );
+
+        let mut spans = vec![
+            self.badge(format!("B{}", note.id), self.theme.badge_neutral),
+            Span::raw(" "),
+            self.badge(
+                note.status.clone(),
+                self.theme.note_status_style(note.status.as_str()),
+            ),
+            Span::raw(" "),
+        ];
+
+        spans.extend(self.highlighted_text(&author, self.theme.muted));
+        spans.extend(self.highlighted_text(&message, self.theme.text));
+
+        Line::from(spans)
     }
 
-    fn agent_row(&self, agent: &DbRegistration) -> String {
+    fn agent_row(&self, agent: &DbRegistration, list_width: u16) -> Line<'static> {
         let inbox = self
             .snapshot
             .agent_inbox
@@ -805,31 +1093,179 @@ impl TakTuiApp {
             .filter(|reservation| reservation.agent == agent.name)
             .count();
 
-        format!(
-            "{} [{}] inbox={} reservations={} session={}",
-            truncate_display(&agent.name, 22),
-            truncate_display(&agent.status, 6),
-            inbox,
-            reservations,
-            truncate_display(&agent.session_id, 16),
+        let inbox_style = if inbox > 0 {
+            self.theme.badge_warning
+        } else {
+            self.theme.badge_ready
+        };
+        let reservation_style = if reservations > 0 {
+            self.theme.kind_feature
+        } else {
+            self.theme.muted
+        };
+
+        let mut spans = vec![
+            self.badge(
+                truncate_display(&agent.name, self.adaptive_list_limit(list_width, 12, 20)),
+                self.theme.badge_neutral,
+            ),
+            Span::raw(" "),
+            self.badge(
+                truncate_display(&agent.status, self.adaptive_list_limit(list_width, 6, 8)),
+                self.theme.agent_status_style(&agent.status),
+            ),
+            Span::raw(" "),
+            self.badge(format!("inbox:{inbox}"), inbox_style),
+            Span::raw(" "),
+            self.badge(format!("resv:{reservations}"), reservation_style),
+            Span::raw(" "),
+        ];
+
+        spans.extend(self.highlighted_text(
+            &format!(
+                "session={} ",
+                truncate_display(
+                    &agent.session_id,
+                    self.adaptive_list_limit(list_width, 10, 16)
+                )
+            ),
+            self.theme.muted,
+        ));
+
+        Line::from(spans)
+    }
+
+    fn feed_row(&self, event: &DbEvent, list_width: u16) -> Line<'static> {
+        let preview = event
+            .preview
+            .as_deref()
+            .or(event.target.as_deref())
+            .unwrap_or_default();
+
+        let preview = truncate_display(preview, self.adaptive_list_limit(list_width, 24, 52));
+        let mut spans = vec![
+            self.badge(format!("#{}", event.id), self.theme.badge_neutral),
+            Span::raw(" "),
+            self.badge(
+                truncate_display(
+                    &event.event_type,
+                    self.adaptive_list_limit(list_width, 10, 16),
+                ),
+                self.theme.feed_event_style(&event.event_type),
+            ),
+            Span::raw(" "),
+            self.badge(
+                truncate_display(
+                    event.agent.as_deref().unwrap_or("-"),
+                    self.adaptive_list_limit(list_width, 10, 14),
+                ),
+                self.theme.kind_meta,
+            ),
+            Span::raw(" "),
+        ];
+
+        spans.extend(self.highlighted_text(&preview, self.theme.text));
+        Line::from(spans)
+    }
+
+    fn query_matches_text(&self, text: &str) -> bool {
+        let tokens = self.query_tokens();
+        if tokens.is_empty() {
+            return false;
+        }
+
+        let normalized = text.to_ascii_lowercase();
+        tokens.iter().any(|token| normalized.contains(token))
+    }
+
+    fn highlighted_text(&self, text: &str, base_style: Style) -> Vec<Span<'static>> {
+        let tokens = self.query_tokens();
+        highlight_text_spans_with_tokens(text, &tokens, base_style, self.theme.match_highlight)
+    }
+
+    fn badge<T: Into<String>>(&self, label: T, style: Style) -> Span<'static> {
+        let label = label.into();
+        let mut badge_style = style.add_modifier(Modifier::BOLD);
+
+        if self.query_matches_text(&label) {
+            badge_style = badge_style.patch(self.theme.match_highlight);
+        }
+
+        Span::styled(format!("[{label}]"), badge_style)
+    }
+
+    fn key_chip<T: Into<String>>(&self, label: T) -> Span<'static> {
+        Span::styled(
+            format!(" {} ", label.into()),
+            self.theme.badge_neutral.add_modifier(Modifier::BOLD),
         )
     }
 
-    fn feed_row(&self, event: &DbEvent) -> String {
-        format!(
-            "#{:<4} {:16} {:14} {}",
-            event.id,
-            truncate_display(&event.event_type, 16),
-            truncate_display(event.agent.as_deref().unwrap_or("-"), 14),
-            truncate_display(
-                event
-                    .preview
-                    .as_deref()
-                    .or(event.target.as_deref())
-                    .unwrap_or_default(),
-                56,
-            ),
-        )
+    fn detail_lines(&self, detail: &str, detail_width: u16) -> Vec<Line<'static>> {
+        let mut lines = Vec::new();
+        let mut has_content = false;
+        let detail_limit = self.adaptive_detail_limit(detail_width);
+
+        for raw_line in detail.lines() {
+            if raw_line.trim().is_empty() {
+                lines.push(Line::default());
+                continue;
+            }
+
+            if is_detail_heading(raw_line) {
+                if has_content {
+                    lines.push(Line::from(Span::styled(
+                        "─".repeat(42),
+                        self.theme.detail_separator,
+                    )));
+                }
+
+                let mut heading_spans = vec![Span::styled("▸ ", self.theme.detail_separator)];
+                let heading = truncate_display(
+                    raw_line.trim_end_matches(':').trim(),
+                    detail_limit.saturating_sub(2),
+                );
+                heading_spans.extend(self.highlighted_text(&heading, self.theme.detail_heading));
+                lines.push(Line::from(heading_spans));
+                has_content = true;
+                continue;
+            }
+
+            if let Some((indent, key, value)) = parse_detail_key_value(raw_line) {
+                let mut spans = vec![Span::styled(indent.clone(), self.theme.muted)];
+                let padded_key = format!("{key:<width$}", width = DETAIL_KEY_WIDTH);
+                spans.extend(self.highlighted_text(&padded_key, self.theme.detail_key));
+                spans.push(Span::styled(": ", self.theme.detail_key));
+
+                let value_budget = detail_limit
+                    .saturating_sub(indent.len())
+                    .saturating_sub(DETAIL_KEY_WIDTH + 2)
+                    .max(8);
+                let truncated_value = truncate_display(&value, value_budget);
+                spans.extend(self.highlighted_text(&truncated_value, self.theme.detail_value));
+                lines.push(Line::from(spans));
+                has_content = true;
+                continue;
+            }
+
+            let body_style = if raw_line.trim_start().starts_with("- ") {
+                self.theme.text
+            } else {
+                self.theme.detail_value
+            };
+
+            let truncated_line = truncate_display(raw_line, detail_limit);
+            lines.push(Line::from(
+                self.highlighted_text(&truncated_line, body_style),
+            ));
+            has_content = true;
+        }
+
+        if lines.is_empty() {
+            vec![Line::from(Span::styled("<empty>", self.theme.muted))]
+        } else {
+            lines
+        }
     }
 
     fn task_detail(&self, task: &Task) -> String {
@@ -1344,47 +1780,246 @@ impl TakTuiApp {
         format!("{} ({})", TaskId::from(id), title)
     }
 
-    fn controls_line(&self) -> String {
-        let query = if self.query.is_empty() {
-            "<none>"
+    fn summary_cards(&self, status: TaskStatusCounts, refreshed_at: &str) -> Vec<Line<'static>> {
+        let trend = status_distribution_sparkline(status);
+
+        let mut lines = vec![
+            Line::from(vec![
+                self.badge(
+                    format!("tasks:{}", self.snapshot.tasks.len()),
+                    self.theme.badge_neutral,
+                ),
+                Span::raw(" "),
+                self.badge(
+                    format!("pending:{}", status.pending),
+                    self.theme.status_style(Status::Pending),
+                ),
+                Span::raw(" "),
+                self.badge(
+                    format!("in-progress:{}", status.in_progress),
+                    self.theme.status_style(Status::InProgress),
+                ),
+                Span::raw(" "),
+                self.badge(
+                    format!("done:{}", status.done),
+                    self.theme.status_style(Status::Done),
+                ),
+                Span::raw(" "),
+                self.badge(
+                    format!("cancelled:{}", status.cancelled),
+                    self.theme.status_style(Status::Cancelled),
+                ),
+            ]),
+            Line::from(vec![
+                self.badge(
+                    format!("learnings:{}", self.snapshot.learnings.len()),
+                    self.theme.kind_meta,
+                ),
+                Span::raw(" "),
+                self.badge(
+                    format!("notes:{}", self.snapshot.notes.len()),
+                    self.theme.note_status_style("open"),
+                ),
+                Span::raw(" "),
+                self.badge(
+                    format!("agents:{}", self.snapshot.agents.len()),
+                    self.theme.agent_status_style("active"),
+                ),
+                Span::raw(" "),
+                self.badge(
+                    format!("reservations:{}", self.snapshot.reservations.len()),
+                    self.theme.kind_feature,
+                ),
+                Span::raw(" "),
+                self.badge(
+                    format!("feed:{}", self.snapshot.feed.len()),
+                    self.theme.section_style(TuiSection::Feed),
+                ),
+                Span::raw(" "),
+                self.badge(format!("trend:{trend}"), self.theme.badge_neutral),
+            ]),
+        ];
+
+        let mut health_line = vec![
+            self.badge(
+                format!("refreshes:{}", self.refresh_count),
+                self.theme.badge_neutral,
+            ),
+            Span::raw(" "),
+            self.badge(format!("last:{}", refreshed_at), self.theme.muted),
+            Span::raw(" "),
+        ];
+
+        if let Some(error) = &self.last_error {
+            health_line.push(self.badge("ERROR", self.theme.badge_warning));
+            health_line.push(Span::raw(" "));
+            health_line.push(Span::styled(
+                truncate_display(error, 72),
+                self.theme.badge_warning.add_modifier(Modifier::BOLD),
+            ));
         } else {
-            self.query.as_str()
+            health_line.push(self.badge("health:ok", self.theme.badge_ready));
+        }
+
+        lines.push(Line::from(health_line));
+        lines
+    }
+
+    fn controls_line(&self) -> Line<'static> {
+        let query = if self.query.is_empty() {
+            "<none>".to_string()
+        } else {
+            self.query.clone()
         };
 
         if self.search_mode {
-            format!("search mode: type to edit query | Enter/Esc exit | current query: {query}")
+            Line::from(vec![
+                self.badge("SEARCH", self.theme.badge_warning),
+                Span::raw(" "),
+                Span::styled("type query ", self.theme.text),
+                self.key_chip("Enter/Esc"),
+                Span::styled(" close ", self.theme.muted),
+                self.key_chip("Backspace"),
+                Span::styled(" delete ", self.theme.muted),
+                Span::styled(format!("query={query}  "), self.theme.muted),
+                self.badge(
+                    format!("density:{}", self.density_mode.label()),
+                    self.theme.muted,
+                ),
+            ])
         } else {
-            format!(
-                "q quit | ←/→ or h/l tabs | ↑/↓ or j/k select | PgUp/PgDn detail | / search | c clear | r refresh | ? help | query={query}"
-            )
+            Line::from(vec![
+                self.key_chip("q"),
+                Span::styled(" quit ", self.theme.muted),
+                self.key_chip("←/→ h/l"),
+                Span::styled(" tabs ", self.theme.muted),
+                self.key_chip("↑/↓ j/k"),
+                Span::styled(" select ", self.theme.muted),
+                self.key_chip("PgUp/PgDn"),
+                Span::styled(" detail ", self.theme.muted),
+                self.key_chip("/"),
+                Span::styled(" search ", self.theme.muted),
+                self.key_chip("c"),
+                Span::styled(" clear ", self.theme.muted),
+                self.key_chip("r"),
+                Span::styled(" refresh ", self.theme.muted),
+                self.key_chip("z"),
+                Span::styled(" density ", self.theme.muted),
+                self.key_chip("?"),
+                Span::styled(" help ", self.theme.muted),
+                Span::styled(format!("query={query}  "), self.theme.muted),
+                self.badge(
+                    format!("density:{}", self.density_mode.label()),
+                    self.theme.muted,
+                ),
+            ])
         }
     }
 
+    fn help_heading<T: Into<String>>(&self, title: T) -> Line<'static> {
+        Line::from(vec![
+            Span::styled("▸ ", self.theme.detail_separator),
+            Span::styled(
+                title.into(),
+                self.theme.detail_heading.add_modifier(Modifier::BOLD),
+            ),
+        ])
+    }
+
+    fn help_key_row<T: Into<String>, U: Into<String>>(
+        &self,
+        key: T,
+        description: U,
+    ) -> Line<'static> {
+        Line::from(vec![
+            Span::styled(
+                format!("  {:<28}", key.into()),
+                self.theme.badge_neutral.add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(description.into(), self.theme.text),
+        ])
+    }
+
+    fn help_lines(&self) -> Vec<Line<'static>> {
+        vec![
+            self.help_heading("Navigation"),
+            self.help_key_row("Tab / Shift+Tab / h,l", "switch section"),
+            self.help_key_row("↑/↓ / j,k", "move selection"),
+            self.help_key_row("Home/End (g/G)", "jump top/bottom"),
+            self.help_key_row("PgUp/PgDn (u/d)", "scroll detail pane"),
+            Line::default(),
+            self.help_heading("Search"),
+            self.help_key_row("/", "enter search mode"),
+            self.help_key_row("type / Backspace", "edit query"),
+            self.help_key_row("Enter or Esc", "exit search mode"),
+            self.help_key_row("c", "clear query"),
+            Line::default(),
+            self.help_heading("Actions"),
+            self.help_key_row("r", "refresh snapshot now"),
+            self.help_key_row("z", "toggle compact/comfortable density"),
+            self.help_key_row("?", "toggle help popup"),
+            self.help_key_row("q", "quit"),
+            Line::default(),
+            self.help_heading("Data coverage"),
+            self.help_key_row("Tasks", "context/history/verification/artifacts"),
+            self.help_key_row("Learnings", "linked lessons and tags"),
+            self.help_key_row("Blackboard", "coordination notes"),
+            self.help_key_row("Mesh", "agents/inbox/reservations"),
+            self.help_key_row("Feed", "recent coordination events"),
+        ]
+    }
+
     fn render(&self, frame: &mut Frame) {
+        let summary_height = match self.density_mode {
+            DensityMode::Compact => 4,
+            DensityMode::Comfortable => 5,
+        };
+
         let outer = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(3),
-                Constraint::Length(3),
+                Constraint::Length(summary_height),
                 Constraint::Min(1),
                 Constraint::Length(3),
             ])
             .split(frame.area());
 
+        let panel_focus = if self.search_mode {
+            self.theme.panel_search_border
+        } else {
+            self.theme.panel_focus_border(self.focus)
+        };
+
         let tab_titles = TuiSection::ALL
             .iter()
-            .map(|section| Line::from(section.label()))
+            .map(|section| {
+                let style = if *section == self.focus {
+                    self.theme
+                        .section_style(*section)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    self.theme.tab_idle
+                };
+                Line::from(Span::styled(section.label(), style))
+            })
             .collect::<Vec<_>>();
 
         frame.render_widget(
             Tabs::new(tab_titles)
                 .select(self.focus.index())
-                .block(Block::default().borders(Borders::ALL).title("tak tui"))
-                .highlight_style(
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
-                ),
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title(if self.search_mode {
+                            "tak tui • SEARCH"
+                        } else {
+                            "tak tui"
+                        })
+                        .border_style(panel_focus)
+                        .title_style(self.theme.muted),
+                )
+                .highlight_style(self.theme.tab_active),
             outer[0],
         );
 
@@ -1395,29 +2030,16 @@ impl TakTuiApp {
             .map(|timestamp| timestamp.format("%H:%M:%S").to_string())
             .unwrap_or_else(|| "-".to_string());
 
-        let mut summary = format!(
-            "tasks={} (p:{} ip:{} d:{} c:{})  learnings={}  notes={}  agents={}  reservations={}  feed={}  refreshes={}  last={}",
-            self.snapshot.tasks.len(),
-            status.pending,
-            status.in_progress,
-            status.done,
-            status.cancelled,
-            self.snapshot.learnings.len(),
-            self.snapshot.notes.len(),
-            self.snapshot.agents.len(),
-            self.snapshot.reservations.len(),
-            self.snapshot.feed.len(),
-            self.refresh_count,
-            refreshed_at,
-        );
-
-        if let Some(error) = &self.last_error {
-            summary.push_str(&format!("  last_error={error}"));
-        }
-
         frame.render_widget(
-            Paragraph::new(summary)
-                .block(Block::default().borders(Borders::ALL).title("Summary"))
+            Paragraph::new(self.summary_cards(status, &refreshed_at))
+                .style(self.theme.text)
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title("Summary")
+                        .border_style(self.theme.panel_idle_border)
+                        .title_style(self.theme.muted),
+                )
                 .wrap(Wrap { trim: true }),
             outer[1],
         );
@@ -1427,31 +2049,43 @@ impl TakTuiApp {
             .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
             .split(outer[2]);
 
-        let view = self.current_view();
-        self.render_list(frame, center[0], &view);
+        let view = self.current_view(center[0].width);
+        self.render_list(frame, center[0], &view, panel_focus);
 
         frame.render_widget(
-            Paragraph::new(view.detail)
+            Paragraph::new(self.detail_lines(&view.detail, center[1].width))
+                .style(self.theme.text)
                 .block(
                     Block::default()
                         .borders(Borders::ALL)
-                        .title(view.detail_title),
+                        .title(view.detail_title)
+                        .border_style(panel_focus)
+                        .title_style(panel_focus),
                 )
                 .wrap(Wrap { trim: false })
                 .scroll((self.detail_scroll.min(u16::MAX as usize) as u16, 0)),
             center[1],
         );
 
+        let controls_border = if self.search_mode {
+            self.theme.panel_search_border
+        } else {
+            self.theme.panel_idle_border
+        };
+
         frame.render_widget(
             Paragraph::new(self.controls_line())
+                .style(self.theme.text)
                 .block(
                     Block::default()
                         .borders(Borders::ALL)
                         .title(if self.search_mode {
-                            "Search"
+                            "Search mode"
                         } else {
                             "Controls"
-                        }),
+                        })
+                        .border_style(controls_border)
+                        .title_style(controls_border),
                 )
                 .wrap(Wrap { trim: true }),
             outer[3],
@@ -1461,44 +2095,31 @@ impl TakTuiApp {
             let popup = centered_rect(86, 74, frame.area());
             frame.render_widget(Clear, popup);
             frame.render_widget(
-                Paragraph::new(
-                    "tak tui controls\n\n\
-                     Navigation:\n\
-                     - Tab / Shift+Tab, Left/Right, h/l: switch section\n\
-                     - Up/Down, j/k: move selection\n\
-                     - Home/End (or g/G): jump to top/bottom\n\
-                     - PgUp/PgDn (or u/d): scroll detail panel\n\n\
-                     Search:\n\
-                     - /: enter search mode\n\
-                     - type to edit query, Backspace to delete\n\
-                     - Enter/Esc: exit search mode\n\
-                     - c: clear query\n\n\
-                     Other:\n\
-                     - r: refresh snapshot now\n\
-                     - q: quit\n\
-                     - ?: toggle this help\n\n\
-                     Data coverage:\n\
-                     - Tasks (with context/history/verification/artifacts detail)\n\
-                     - Learnings\n\
-                     - Blackboard notes\n\
-                     - Mesh agents/inbox/reservations\n\
-                     - Activity feed",
-                )
-                .block(Block::default().borders(Borders::ALL).title("Help"))
-                .wrap(Wrap { trim: true }),
+                Paragraph::new(self.help_lines())
+                    .style(self.theme.text)
+                    .block(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .title("Help")
+                            .border_style(panel_focus)
+                            .title_style(panel_focus),
+                    )
+                    .wrap(Wrap { trim: true }),
                 popup,
             );
         }
     }
 
-    fn render_list(&self, frame: &mut Frame, area: Rect, view: &SectionView) {
+    fn render_list(&self, frame: &mut Frame, area: Rect, view: &SectionView, border_style: Style) {
         if view.rows.is_empty() {
             frame.render_widget(
-                Paragraph::new("(no results)")
+                Paragraph::new(Line::from(Span::styled("(no results)", self.theme.muted)))
                     .block(
                         Block::default()
                             .borders(Borders::ALL)
-                            .title(view.list_title.as_str()),
+                            .title(view.list_title.as_str())
+                            .border_style(border_style)
+                            .title_style(border_style),
                     )
                     .wrap(Wrap { trim: true }),
                 area,
@@ -1512,7 +2133,8 @@ impl TakTuiApp {
         let items = view
             .rows
             .iter()
-            .map(|row| ListItem::new(row.as_str()))
+            .cloned()
+            .map(ListItem::new)
             .collect::<Vec<_>>();
 
         frame.render_stateful_widget(
@@ -1520,13 +2142,11 @@ impl TakTuiApp {
                 .block(
                     Block::default()
                         .borders(Borders::ALL)
-                        .title(view.list_title.as_str()),
+                        .title(view.list_title.as_str())
+                        .border_style(border_style)
+                        .title_style(border_style),
                 )
-                .highlight_style(
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
-                )
+                .highlight_style(self.theme.section_highlight_style(self.focus))
                 .highlight_symbol("❯ "),
             area,
             &mut state,
@@ -1763,6 +2383,34 @@ fn priority_rank(priority: Option<Priority>) -> u8 {
     priority.map(Priority::rank).unwrap_or(4)
 }
 
+fn status_distribution_sparkline(status: TaskStatusCounts) -> String {
+    let values = [
+        status.pending,
+        status.in_progress,
+        status.done,
+        status.cancelled,
+    ];
+    let max = values.into_iter().max().unwrap_or(0);
+
+    let glyph_for = |count: usize| {
+        if max == 0 {
+            '·'
+        } else {
+            const GLYPHS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+            let idx = ((count.saturating_mul(7)) + max.saturating_sub(1)) / max;
+            GLYPHS[idx.min(GLYPHS.len() - 1)]
+        }
+    };
+
+    format!(
+        "P{}I{}D{}C{}",
+        glyph_for(status.pending),
+        glyph_for(status.in_progress),
+        glyph_for(status.done),
+        glyph_for(status.cancelled),
+    )
+}
+
 fn contains_all_tokens(candidate: &str, tokens: &[String]) -> bool {
     if tokens.is_empty() {
         return true;
@@ -1770,6 +2418,91 @@ fn contains_all_tokens(candidate: &str, tokens: &[String]) -> bool {
 
     let normalized = candidate.to_ascii_lowercase();
     tokens.iter().all(|token| normalized.contains(token))
+}
+
+fn is_detail_heading(line: &str) -> bool {
+    let trimmed = line.trim();
+    trimmed.ends_with(':') && !trimmed.contains(": ")
+}
+
+fn parse_detail_key_value(line: &str) -> Option<(String, String, String)> {
+    let trimmed_start = line.trim_start();
+    if trimmed_start.starts_with("- ") || trimmed_start.starts_with("...") {
+        return None;
+    }
+
+    let (key, value) = trimmed_start.split_once(": ")?;
+    if key.is_empty() {
+        return None;
+    }
+
+    let indent_len = line.len().saturating_sub(trimmed_start.len());
+    let indent = " ".repeat(indent_len);
+
+    Some((indent, key.to_string(), value.to_string()))
+}
+
+fn highlight_text_spans_with_tokens(
+    text: &str,
+    tokens: &[String],
+    base_style: Style,
+    match_style: Style,
+) -> Vec<Span<'static>> {
+    if text.is_empty() || tokens.is_empty() {
+        return vec![Span::styled(text.to_string(), base_style)];
+    }
+
+    let normalized = text.to_ascii_lowercase();
+    let mut ranges = Vec::new();
+
+    for token in tokens.iter().filter(|token| !token.is_empty()) {
+        let mut offset = 0;
+        while let Some(found) = normalized[offset..].find(token.as_str()) {
+            let start = offset + found;
+            let end = start + token.len();
+            ranges.push((start, end));
+            offset = end;
+        }
+    }
+
+    if ranges.is_empty() {
+        return vec![Span::styled(text.to_string(), base_style)];
+    }
+
+    ranges.sort_unstable_by_key(|(start, _)| *start);
+
+    let mut merged_ranges = Vec::new();
+    for (start, end) in ranges {
+        if let Some((_, merged_end)) = merged_ranges.last_mut()
+            && start <= *merged_end
+        {
+            *merged_end = (*merged_end).max(end);
+            continue;
+        }
+
+        merged_ranges.push((start, end));
+    }
+
+    let mut spans = Vec::new();
+    let mut cursor = 0;
+
+    for (start, end) in merged_ranges {
+        if start > cursor {
+            spans.push(Span::styled(text[cursor..start].to_string(), base_style));
+        }
+
+        spans.push(Span::styled(
+            text[start..end].to_string(),
+            base_style.patch(match_style),
+        ));
+        cursor = end;
+    }
+
+    if cursor < text.len() {
+        spans.push(Span::styled(text[cursor..].to_string(), base_style));
+    }
+
+    spans
 }
 
 fn truncate_display(value: &str, max_chars: usize) -> String {
@@ -1867,6 +2600,10 @@ mod tests {
 
     use crate::model::{
         Contract, DepType, Dependency, Execution, GitInfo, Kind, LearningCategory, Planning,
+        Priority,
+    };
+    use crate::store::coordination_db::{
+        DbEvent, DbMessage, DbNote, DbRegistration, DbReservation,
     };
 
     fn task(id: u64, title: &str) -> Task {
@@ -1907,6 +2644,82 @@ mod tests {
         }
     }
 
+    fn note(id: i64, from_agent: &str, status: &str, message: &str) -> DbNote {
+        let ts = Utc.with_ymd_and_hms(2026, 2, 10, 0, 0, 0).single().unwrap();
+        DbNote {
+            id,
+            from_agent: from_agent.to_string(),
+            message: message.to_string(),
+            status: status.to_string(),
+            note_type: None,
+            supersedes_note_id: None,
+            superseded_by_note_id: None,
+            tags: vec!["coordination".to_string()],
+            task_ids: vec![TaskId::from(1_u64).to_string()],
+            created_at: ts,
+            updated_at: ts,
+            closed_by: None,
+            closed_reason: None,
+            closed_at: None,
+        }
+    }
+
+    fn agent(name: &str, status: &str) -> DbRegistration {
+        let ts = Utc.with_ymd_and_hms(2026, 2, 10, 0, 0, 0).single().unwrap();
+        DbRegistration {
+            name: name.to_string(),
+            generation: 1,
+            session_id: "session-1234567890".to_string(),
+            cwd: "/tmp/tak".to_string(),
+            pid: Some(1234),
+            host: None,
+            status: status.to_string(),
+            started_at: ts,
+            updated_at: ts,
+            metadata: "{}".to_string(),
+        }
+    }
+
+    fn inbox_message(from_agent: &str, to_agent: &str, text: &str) -> DbMessage {
+        let ts = Utc.with_ymd_and_hms(2026, 2, 10, 0, 0, 0).single().unwrap();
+        DbMessage {
+            id: "msg-1".to_string(),
+            from_agent: from_agent.to_string(),
+            to_agent: to_agent.to_string(),
+            text: text.to_string(),
+            reply_to: None,
+            created_at: ts,
+            read_at: None,
+            acked_at: None,
+        }
+    }
+
+    fn reservation(agent: &str, path: &str) -> DbReservation {
+        let ts = Utc.with_ymd_and_hms(2026, 2, 10, 0, 0, 0).single().unwrap();
+        DbReservation {
+            id: 1,
+            agent: agent.to_string(),
+            generation: 1,
+            path: path.to_string(),
+            reason: Some("editing".to_string()),
+            created_at: ts,
+            expires_at: ts,
+        }
+    }
+
+    fn feed_event(id: i64, event_type: &str, agent: Option<&str>, preview: &str) -> DbEvent {
+        let ts = Utc.with_ymd_and_hms(2026, 2, 10, 0, 0, 0).single().unwrap();
+        DbEvent {
+            id,
+            agent: agent.map(str::to_string),
+            event_type: event_type.to_string(),
+            target: Some("src/commands/tui.rs".to_string()),
+            preview: Some(preview.to_string()),
+            detail: None,
+            created_at: ts,
+        }
+    }
+
     fn app_with_snapshot() -> TakTuiApp {
         let mut app = TakTuiApp::new(
             Path::new("."),
@@ -1935,7 +2748,34 @@ mod tests {
         app.snapshot.learnings = vec![learning(1, "Alpha learning")];
         app.snapshot.learnings_by_id = HashMap::from([(1, learning(1, "Alpha learning"))]);
 
+        let mesh_agent = agent("mesh-agent", "active");
+        app.snapshot.notes = vec![note(
+            1,
+            "mesh-agent",
+            "open",
+            "Status update from mesh agent",
+        )];
+        app.snapshot.agents = vec![mesh_agent.clone()];
+        app.snapshot.agent_inbox = HashMap::from([(
+            mesh_agent.name.clone(),
+            vec![inbox_message("peer", &mesh_agent.name, "please sync")],
+        )]);
+        app.snapshot.reservations = vec![reservation(&mesh_agent.name, "src/commands/tui.rs")];
+        app.snapshot.feed = vec![feed_event(
+            1,
+            "reserve",
+            Some(&mesh_agent.name),
+            "Reserved src/commands/tui.rs",
+        )];
+
         app
+    }
+
+    fn has_match_highlight(spans: &[Span<'_>]) -> bool {
+        spans.iter().any(|span| {
+            span.style.bg == Some(Color::Yellow)
+                && span.style.add_modifier.contains(Modifier::UNDERLINED)
+        })
     }
 
     #[test]
@@ -1958,6 +2798,18 @@ mod tests {
 
         let _ = app.handle_key(KeyEvent::from(KeyCode::Enter));
         assert!(!app.search_mode);
+    }
+
+    #[test]
+    fn density_toggle_switches_modes() {
+        let mut app = app_with_snapshot();
+        assert_eq!(app.density_mode, DensityMode::Comfortable);
+
+        let _ = app.handle_key(KeyEvent::from(KeyCode::Char('z')));
+        assert_eq!(app.density_mode, DensityMode::Compact);
+
+        let _ = app.handle_key(KeyEvent::from(KeyCode::Char('z')));
+        assert_eq!(app.density_mode, DensityMode::Comfortable);
     }
 
     #[test]
@@ -1993,6 +2845,217 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
 
         terminal.draw(|frame| app.render(frame)).unwrap();
+    }
+
+    #[test]
+    fn row_renderers_include_semantic_badges() {
+        let app = app_with_snapshot();
+
+        let task_line = app.task_row(&app.snapshot.tasks[0], 80).to_string();
+        assert!(task_line.contains("[pending]"));
+        assert!(task_line.contains("[task]"));
+        assert!(task_line.contains("[p:none]"));
+
+        let note_line = app.note_row(&app.snapshot.notes[0], 80).to_string();
+        assert!(note_line.contains("[B1]"));
+        assert!(note_line.contains("[open]"));
+
+        let agent_line = app.agent_row(&app.snapshot.agents[0], 80).to_string();
+        assert!(agent_line.contains("[active]"));
+        assert!(agent_line.contains("[inbox:1]"));
+        assert!(agent_line.contains("[resv:1]"));
+
+        let feed_line = app.feed_row(&app.snapshot.feed[0], 80).to_string();
+        assert!(feed_line.contains("[#1]"));
+        assert!(feed_line.contains("[reserve]"));
+    }
+
+    #[test]
+    fn row_renderers_highlight_query_matches() {
+        let mut app = app_with_snapshot();
+        app.query = "alpha".to_string();
+
+        let task_line = app.task_row(&app.snapshot.tasks[0], 80);
+        assert!(has_match_highlight(&task_line.spans));
+
+        let learning_line = app.learning_row(&app.snapshot.learnings[0], 80);
+        assert!(has_match_highlight(&learning_line.spans));
+    }
+
+    #[test]
+    fn detail_lines_highlight_query_matches() {
+        let mut app = app_with_snapshot();
+        app.query = "alpha".to_string();
+
+        let lines = app.detail_lines("title: Alpha task\n\ndescription:\n  alpha note", 100);
+        assert!(lines.iter().any(|line| has_match_highlight(&line.spans)));
+    }
+
+    #[test]
+    fn row_truncation_adapts_to_width_and_density() {
+        let mut app = app_with_snapshot();
+
+        let wide = app.task_row(&app.snapshot.tasks[0], 120).to_string();
+        let narrow = app.task_row(&app.snapshot.tasks[0], 52).to_string();
+        assert!(wide.len() >= narrow.len());
+
+        app.density_mode = DensityMode::Compact;
+        let compact = app.task_row(&app.snapshot.tasks[0], 80).to_string();
+        app.density_mode = DensityMode::Comfortable;
+        let comfortable = app.task_row(&app.snapshot.tasks[0], 80).to_string();
+        assert!(comfortable.len() >= compact.len());
+    }
+
+    #[test]
+    fn controls_line_switches_to_search_mode_chip() {
+        let mut app = app_with_snapshot();
+        app.query = "alpha".to_string();
+
+        let idle = app.controls_line().to_string();
+        assert!(idle.contains("tabs"));
+        assert!(idle.contains("density"));
+        assert!(idle.contains("query=alpha"));
+
+        app.search_mode = true;
+        let search = app.controls_line().to_string();
+        assert!(search.contains("[SEARCH]"));
+        assert!(search.contains("density:comfortable"));
+        assert!(search.contains("query=alpha"));
+    }
+
+    #[test]
+    fn summary_cards_render_grouped_metric_chips() {
+        let app = app_with_snapshot();
+        let cards = app.summary_cards(app.snapshot.status_counts(), "12:34:56");
+
+        assert!(cards.len() >= 3);
+
+        let task_card_row = cards[0].to_string();
+        assert!(task_card_row.contains("[tasks:2]"));
+        assert!(task_card_row.contains("[pending:2]"));
+        assert!(task_card_row.contains("[done:0]"));
+
+        let domain_card_row = cards[1].to_string();
+        assert!(domain_card_row.contains("[learnings:1]"));
+        assert!(domain_card_row.contains("[notes:1]"));
+        assert!(domain_card_row.contains("[agents:1]"));
+        assert!(domain_card_row.contains("[feed:1]"));
+        assert!(domain_card_row.contains("[trend:P"));
+
+        let health_card_row = cards[2].to_string();
+        assert!(health_card_row.contains("[refreshes:0]"));
+        assert!(health_card_row.contains("[health:ok]"));
+    }
+
+    #[test]
+    fn summary_cards_surface_warning_chip_when_error_present() {
+        let mut app = app_with_snapshot();
+        app.last_error = Some("coordination db unavailable".to_string());
+
+        let cards = app.summary_cards(app.snapshot.status_counts(), "12:34:56");
+        let health_card_row = cards[2].to_string();
+
+        assert!(health_card_row.contains("[ERROR]"));
+        assert!(health_card_row.contains("coordination db unavailable"));
+    }
+
+    #[test]
+    fn status_distribution_sparkline_is_compact_for_narrow_terminals() {
+        let spark = status_distribution_sparkline(TaskStatusCounts {
+            pending: 12,
+            in_progress: 6,
+            done: 3,
+            cancelled: 0,
+        });
+
+        assert!(spark.starts_with('P'));
+        assert!(spark.contains('I'));
+        assert!(spark.contains('D'));
+        assert!(spark.contains('C'));
+        assert!(spark.chars().count() <= 8);
+    }
+
+    #[test]
+    fn detail_lines_apply_section_segmentation_and_key_alignment() {
+        let app = app_with_snapshot();
+        let detail = "id: 1\nstatus: pending\n\ndescription:\n  first line\n  second line";
+
+        let rendered = app
+            .detail_lines(detail, 100)
+            .into_iter()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>();
+
+        assert!(rendered.iter().any(|line| line.contains("id")));
+        assert!(rendered.iter().any(|line| line.contains(": 1")));
+        assert!(rendered.iter().any(|line| line.contains("▸ description")));
+        assert!(rendered.iter().any(|line| line.contains('─')));
+    }
+
+    #[test]
+    fn detail_lines_keep_task_detail_scrollable_but_structured() {
+        let app = app_with_snapshot();
+        let detail = app.task_detail(&app.snapshot.tasks[0]);
+
+        let rendered = app
+            .detail_lines(&detail, 100)
+            .into_iter()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>();
+
+        assert!(rendered.len() > 20);
+        assert!(rendered.iter().any(|line| line.contains("▸ description")));
+        assert!(
+            rendered
+                .iter()
+                .any(|line| line.contains("▸ contract.objective"))
+        );
+    }
+
+    #[test]
+    fn help_popup_uses_grouped_keymap_sections() {
+        let app = app_with_snapshot();
+        let help = app
+            .help_lines()
+            .into_iter()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>();
+
+        assert!(help.iter().any(|line| line.contains("▸ Navigation")));
+        assert!(help.iter().any(|line| line.contains("▸ Search")));
+        assert!(help.iter().any(|line| line.contains("▸ Actions")));
+        assert!(help.iter().any(|line| line.contains("▸ Data coverage")));
+        assert!(
+            help.iter()
+                .any(|line| line.contains("Tab / Shift+Tab / h,l"))
+        );
+        assert!(help.iter().any(|line| line.contains("switch section")));
+        assert!(
+            help.iter()
+                .any(|line| line.contains("toggle compact/comfortable density"))
+        );
+    }
+
+    #[test]
+    fn theme_maps_status_priority_and_kind_semantically() {
+        let theme = TuiTheme::default();
+
+        assert_ne!(
+            theme.status_style(Status::Pending),
+            theme.status_style(Status::Done)
+        );
+        assert_ne!(
+            theme.priority_style(Some(Priority::Critical)),
+            theme.priority_style(Some(Priority::Low))
+        );
+        assert_ne!(theme.kind_style(Kind::Epic), theme.kind_style(Kind::Task));
+        assert_eq!(theme.match_highlight.bg, Some(Color::Yellow));
+        assert!(
+            theme
+                .match_highlight
+                .add_modifier
+                .contains(Modifier::UNDERLINED)
+        );
     }
 
     #[test]
