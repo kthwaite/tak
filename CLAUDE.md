@@ -30,16 +30,24 @@ Tasks are JSON files in `.tak/tasks/` (the git-committed source of truth). A git
 
 "Blocked" status is never stored; it's derived at query time from the dependency graph.
 
+### Task ID Semantics
+
+- Canonical task IDs are 16-character lowercase hex strings (`TaskId`, e.g. `000000000000002a`).
+- CLI task-id arguments accept canonical hex, unique hex prefixes (case-insensitive), and legacy decimal IDs.
+- Resolution order is exact match first (hex or legacy decimal), then unique prefix match.
+- Exact legacy decimal matches win over prefix interpretation for digit-only input.
+
 ### Source Layout
 
 - **`src/model.rs`** — `Task`, `Status` (pending/in_progress/done/cancelled), `Kind` (epic/feature/task/bug), `Dependency` (id/dep_type/reason), `DepType` (hard/soft), `Contract` (objective/acceptance_criteria/verification/constraints), `Planning` (priority/estimate/required_skills/risk), `Execution` (attempt_count/last_error/handoff_summary/blocked_reason), `Priority` (critical/high/medium/low), `Estimate` (xs/s/m/l/xl), `Risk` (low/medium/high), `GitInfo` (branch/start_commit/end_commit/commits/pr), `Learning` (id/title/description/category/tags/task_ids/timestamps), `LearningCategory` (insight/pitfall/pattern/tool/process)
 - **`src/git.rs`** — `current_head_info()` returns branch + SHA; `commits_since()` returns one-line summaries between two SHAs via git2 revwalk
 - **`src/error.rs`** — `TakError` enum via thiserror; `Result<T>` alias used everywhere
 - **`src/output.rs`** — `Format` enum (Json/Pretty/Minimal); `print_task(s)` functions
-- **`src/store/files.rs`** — `FileStore`: CRUD on `.tak/tasks/*.json`, atomic ID allocation via counter.json + fs2 lock
+- **`src/task_id.rs`** — `TaskId` wrapper (canonical 16-hex IDs), CLI parsing for canonical/prefix/legacy numeric input, serde + rusqlite compatibility helpers
+- **`src/store/files.rs`** — `FileStore`: CRUD on `.tak/tasks/*.json`; allocates next numeric task id as `max(existing)+1` under `counter.lock`; writes canonical hash-style filenames while reading legacy numeric filenames for compatibility
 - **`src/store/index.rs`** — `Index`: SQLite with WAL mode, FK-enabled. Cycle detection via recursive CTEs. Two-pass rebuild to handle forward references. FTS5 full-text search for learnings.
 - **`src/store/learnings.rs`** — `LearningStore`: CRUD on `.tak/learnings/*.json`, atomic ID allocation via counter.json + fs2 lock; separate from task ID sequence
-- **`src/store/sidecars.rs`** — `SidecarStore`: manages per-task context notes (`.tak/context/{id}.md`), structured history logs (`.tak/history/{id}.jsonl`), verification results (`.tak/verification_results/{id}.json`), and artifact directories (`.tak/artifacts/{id}/`); defines `HistoryEvent` (timestamp/event/agent/detail), `VerificationResult` (timestamp/results/passed), `CommandResult` (command/exit_code/stdout/stderr/passed)
+- **`src/store/sidecars.rs`** — `SidecarStore`: manages per-task context notes (`.tak/context/{task_id}.md`), structured history logs (`.tak/history/{task_id}.jsonl`), verification results (`.tak/verification_results/{task_id}.json`), and artifact directories (`.tak/artifacts/{task_id}/`); supports legacy numeric path migration; defines `HistoryEvent` (timestamp/event/agent/detail), `VerificationResult` (timestamp/results/passed), `CommandResult` (command/exit_code/stdout/stderr/passed)
 - **`src/store/mesh.rs`** — `MeshStore`: manages `.tak/runtime/mesh/` — agent registry (join/leave/list), messaging (send/broadcast/inbox), file reservations (reserve/release), activity feed (append/read). Per-domain file locks via `lock.rs`. Auto-generates agent names when omitted.
 - **`src/store/blackboard.rs`** — `BlackboardStore`: shared coordination notes under `.tak/runtime/blackboard/` (`post/list/show/close/reopen`) with tags, task links, and close metadata.
 - **`src/store/therapist.rs`** — `TherapistStore`: append-only workflow observations under `.tak/therapist/log.jsonl` (`offline`/`online` diagnosis artifacts).
@@ -48,36 +56,39 @@ Tasks are JSON files in `.tak/tasks/` (the git-committed source of truth). A git
 - **`src/commands/mesh.rs`** — 9 mesh subcommand handlers: join, leave, list, send, broadcast, inbox, reserve, release, feed
 - **`src/commands/blackboard.rs`** — 5 blackboard subcommand handlers: post, list, show, close, reopen
 - **`src/commands/therapist.rs`** — therapist handlers: offline diagnosis, online RPC interview, and observation log listing
-- **`src/main.rs`** — Clap derive CLI with 31 top-level subcommands and global `--format`/`--pretty` flags. Uses `ValueEnum` for `Format`, `Kind`, `Status`; `conflicts_with` for `--available`/`--blocked`.
+- **`src/commands/migrate_ids.rs`** — legacy numeric filename migration workflow: preflight, apply rewrite, config-version bump, and audit-map generation
+- **`src/main.rs`** — Clap derive CLI with global `--format`/`--pretty` flags. Uses `ValueEnum` for `Format`, `Kind`, `Status`; `conflicts_with` for `--available`/`--blocked`; resolves task-id args through canonical/prefix/legacy-compatible parsing before command execution.
 
 ### CLI Commands
 
-31 top-level subcommands. `--format json` (default), `--format pretty`, `--format minimal`.
+Top-level commands plus grouped subcommands. `--format json` (default), `--format pretty`, `--format minimal`.
+
+For task-taking commands, `TASK_ID` accepts canonical 16-hex IDs, unique hex prefixes, and legacy decimal IDs.
 
 | Command | Purpose |
 |---------|---------|
 | `init` | Initialize `.tak/` directory (including `context/`, `history/`, `artifacts/`, `verification_results/`, `learnings/` dirs + `.gitignore`) |
 | `create TITLE` | Create task (`--kind`, `--parent`, `--depends-on`, `-d`, `--tag`, `--objective`, `--verify`, `--constraint`, `--criterion`, `--priority`, `--estimate`, `--skill`, `--risk`) |
-| `delete ID` | Delete a task (`--force` to cascade: orphans children, removes deps); also cleans up sidecar files |
-| `show ID` | Display a single task |
+| `delete TASK_ID` | Delete a task (`--force` to cascade: orphans children, removes deps); also cleans up sidecar files |
+| `show TASK_ID` | Display a single task |
 | `list` | Query tasks (`--status`, `--kind`, `--tag`, `--assignee`, `--available`, `--blocked`, `--children-of`, `--priority`) |
-| `edit ID` | Update fields (`--title`, `-d`, `--kind`, `--tag`, `--objective`, `--verify`, `--constraint`, `--criterion`, `--priority`, `--estimate`, `--skill`, `--risk`, `--pr`) |
-| `start ID` | Pending -> in_progress (`--assignee`); auto-captures git branch + HEAD SHA; appends history log |
-| `finish ID` | In_progress -> done; auto-captures end commit SHA + commit range; appends history log |
-| `cancel ID` | Pending/in_progress -> cancelled (`--reason`); appends history log |
-| `handoff ID` | In_progress -> pending, record summary (`--summary`, required); appends history log |
+| `edit TASK_ID` | Update fields (`--title`, `-d`, `--kind`, `--tag`, `--objective`, `--verify`, `--constraint`, `--criterion`, `--priority`, `--estimate`, `--skill`, `--risk`, `--pr`) |
+| `start TASK_ID` | Pending -> in_progress (`--assignee`); auto-captures git branch + HEAD SHA; appends history log |
+| `finish TASK_ID` | In_progress -> done; auto-captures end commit SHA + commit range; appends history log |
+| `cancel TASK_ID` | Pending/in_progress -> cancelled (`--reason`); appends history log |
+| `handoff TASK_ID` | In_progress -> pending, record summary (`--summary`, required); appends history log |
 | `claim` | Atomic next+start with file lock (`--assignee`, `--tag`); appends history log |
-| `reopen ID` | Done/cancelled -> pending (clears assignee); appends history log |
-| `unassign ID` | Clear assignee without changing status; appends history log |
-| `depend ID --on IDS` | Add dependency edges (`--dep-type hard\|soft`, `--reason`) |
-| `undepend ID --on IDS` | Remove dependency edges |
-| `reparent ID --to ID` | Change parent |
-| `orphan ID` | Remove parent |
-| `tree [ID]` | Display parent-child hierarchy |
+| `reopen TASK_ID` | Done/cancelled -> pending (clears assignee); appends history log |
+| `unassign TASK_ID` | Clear assignee without changing status; appends history log |
+| `depend TASK_ID --on TASK_IDS` | Add dependency edges (`--dep-type hard\|soft`, `--reason`) |
+| `undepend TASK_ID --on TASK_IDS` | Remove dependency edges |
+| `reparent TASK_ID --to TASK_ID` | Change parent |
+| `orphan TASK_ID` | Remove parent |
+| `tree [TASK_ID]` | Display parent-child hierarchy |
 | `next` | Show next available task (`--assignee`) |
-| `context ID` | Read/write context notes (`--set TEXT`, `--clear`) |
-| `log ID` | Display structured JSONL task history log |
-| `verify ID` | Run contract verification commands; stores result; exits 1 if any fail |
+| `context TASK_ID` | Read/write context notes (`--set TEXT`, `--clear`) |
+| `log TASK_ID` | Display structured JSONL task history log |
+| `verify TASK_ID` | Run contract verification commands; stores result; exits 1 if any fail |
 | `learn add TITLE` | Record a learning (`--category`, `-d`, `--tag`, `--task`) |
 | `learn list` | List learnings (`--category`, `--tag`, `--task`) |
 | `learn show ID` | Display a single learning |
@@ -101,6 +112,7 @@ Tasks are JSON files in `.tak/tasks/` (the git-committed source of truth). A git
 | `therapist offline` | Diagnose workflow friction from mesh + blackboard and append an observation (`--by`, `--limit`) |
 | `therapist online` | Resume a pi session via RPC for interview-style workflow diagnosis (`--session`, `--session-dir`, `--by`) |
 | `therapist log` | Read therapist observation log (`--limit`) |
+| `migrate-ids` | Preflight/apply legacy numeric filename migration (`--dry-run`, `--apply`, `--force`); writes audit map + bumps config version |
 | `reindex` | Rebuild SQLite index from files |
 | `setup` | Install agent integrations (`--global`, `--check`, `--remove`, `--plugin`, `--skills`, `--pi`) |
 | `doctor` | Validate installation health (`--fix`) |
@@ -118,8 +130,9 @@ Errors are structured JSON on stderr when `--format json`: `{"error":"<code>","m
 - `Index::upsert()` is transactional (delete old deps/tags, insert new); uses `INSERT OR IGNORE` for resilience against duplicates
 - `Index::rebuild()` uses two-pass insertion: first insert tasks without parent_id, then update parent_id (handles forward references and FK constraints); uses `INSERT OR IGNORE` for deps/tags
 - `delete` validates referential integrity (children + dependents); `--force` cascades (orphans children, removes incoming deps); cleans up sidecar files
-- Sequential integer IDs via `counter.json` with OS-level file locking (fs2); lock file kept permanently
-- Stale index detection via file fingerprint: `Repo::open()` compares task ID + size + nanosecond mtime against stored metadata, auto-rebuilds on mismatch
+- Task numeric IDs remain sequential (`u64`) and are allocated as `max(existing)+1` under `counter.lock`; `counter.json` is legacy/optional in hash-id mode
+- Task-id CLI resolution is exact-first (canonical hex or legacy decimal), then unique hex-prefix fallback (case-insensitive)
+- Stale index detection via file fingerprint: `Repo::open()` compares task filename + size + nanosecond mtime against stored metadata, auto-rebuilds on mismatch
 - Tree command pre-loads all tasks into a HashMap — no per-node file I/O or SQL queries
 - `setup` and `doctor` are dispatched before `find_repo_root()`; project-scoped `setup` validates that CWD is a git repo root
 - `setup` embeds Claude plugin/skills + pi integration assets via `include_str!` at compile time; idempotent install/remove
@@ -138,9 +151,10 @@ Errors are structured JSON on stderr when `--format json`: `{"error":"<code>","m
 - `start` and `claim` both increment `execution.attempt_count` to track retry attempts
 - `handoff` transitions in_progress -> pending, clears assignee, records `execution.handoff_summary`
 - `cancel --reason` stores the reason in `execution.last_error`
-- Sidecar files: `SidecarStore` manages per-task `context/{id}.md` (free-form notes, git-committed), `history/{id}.jsonl` (structured JSONL event log, git-committed), `verification_results/{id}.json` (gitignored), and `artifacts/{id}/` (gitignored)
+- Sidecar files: `SidecarStore` manages per-task `context/{task_id}.md` (free-form notes, git-committed), `history/{task_id}.jsonl` (structured JSONL event log, git-committed), `verification_results/{task_id}.json` (gitignored), and `artifacts/{task_id}/` (gitignored)
+- `migrate-ids` runs a preflight gate by default (dry-run), blocks when in-progress tasks exist unless `--force`, and on apply rewrites filenames + sidecars, bumps config version, and writes `.tak/migrations/task-id-map-*.json`
 - Lifecycle commands (start, finish, cancel, handoff, reopen, unassign, claim) auto-append structured `HistoryEvent` entries to JSONL history logs; failures are best-effort (never fail the main command)
-- `verify` command stores `VerificationResult` to `.tak/verification_results/{id}.json` after running contract verification commands
+- `verify` command stores `VerificationResult` to `.tak/verification_results/{task_id}.json` after running contract verification commands
 - `context` command reads/writes free-form context notes; `--set` overwrites, `--clear` deletes
 - `log` command displays history log; JSON mode returns array of lines, pretty mode prints raw
 - `verify` command runs `contract.verification` commands via `sh -c` from repo root; reports pass/fail per command; exits 1 if any fail
@@ -167,18 +181,20 @@ Errors are structured JSON on stderr when `--format json`: `{"error":"<code>","m
 ```
 .tak/
   .gitignore                     # Ignores index.db, *.lock, artifacts/, verification_results/, runtime/
-  config.json                    # {"version": 2}
-  counter.json                   # {"next_id": N}  (fs2-locked during allocation)
-  counter.lock                   # Persistent lock file for ID allocation (gitignored)
+  config.json                    # {"version": 2} (migrate-ids --apply bumps to 3)
+  counter.json                   # Legacy {"next_id": N} file (optional in hash-id mode)
+  counter.lock                   # Persistent lock file for task ID allocation (gitignored)
   claim.lock                     # Persistent lock file for atomic claim (gitignored)
-  tasks/*.json                   # One file per task (committed to git)
-  context/*.md                   # Per-task context notes (committed to git)
-  history/*.jsonl                # Per-task structured JSONL history logs (committed to git)
-  verification_results/*.json    # Per-task verification results (gitignored)
-  artifacts/{id}/                # Per-task artifact directories (gitignored)
+  tasks/*.json                   # One file per task (canonical 16-char lowercase hex filenames)
+  context/{task_id}.md           # Per-task context notes (committed to git)
+  history/{task_id}.jsonl        # Per-task structured JSONL history logs (committed to git)
+  verification_results/{task_id}.json # Per-task verification results (gitignored)
+  artifacts/{task_id}/           # Per-task artifact directories (gitignored)
   learnings/*.json               # One file per learning (committed to git)
   learnings/counter.json         # {"next_id": N}  (fs2-locked during allocation)
   learning_counter.lock          # Persistent lock file for learning ID allocation (gitignored)
+  migrations/
+    task-id-map-*.json           # Audit map written by migrate-ids --apply
   runtime/mesh/                  # Coordination runtime (gitignored)
     registry/*.json              # Per-agent presence records
     inbox/<agent>/*.json         # Queued messages per agent
