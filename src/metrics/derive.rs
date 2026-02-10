@@ -474,4 +474,46 @@ mod tests {
             vec![1, 2]
         );
     }
+
+    #[test]
+    fn cancelled_status_without_history_infers_cancelled_terminal_event() {
+        let created = ts(2026, 2, 1, 0, 0, 0);
+        let updated = ts(2026, 2, 2, 0, 0, 0);
+
+        let timeline = derive_timeline(&task(21, Status::Cancelled, created, updated), &[]);
+
+        assert_eq!(
+            kinds(&timeline),
+            vec![TimelineEventKind::Created, TimelineEventKind::Cancelled]
+        );
+        assert!(timeline.events[1].inferred);
+        assert_eq!(timeline.events[1].timestamp, updated);
+        assert!(timeline.completion_episodes.is_empty());
+        assert_eq!(timeline.inferred_samples, 1);
+    }
+
+    #[test]
+    fn cancelled_event_clears_active_cycle_before_finish() {
+        let created = ts(2026, 2, 1, 0, 0, 0);
+        let started = ts(2026, 2, 1, 8, 0, 0);
+        let cancelled = ts(2026, 2, 1, 9, 0, 0);
+        let finished = ts(2026, 2, 1, 10, 0, 0);
+
+        let timeline = derive_timeline(
+            &task(22, Status::Done, created, finished),
+            &[
+                event("started", started),
+                event("cancelled", cancelled),
+                event("finished", finished),
+            ],
+        );
+
+        assert_eq!(timeline.completion_episodes.len(), 1);
+        let episode = &timeline.completion_episodes[0];
+        assert_eq!(episode.started_at, created);
+        assert_eq!(episode.finished_at, finished);
+        assert!(episode.inferred_start);
+        assert!(!episode.inferred_finish);
+        assert_eq!(timeline.inferred_samples, 1);
+    }
 }

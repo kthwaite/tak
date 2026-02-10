@@ -106,8 +106,14 @@ pub enum TakError {
     #[error("wait timed out: {0}")]
     WaitTimeout(String),
 
+    #[error("verify: invalid scope path '{path}': {reason}")]
+    VerifyInvalidScopePath { path: String, reason: String },
+
     #[error("metrics: invalid query options: {0}")]
     MetricsInvalidQuery(String),
+
+    #[error("import: invalid spec: {0}")]
+    ImportInvalidSpec(String),
 
     #[error("work: invalid agent name '{0}' (expected ASCII alphanumeric/hyphen/underscore)")]
     WorkInvalidAgentName(String),
@@ -161,7 +167,9 @@ impl TakError {
             Self::TherapistRpcProtocol(_) => "therapist_rpc_protocol",
             Self::WaitInvalidTarget => "wait_invalid_target",
             Self::WaitTimeout(_) => "wait_timeout",
+            Self::VerifyInvalidScopePath { .. } => "verify_invalid_scope_path",
             Self::MetricsInvalidQuery(_) => "metrics_invalid_query",
+            Self::ImportInvalidSpec(_) => "import_invalid_spec",
             Self::WorkInvalidAgentName(_) => "work_invalid_agent_name",
             Self::WorkCorruptFile(_, _) => "work_corrupt_file",
             Self::EpicFinishHygiene(_) => "epic_finish_hygiene",

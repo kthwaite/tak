@@ -30,7 +30,7 @@ fn merge_traceability_from_task(
     }
 }
 
-fn derive_traceability(
+pub(crate) fn derive_traceability(
     repo: &Repo,
     kind: Kind,
     parent: Option<u64>,

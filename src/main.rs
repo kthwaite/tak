@@ -11,7 +11,8 @@ use tak::store::work::{WorkClaimStrategy, WorkCoordinationVerbosity, WorkStore, 
 #[command(
     name = "tak",
     version,
-    about = "Git-native task manager for agentic workflows"
+    about = "Git-native task manager for agentic workflows",
+    long_about = "Git-native task manager for agentic workflows.\n\nTask ID input forms: canonical 16-char hex, unique hex prefix (case-insensitive), or legacy decimal. Resolution is exact-match first, then unique prefix; ambiguous prefixes error."
 )]
 struct Cli {
     /// Output format
@@ -50,7 +51,7 @@ enum Commands {
     },
     /// Read or write context notes for a task
     Context {
-        /// Task ID
+        /// Task ID (canonical hex, unique prefix, or legacy decimal)
         id: String,
         /// Set context text (overwrites existing)
         #[arg(long)]
@@ -66,10 +67,10 @@ enum Commands {
         /// Task kind
         #[arg(long, value_enum, default_value = "task")]
         kind: Kind,
-        /// Parent task ID (creates a child relationship)
+        /// Parent task ID (canonical hex, unique prefix, or legacy decimal)
         #[arg(long)]
         parent: Option<String>,
-        /// Task IDs this task depends on (comma-separated)
+        /// Task IDs this task depends on (canonical/prefix/legacy, comma-separated)
         #[arg(long, value_delimiter = ',')]
         depends_on: Vec<String>,
         /// Task description
@@ -105,7 +106,7 @@ enum Commands {
     },
     /// Delete a task by ID
     Delete {
-        /// Task ID to delete
+        /// Task ID to delete (canonical hex, unique prefix, or legacy decimal)
         id: String,
         /// Cascade: orphan children and remove incoming dependencies
         #[arg(long)]
@@ -113,9 +114,10 @@ enum Commands {
     },
     /// Add dependency edges (task cannot start until deps are done)
     Depend {
-        /// Task ID that will gain dependencies (canonical hex, unique prefix, or legacy decimal)
-        id: String,
-        /// IDs of tasks it depends on (canonical/prefix/legacy, comma-separated)
+        /// Task IDs that will gain dependencies (canonical hex, unique prefix, or legacy decimal)
+        #[arg(required = true, value_delimiter = ',')]
+        ids: Vec<String>,
+        /// IDs of tasks they depend on (canonical/prefix/legacy, comma-separated)
         #[arg(long, required = true, value_delimiter = ',')]
         on: Vec<String>,
         /// Dependency type (hard or soft)
@@ -124,6 +126,9 @@ enum Commands {
         /// Reason for the dependency
         #[arg(long)]
         reason: Option<String>,
+        /// Suppress mutation output
+        #[arg(long)]
+        quiet: bool,
     },
     /// Validate tak installation and report issues
     Doctor {
@@ -133,7 +138,7 @@ enum Commands {
     },
     /// Edit task fields
     Edit {
-        /// Task ID to edit
+        /// Task ID to edit (canonical hex, unique prefix, or legacy decimal)
         id: String,
         /// New title
         #[arg(long)]
@@ -177,12 +182,12 @@ enum Commands {
     },
     /// Set a task to done
     Finish {
-        /// Task ID to finish
+        /// Task ID to finish (canonical hex, unique prefix, or legacy decimal)
         id: String,
     },
     /// Hand off an in-progress task back to pending for another agent
     Handoff {
-        /// Task ID to hand off
+        /// Task ID to hand off (canonical hex, unique prefix, or legacy decimal)
         id: String,
         /// Summary of progress so far (required)
         #[arg(long, required = true)]
@@ -190,6 +195,14 @@ enum Commands {
         /// Coordination verbosity override for this handoff
         #[arg(long, value_enum)]
         verbosity: Option<WorkCoordinationVerbosity>,
+    },
+    /// Import tasks from a YAML/JSON plan file
+    Import {
+        /// Path to import file (use '-' for stdin)
+        source: String,
+        /// Validate and preview without writing tasks
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Initialize a new .tak/ directory in the current repository
     Init,
@@ -218,7 +231,7 @@ enum Commands {
         /// Show only blocked tasks
         #[arg(long, conflicts_with = "available")]
         blocked: bool,
-        /// Show only children of this task ID
+        /// Show only children of this task ID (canonical hex, unique prefix, or legacy decimal)
         #[arg(long)]
         children_of: Option<String>,
         /// Filter by priority
@@ -227,7 +240,7 @@ enum Commands {
     },
     /// Display history log for a task
     Log {
-        /// Task ID
+        /// Task ID (canonical hex, unique prefix, or legacy decimal)
         id: String,
     },
     /// Multi-agent coordination mesh
@@ -263,23 +276,29 @@ enum Commands {
     },
     /// Remove a task's parent (make it a root task)
     Orphan {
-        /// Task ID to orphan
+        /// Task ID to orphan (canonical hex, unique prefix, or legacy decimal)
         id: String,
+        /// Suppress mutation output
+        #[arg(long)]
+        quiet: bool,
     },
     /// Rebuild the SQLite index from task files
     Reindex,
     /// Reopen a done or cancelled task back to pending
     Reopen {
-        /// Task ID to reopen
+        /// Task ID to reopen (canonical hex, unique prefix, or legacy decimal)
         id: String,
     },
     /// Change a task's parent
     Reparent {
-        /// Task ID to reparent
+        /// Task ID to reparent (canonical hex, unique prefix, or legacy decimal)
         id: String,
-        /// New parent task ID
+        /// New parent task ID (canonical hex, unique prefix, or legacy decimal)
         #[arg(long, required = true)]
         to: String,
+        /// Suppress mutation output
+        #[arg(long)]
+        quiet: bool,
     },
     /// Install agent integrations (Claude hooks; optional Claude plugin/skills and pi integration)
     Setup {
@@ -317,7 +336,7 @@ enum Commands {
     },
     /// Transfer an in-progress task from a stale owner to a new assignee
     Takeover {
-        /// Task ID to take over
+        /// Task ID to take over (canonical hex, unique prefix, or legacy decimal)
         id: String,
         /// New assignee (`--assignee` > `TAK_AGENT` > generated fallback)
         #[arg(long)]
@@ -345,40 +364,50 @@ enum Commands {
     },
     /// Display the parent-child task hierarchy
     Tree {
-        /// Root task ID (omit for full tree)
+        /// Root task ID (canonical hex, unique prefix, or legacy decimal; omit for full tree)
         #[arg(value_name = "ID")]
         root_id: Option<String>,
-        /// Root task ID (named form)
+        /// Root task ID (canonical hex, unique prefix, or legacy decimal; named form)
         #[arg(long = "id", value_name = "ID", conflicts_with = "root_id")]
         id: Option<String>,
         /// Show only pending tasks
         #[arg(long)]
         pending: bool,
+        /// Sort roots/siblings by id, created time, priority, or estimate
+        #[arg(long, value_enum, default_value = "id")]
+        sort: tak::commands::tree::TreeSort,
     },
     /// Clear a task's assignee without changing status
     Unassign {
-        /// Task ID to unassign
+        /// Task ID to unassign (canonical hex, unique prefix, or legacy decimal)
         id: String,
     },
     /// Remove dependency edges
     Undepend {
-        /// Task ID to remove dependencies from
-        id: String,
-        /// IDs of dependencies to remove (comma-separated)
+        /// Task IDs to remove dependencies from (canonical hex, unique prefix, or legacy decimal)
+        #[arg(required = true, value_delimiter = ',')]
+        ids: Vec<String>,
+        /// IDs of dependencies to remove (canonical/prefix/legacy, comma-separated)
         #[arg(long, required = true, value_delimiter = ',')]
         on: Vec<String>,
+        /// Suppress mutation output
+        #[arg(long)]
+        quiet: bool,
     },
     /// Run verification commands from task contract
     Verify {
-        /// Task ID
+        /// Task ID (canonical hex, unique prefix, or legacy decimal)
         id: String,
+        /// Explicit verification scope paths (repeatable)
+        #[arg(long = "path", value_name = "PATH")]
+        path: Vec<String>,
     },
     /// Deterministically wait for a path reservation to clear or a task to become unblocked
     Wait {
         /// Wait until this path is no longer blocked by a conflicting reservation
         #[arg(long, conflicts_with = "on_task", required_unless_present = "on_task")]
         path: Option<String>,
-        /// Wait until this task is no longer blocked by unfinished dependencies
+        /// Wait until this task (canonical hex, unique prefix, or legacy decimal) is no longer blocked by unfinished dependencies
         #[arg(
             long = "on-task",
             conflicts_with = "path",
@@ -445,7 +474,7 @@ enum LearnAction {
         /// Tags (comma-separated)
         #[arg(long, value_delimiter = ',')]
         tag: Vec<String>,
-        /// Link to task IDs (comma-separated)
+        /// Link to task IDs (canonical/prefix/legacy, comma-separated)
         #[arg(long = "task", value_delimiter = ',')]
         task_ids: Vec<String>,
     },
@@ -457,7 +486,7 @@ enum LearnAction {
         /// Filter by tag
         #[arg(long)]
         tag: Option<String>,
-        /// Filter by linked task ID
+        /// Filter by linked task ID (canonical hex, unique prefix, or legacy decimal)
         #[arg(long = "task")]
         task_id: Option<String>,
     },
@@ -482,10 +511,10 @@ enum LearnAction {
         /// Replace tags (comma-separated)
         #[arg(long, value_delimiter = ',')]
         tag: Option<Vec<String>>,
-        /// Add link to task ID (repeatable)
+        /// Add link to task ID (canonical hex, unique prefix, or legacy decimal; repeatable)
         #[arg(long = "add-task", value_delimiter = ',')]
         add_task: Vec<String>,
-        /// Remove link to task ID (repeatable)
+        /// Remove link to task ID (canonical hex, unique prefix, or legacy decimal; repeatable)
         #[arg(long = "remove-task", value_delimiter = ',')]
         remove_task: Vec<String>,
     },
@@ -496,7 +525,7 @@ enum LearnAction {
     },
     /// Suggest relevant learnings for a task (FTS5 search)
     Suggest {
-        /// Task ID to suggest learnings for
+        /// Task ID to suggest learnings for (canonical hex, unique prefix, or legacy decimal)
         task_id: String,
     },
 }
@@ -523,7 +552,7 @@ enum MetricsAction {
         /// Filter by assignee
         #[arg(long)]
         assignee: Option<String>,
-        /// Filter by parent task ID (children only)
+        /// Filter by parent task ID (canonical hex, unique prefix, or legacy decimal; children only)
         #[arg(long)]
         children_of: Option<String>,
         /// Include cancelled tasks in source set
@@ -553,7 +582,37 @@ enum MetricsAction {
         /// Filter by assignee
         #[arg(long)]
         assignee: Option<String>,
-        /// Filter by parent task ID (children only)
+        /// Filter by parent task ID (canonical hex, unique prefix, or legacy decimal; children only)
+        #[arg(long)]
+        children_of: Option<String>,
+        /// Include cancelled tasks in source set
+        #[arg(long)]
+        include_cancelled: bool,
+    },
+    /// Interactive terminal dashboard combining burndown + completion trends
+    Tui {
+        /// Start date (inclusive, YYYY-MM-DD). Defaults to 30 days before --to.
+        #[arg(long)]
+        from: Option<NaiveDate>,
+        /// End date (inclusive, YYYY-MM-DD). Defaults to today.
+        #[arg(long)]
+        to: Option<NaiveDate>,
+        /// Aggregation bucket
+        #[arg(long, value_enum, default_value = "day")]
+        bucket: MetricsBucket,
+        /// Duration metric used in completion panel
+        #[arg(long, value_enum, default_value = "cycle")]
+        metric: CompletionMetric,
+        /// Filter by task kind
+        #[arg(long, value_enum)]
+        kind: Option<Kind>,
+        /// Require tags (repeatable or comma-separated)
+        #[arg(long = "tag", value_delimiter = ',')]
+        tag: Vec<String>,
+        /// Filter by assignee
+        #[arg(long)]
+        assignee: Option<String>,
+        /// Filter by parent task ID (canonical hex, unique prefix, or legacy decimal; children only)
         #[arg(long)]
         children_of: Option<String>,
         /// Include cancelled tasks in source set
@@ -716,7 +775,7 @@ enum BlackboardAction {
         /// Tags (comma-separated)
         #[arg(long, value_delimiter = ',')]
         tag: Vec<String>,
-        /// Link note to task IDs (comma-separated)
+        /// Link note to task IDs (canonical/prefix/legacy, comma-separated)
         #[arg(long = "task", value_delimiter = ',')]
         task_ids: Vec<String>,
     },
@@ -728,7 +787,7 @@ enum BlackboardAction {
         /// Filter by tag
         #[arg(long)]
         tag: Option<String>,
-        /// Filter by linked task ID
+        /// Filter by linked task ID (canonical hex, unique prefix, or legacy decimal)
         #[arg(long = "task")]
         task_id: Option<String>,
         /// Show only the most recent N notes
@@ -1055,6 +1114,9 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
                 apply_coordination_verbosity_label(&summary, effective, verbosity.is_some());
             tak::commands::lifecycle::handoff(&root, task_id, summary, format)
         }
+        Commands::Import { source, dry_run } => {
+            tak::commands::import::run(&root, source, dry_run, format)
+        }
         Commands::Claim { assignee, tag } => {
             let assignee = assignee
                 .or_else(tak::agent::resolve_agent)
@@ -1068,41 +1130,47 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
             tak::commands::lifecycle::unassign(&root, resolve_task_id_arg(&root, id)?, format)
         }
         Commands::Depend {
-            id,
+            ids,
             on,
             dep_type,
             reason,
+            quiet,
         } => tak::commands::deps::depend(
             &root,
-            resolve_task_id_arg(&root, id)?,
+            resolve_task_id_args(&root, ids)?,
             resolve_task_id_args(&root, on)?,
             dep_type,
             reason,
             format,
+            quiet,
         ),
-        Commands::Undepend { id, on } => tak::commands::deps::undepend(
+        Commands::Undepend { ids, on, quiet } => tak::commands::deps::undepend(
             &root,
-            resolve_task_id_arg(&root, id)?,
+            resolve_task_id_args(&root, ids)?,
             resolve_task_id_args(&root, on)?,
             format,
+            quiet,
         ),
-        Commands::Reparent { id, to } => tak::commands::deps::reparent(
+        Commands::Reparent { id, to, quiet } => tak::commands::deps::reparent(
             &root,
             resolve_task_id_arg(&root, id)?,
             resolve_task_id_arg(&root, to)?,
             format,
+            quiet,
         ),
-        Commands::Orphan { id } => {
-            tak::commands::deps::orphan(&root, resolve_task_id_arg(&root, id)?, format)
+        Commands::Orphan { id, quiet } => {
+            tak::commands::deps::orphan(&root, resolve_task_id_arg(&root, id)?, format, quiet)
         }
         Commands::Tree {
             root_id,
             id,
             pending,
+            sort,
         } => tak::commands::tree::run(
             &root,
             resolve_optional_task_id_arg(&root, id.or(root_id))?,
             pending,
+            sort,
             format,
         ),
         Commands::Next { assignee } => tak::commands::next::run(&root, assignee, format),
@@ -1143,9 +1211,12 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
             WorkAction::Stop => tak::commands::work::stop(&root, assignee, format),
             WorkAction::Done => tak::commands::work::done(&root, assignee, pause, format),
         },
-        Commands::Verify { id } => {
-            tak::commands::verify::run(&root, resolve_task_id_arg(&root, id)?, format)
-        }
+        Commands::Verify { id, path } => tak::commands::verify::run_with_scope(
+            &root,
+            resolve_task_id_arg(&root, id)?,
+            path,
+            format,
+        ),
         Commands::Log { id } => {
             tak::commands::log::run(&root, resolve_task_id_arg(&root, id)?, format)
         }
@@ -1247,6 +1318,29 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
                 resolve_optional_task_id_arg(&root, children_of)?,
                 include_cancelled,
                 metric,
+                format,
+            ),
+            MetricsAction::Tui {
+                from,
+                to,
+                bucket,
+                metric,
+                kind,
+                tag,
+                assignee,
+                children_of,
+                include_cancelled,
+            } => tak::commands::metrics::tui(
+                &root,
+                from,
+                to,
+                bucket,
+                metric,
+                kind,
+                tag,
+                assignee,
+                resolve_optional_task_id_arg(&root, children_of)?,
+                include_cancelled,
                 format,
             ),
         },
@@ -1733,6 +1827,74 @@ mod tests {
     }
 
     #[test]
+    fn parse_depend_supports_multiple_targets_and_quiet() {
+        let cli = Cli::parse_from(["tak", "depend", "123", "456", "--on", "789,abc", "--quiet"]);
+        match cli.command {
+            Commands::Depend {
+                ids,
+                on,
+                dep_type,
+                reason,
+                quiet,
+            } => {
+                assert_eq!(ids, vec!["123", "456"]);
+                assert_eq!(on, vec!["789", "abc"]);
+                assert!(dep_type.is_none());
+                assert!(reason.is_none());
+                assert!(quiet);
+            }
+            _ => panic!("expected depend command"),
+        }
+    }
+
+    #[test]
+    fn parse_undepend_supports_multiple_targets_and_quiet() {
+        let cli = Cli::parse_from(["tak", "undepend", "123,456", "--on", "42", "--quiet"]);
+        match cli.command {
+            Commands::Undepend { ids, on, quiet } => {
+                assert_eq!(ids, vec!["123", "456"]);
+                assert_eq!(on, vec!["42"]);
+                assert!(quiet);
+            }
+            _ => panic!("expected undepend command"),
+        }
+    }
+
+    #[test]
+    fn parse_reparent_and_orphan_support_quiet() {
+        let reparent = Cli::parse_from(["tak", "reparent", "123", "--to", "456", "--quiet"]);
+        match reparent.command {
+            Commands::Reparent { id, to, quiet } => {
+                assert_eq!(id, "123");
+                assert_eq!(to, "456");
+                assert!(quiet);
+            }
+            _ => panic!("expected reparent command"),
+        }
+
+        let orphan = Cli::parse_from(["tak", "orphan", "123", "--quiet"]);
+        match orphan.command {
+            Commands::Orphan { id, quiet } => {
+                assert_eq!(id, "123");
+                assert!(quiet);
+            }
+            _ => panic!("expected orphan command"),
+        }
+    }
+
+    #[test]
+    fn parse_import_with_dry_run() {
+        let cli = Cli::parse_from(["tak", "import", "plan.yaml", "--dry-run"]);
+        match cli.command {
+            Commands::Import { source, dry_run } => {
+                assert_eq!(source, "plan.yaml");
+                assert!(dry_run);
+            }
+            _ => panic!("expected import command"),
+        }
+    }
+
+    #[test]
     fn parse_tree_pending_flag() {
         let cli = Cli::parse_from(["tak", "tree", "--pending"]);
         match cli.command {
@@ -1740,10 +1902,12 @@ mod tests {
                 root_id,
                 id,
                 pending,
+                sort,
             } => {
                 assert!(root_id.is_none());
                 assert!(id.is_none());
                 assert!(pending);
+                assert_eq!(sort, tak::commands::tree::TreeSort::Id);
             }
             _ => panic!("expected tree command"),
         }
@@ -1757,10 +1921,12 @@ mod tests {
                 root_id,
                 id,
                 pending,
+                sort,
             } => {
                 assert_eq!(root_id.as_deref(), Some("123"));
                 assert!(id.is_none());
                 assert!(!pending);
+                assert_eq!(sort, tak::commands::tree::TreeSort::Id);
             }
             _ => panic!("expected tree command"),
         }
@@ -1774,10 +1940,31 @@ mod tests {
                 root_id,
                 id,
                 pending,
+                sort,
             } => {
                 assert!(root_id.is_none());
                 assert_eq!(id.as_deref(), Some("123"));
                 assert!(!pending);
+                assert_eq!(sort, tak::commands::tree::TreeSort::Id);
+            }
+            _ => panic!("expected tree command"),
+        }
+    }
+
+    #[test]
+    fn parse_tree_sort_flag() {
+        let cli = Cli::parse_from(["tak", "tree", "--sort", "priority"]);
+        match cli.command {
+            Commands::Tree {
+                root_id,
+                id,
+                pending,
+                sort,
+            } => {
+                assert!(root_id.is_none());
+                assert!(id.is_none());
+                assert!(!pending);
+                assert_eq!(sort, tak::commands::tree::TreeSort::Priority);
             }
             _ => panic!("expected tree command"),
         }
@@ -1868,6 +2055,26 @@ mod tests {
                 assert!(timeout.is_none());
             }
             _ => panic!("expected wait command"),
+        }
+    }
+
+    #[test]
+    fn parse_verify_with_scope_paths() {
+        let cli = Cli::parse_from([
+            "tak",
+            "verify",
+            "abcd",
+            "--path",
+            "src/store",
+            "--path",
+            "README.md",
+        ]);
+        match cli.command {
+            Commands::Verify { id, path } => {
+                assert_eq!(id, "abcd");
+                assert_eq!(path, vec!["src/store", "README.md"]);
+            }
+            _ => panic!("expected verify command"),
         }
     }
 
@@ -2311,6 +2518,38 @@ mod tests {
                     assert!(include_cancelled);
                 }
                 _ => panic!("expected completion-time metrics action"),
+            },
+            _ => panic!("expected metrics command"),
+        }
+    }
+
+    #[test]
+    fn parse_metrics_tui_defaults() {
+        let cli = Cli::parse_from(["tak", "metrics", "tui"]);
+        match cli.command {
+            Commands::Metrics { action } => match action {
+                MetricsAction::Tui {
+                    from,
+                    to,
+                    bucket,
+                    metric,
+                    kind,
+                    tag,
+                    assignee,
+                    children_of,
+                    include_cancelled,
+                } => {
+                    assert!(from.is_none());
+                    assert!(to.is_none());
+                    assert_eq!(bucket, MetricsBucket::Day);
+                    assert_eq!(metric, CompletionMetric::Cycle);
+                    assert!(kind.is_none());
+                    assert!(tag.is_empty());
+                    assert!(assignee.is_none());
+                    assert!(children_of.is_none());
+                    assert!(!include_cancelled);
+                }
+                _ => panic!("expected metrics tui action"),
             },
             _ => panic!("expected metrics command"),
         }

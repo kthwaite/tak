@@ -4,10 +4,6 @@ use std::process::Command;
 use serde_json::Value;
 use tempfile::tempdir;
 
-fn id_hex(id: u64) -> String {
-    format!("{id:016x}")
-}
-
 fn run_tak(repo_root: &Path, args: &[&str]) -> String {
     let output = Command::new(env!("CARGO_BIN_EXE_tak"))
         .current_dir(repo_root)
@@ -45,8 +41,10 @@ fn meta_tasks_render_across_create_show_list_and_tree_formats() {
     let meta_root = parse_json(&create_json);
     assert_eq!(meta_root["kind"], "meta");
 
-    let root_id = meta_root["id"].as_u64().expect("id should be numeric");
-    let root_hex = id_hex(root_id);
+    let root_hex = meta_root["id"]
+        .as_str()
+        .expect("id should be canonical hex")
+        .to_string();
 
     let create_pretty = run_tak(
         repo_root,
@@ -99,7 +97,7 @@ fn meta_tasks_render_across_create_show_list_and_tree_formats() {
 
     let show_json = run_tak(repo_root, &["--format", "json", "show", root_hex.as_str()]);
     let shown = parse_json(&show_json);
-    assert_eq!(shown["id"].as_u64(), Some(root_id));
+    assert_eq!(shown["id"], root_hex);
     assert_eq!(shown["title"], "Meta Root");
     assert_eq!(shown["kind"], "meta");
 

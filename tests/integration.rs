@@ -720,7 +720,7 @@ fn test_depend_rolls_back_on_partial_failure() {
     let dir = tempdir().unwrap();
     let store = FileStore::init(dir.path()).unwrap();
 
-    store
+    let a = store
         .create(
             "A".into(),
             Kind::Task,
@@ -732,7 +732,7 @@ fn test_depend_rolls_back_on_partial_failure() {
             Planning::default(),
         )
         .unwrap();
-    store
+    let b = store
         .create(
             "B".into(),
             Kind::Task,
@@ -750,23 +750,31 @@ fn test_depend_rolls_back_on_partial_failure() {
     idx.rebuild(&store.list_all().unwrap()).unwrap();
     drop(idx);
 
-    // Try to depend 1 on [2, 999]. 999 doesn't exist, so this should fail entirely.
-    let result = tak::commands::deps::depend(dir.path(), 1, vec![2, 999], None, None, Format::Json);
+    // Try to depend A on [B, missing]. Missing doesn't exist, so this should fail entirely.
+    let result = tak::commands::deps::depend(
+        dir.path(),
+        vec![a.id],
+        vec![b.id, u64::MAX],
+        None,
+        None,
+        Format::Json,
+        false,
+    );
     assert!(result.is_err());
 
-    // Task 1's file should still have no dependencies
-    let task = store.read(1).unwrap();
+    // Task A's file should still have no dependencies.
+    let task = store.read(a.id).unwrap();
     assert!(
         task.depends_on.is_empty(),
         "file should be unchanged on failure"
     );
 
-    // Index should also have no deps for task 1
+    // Index should also have no deps for task A.
     let repo = Repo::open(dir.path()).unwrap();
     let avail = repo.index.available(None).unwrap();
     assert!(
-        avail.contains(&tid(1)),
-        "task 1 should still be available (not blocked)"
+        avail.contains(&tid(a.id)),
+        "task A should still be available (not blocked)"
     );
 }
 
@@ -775,7 +783,7 @@ fn test_depend_with_type_and_reason() {
     let dir = tempdir().unwrap();
     let store = FileStore::init(dir.path()).unwrap();
 
-    store
+    let dependency = store
         .create(
             "A".into(),
             Kind::Task,
@@ -787,7 +795,7 @@ fn test_depend_with_type_and_reason() {
             Planning::default(),
         )
         .unwrap();
-    store
+    let dependent = store
         .create(
             "B".into(),
             Kind::Task,
@@ -804,35 +812,37 @@ fn test_depend_with_type_and_reason() {
     idx.rebuild(&store.list_all().unwrap()).unwrap();
     drop(idx);
 
-    // Add dependency with type and reason
+    // Add dependency with type and reason.
     tak::commands::deps::depend(
         dir.path(),
-        2,
-        vec![1],
+        vec![dependent.id],
+        vec![dependency.id],
         Some(DepType::Soft),
         Some("nice to have".into()),
         Format::Json,
+        false,
     )
     .unwrap();
 
-    let task = store.read(2).unwrap();
+    let task = store.read(dependent.id).unwrap();
     assert_eq!(task.depends_on.len(), 1);
-    assert_eq!(task.depends_on[0].id, 1);
+    assert_eq!(task.depends_on[0].id, dependency.id);
     assert_eq!(task.depends_on[0].dep_type, Some(DepType::Soft));
     assert_eq!(task.depends_on[0].reason.as_deref(), Some("nice to have"));
 
-    // Update existing dependency metadata
+    // Update existing dependency metadata.
     tak::commands::deps::depend(
         dir.path(),
-        2,
-        vec![1],
+        vec![dependent.id],
+        vec![dependency.id],
         Some(DepType::Hard),
         None,
         Format::Json,
+        false,
     )
     .unwrap();
 
-    let task = store.read(2).unwrap();
+    let task = store.read(dependent.id).unwrap();
     assert_eq!(task.depends_on.len(), 1);
     assert_eq!(task.depends_on[0].dep_type, Some(DepType::Hard));
     assert_eq!(
@@ -840,6 +850,97 @@ fn test_depend_with_type_and_reason() {
         Some("nice to have"),
         "reason should be preserved when only dep_type is updated"
     );
+}
+
+#[test]
+fn test_depend_and_undepend_support_multi_target_batch_edits() {
+    let dir = tempdir().unwrap();
+    let store = FileStore::init(dir.path()).unwrap();
+
+    let dependency = store
+        .create(
+            "Dependency".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![],
+            vec![],
+            Contract::default(),
+            Planning::default(),
+        )
+        .unwrap();
+    let first = store
+        .create(
+            "First".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![],
+            vec![],
+            Contract::default(),
+            Planning::default(),
+        )
+        .unwrap();
+    let second = store
+        .create(
+            "Second".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![],
+            vec![],
+            Contract::default(),
+            Planning::default(),
+        )
+        .unwrap();
+
+    let idx = Index::open(&store.root().join("index.db")).unwrap();
+    idx.rebuild(&store.list_all().unwrap()).unwrap();
+    drop(idx);
+
+    tak::commands::deps::depend(
+        dir.path(),
+        vec![first.id, second.id],
+        vec![dependency.id],
+        None,
+        None,
+        Format::Json,
+        true,
+    )
+    .unwrap();
+
+    let first_task = store.read(first.id).unwrap();
+    let second_task = store.read(second.id).unwrap();
+    assert_eq!(
+        first_task
+            .depends_on
+            .iter()
+            .map(|dep| dep.id)
+            .collect::<Vec<_>>(),
+        vec![dependency.id]
+    );
+    assert_eq!(
+        second_task
+            .depends_on
+            .iter()
+            .map(|dep| dep.id)
+            .collect::<Vec<_>>(),
+        vec![dependency.id]
+    );
+
+    tak::commands::deps::undepend(
+        dir.path(),
+        vec![first.id, second.id],
+        vec![dependency.id],
+        Format::Json,
+        true,
+    )
+    .unwrap();
+
+    let first_task = store.read(first.id).unwrap();
+    let second_task = store.read(second.id).unwrap();
+    assert!(first_task.depends_on.is_empty());
+    assert!(second_task.depends_on.is_empty());
 }
 
 #[test]

@@ -407,6 +407,76 @@ fn task_depth(task_id: u64, tasks_by_id: &HashMap<u64, &Task>) -> usize {
     depth
 }
 
+fn visit_pretty_subtree(
+    task_id: u64,
+    children_by_parent: &HashMap<u64, Vec<u64>>,
+    visited: &mut HashSet<u64>,
+    ordered: &mut Vec<u64>,
+) {
+    if !visited.insert(task_id) {
+        return;
+    }
+
+    ordered.push(task_id);
+
+    if let Some(children) = children_by_parent.get(&task_id) {
+        for &child_id in children {
+            visit_pretty_subtree(child_id, children_by_parent, visited, ordered);
+        }
+    }
+}
+
+/// Pretty output is hierarchy-aware: parents render before descendants.
+///
+/// Roots and siblings follow the incoming task order so output remains
+/// deterministic while preserving existing non-pretty ordering semantics.
+fn order_tasks_for_pretty(tasks: &[Task]) -> Vec<&Task> {
+    let tasks_by_id: HashMap<u64, &Task> = tasks.iter().map(|task| (task.id, task)).collect();
+    let positions: HashMap<u64, usize> = tasks
+        .iter()
+        .enumerate()
+        .map(|(idx, task)| (task.id, idx))
+        .collect();
+
+    let mut children_by_parent: HashMap<u64, Vec<u64>> = HashMap::new();
+    let mut roots: Vec<u64> = Vec::new();
+
+    for task in tasks {
+        match task.parent {
+            Some(parent_id) if tasks_by_id.contains_key(&parent_id) => {
+                children_by_parent
+                    .entry(parent_id)
+                    .or_default()
+                    .push(task.id);
+            }
+            _ => roots.push(task.id),
+        }
+    }
+
+    roots.sort_by_key(|id| positions.get(id).copied().unwrap_or(usize::MAX));
+    for children in children_by_parent.values_mut() {
+        children.sort_by_key(|id| positions.get(id).copied().unwrap_or(usize::MAX));
+    }
+
+    let mut ordered_ids: Vec<u64> = Vec::with_capacity(tasks.len());
+    let mut visited = HashSet::new();
+
+    for root_id in roots {
+        visit_pretty_subtree(root_id, &children_by_parent, &mut visited, &mut ordered_ids);
+    }
+
+    // Keep behavior robust in malformed/cyclic data by appending any
+    // still-unvisited tasks in deterministic input order.
+    for task in tasks {
+        visit_pretty_subtree(task.id, &children_by_parent, &mut visited, &mut ordered_ids);
+    }
+
+    ordered_ids
+        .into_iter()
+        .filter_map(|id| tasks_by_id.get(&id).copied())
+        .collect()
+}
+
 fn print_tasks_pretty_table(tasks: &[Task]) {
     const TITLE_MAX_WIDTH: usize = 40;
     const ASSIGNEE_MAX_WIDTH: usize = 18;
@@ -420,13 +490,15 @@ fn print_tasks_pretty_table(tasks: &[Task]) {
     }
 
     let tasks_by_id: HashMap<u64, &Task> = tasks.iter().map(|task| (task.id, task)).collect();
+    let ordered_tasks = order_tasks_for_pretty(tasks);
 
     let headers = [
         "ID", "TITLE", "KIND", "STATUS", "PARENT", "CHILDREN", "ASSIGNEE", "PRIORITY", "TAGS",
     ];
 
-    let rows: Vec<[String; 9]> = tasks
+    let rows: Vec<[String; 9]> = ordered_tasks
         .iter()
+        .copied()
         .map(|task| {
             let assignee =
                 truncate_text(task.assignee.as_deref().unwrap_or("-"), ASSIGNEE_MAX_WIDTH);
@@ -496,7 +568,7 @@ fn print_tasks_pretty_table(tasks: &[Task]) {
 
     println!("{}", build_table_border('├', '┼', '┤', &widths).dimmed());
 
-    for (task, row) in tasks.iter().zip(rows.iter()) {
+    for (task, row) in ordered_tasks.iter().copied().zip(rows.iter()) {
         let id = format!("{:>width$}", &row[0], width = widths[0])
             .cyan()
             .bold()
@@ -679,6 +751,44 @@ mod tests {
         let tasks_by_id = HashMap::from([(10, &a), (11, &b)]);
 
         assert_eq!(task_depth(10, &tasks_by_id), 2);
+    }
+
+    fn ordered_ids(tasks: &[Task]) -> Vec<u64> {
+        order_tasks_for_pretty(tasks)
+            .into_iter()
+            .map(|task| task.id)
+            .collect()
+    }
+
+    #[test]
+    fn order_tasks_for_pretty_groups_descendants_with_parent() {
+        let tasks = vec![
+            task(1, None),
+            task(4, None),
+            task(3, Some(2)),
+            task(2, Some(1)),
+        ];
+
+        assert_eq!(ordered_ids(&tasks), vec![1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn order_tasks_for_pretty_keeps_sibling_order_from_input() {
+        let tasks = vec![
+            task(1, None),
+            task(3, Some(1)),
+            task(2, Some(1)),
+            task(4, None),
+        ];
+
+        assert_eq!(ordered_ids(&tasks), vec![1, 3, 2, 4]);
+    }
+
+    #[test]
+    fn order_tasks_for_pretty_handles_cycles_without_dropping_tasks() {
+        let tasks = vec![task(10, Some(11)), task(11, Some(10)), task(12, None)];
+
+        assert_eq!(ordered_ids(&tasks), vec![12, 10, 11]);
     }
 
     #[test]
