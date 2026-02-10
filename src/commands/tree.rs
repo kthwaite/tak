@@ -4,13 +4,16 @@ use crate::error::Result;
 use crate::model::{Status, Task};
 use crate::output::{Format, truncate_title};
 use crate::store::repo::Repo;
+use crate::task_id::TaskId;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
+const MINIMAL_ID_WIDTH: usize = TaskId::HEX_LEN;
+
 #[derive(Debug, Serialize)]
 struct TreeNode {
-    id: u64,
+    id: String,
     title: String,
     kind: String,
     status: String,
@@ -62,13 +65,17 @@ fn build_tree(
         .collect();
 
     Some(TreeNode {
-        id: task.id,
+        id: format_tree_id(task.id),
         title: task.title.clone(),
         kind: task.kind.to_string(),
         status: task.status.to_string(),
         blocked: blocked_set.contains(&task.id),
         children,
     })
+}
+
+fn format_tree_id(id: u64) -> String {
+    TaskId::from(id).to_string()
 }
 
 fn print_tree_pretty(node: &TreeNode, prefix: &str, is_last: bool, is_root: bool) {
@@ -122,8 +129,14 @@ fn print_tree_minimal(node: &TreeNode, depth: usize) {
     let title = truncate_title(&node.title, 12);
     let blocked_marker = if node.blocked { " [B]" } else { "" };
     println!(
-        "{}{:>4} {:12} {:6} {:10}{}",
-        indent, node.id, title, node.kind, node.status, blocked_marker
+        "{}{:>id_width$} {:12} {:6} {:10}{}",
+        indent,
+        node.id,
+        title,
+        node.kind,
+        node.status,
+        blocked_marker,
+        id_width = MINIMAL_ID_WIDTH,
     );
     for child in &node.children {
         print_tree_minimal(child, depth + 1);
@@ -219,8 +232,8 @@ mod tests {
         assert_eq!(roots, vec![2, 4]);
 
         let tree = build_tree(2, &children_map, &filtered, &HashSet::new()).unwrap();
-        let child_ids: Vec<u64> = tree.children.iter().map(|child| child.id).collect();
-        assert_eq!(child_ids, vec![3]);
+        let child_ids: Vec<String> = tree.children.iter().map(|child| child.id.clone()).collect();
+        assert_eq!(child_ids, vec![format_tree_id(3)]);
     }
 
     #[test]
@@ -235,8 +248,8 @@ mod tests {
         let children_map = build_children_map(&filtered, true);
 
         let tree = build_tree(10, &children_map, &filtered, &HashSet::new()).unwrap();
-        let child_ids: Vec<u64> = tree.children.iter().map(|child| child.id).collect();
-        assert_eq!(child_ids, vec![12]);
+        let child_ids: Vec<String> = tree.children.iter().map(|child| child.id.clone()).collect();
+        assert_eq!(child_ids, vec![format_tree_id(12)]);
     }
 
     #[test]
@@ -250,6 +263,17 @@ mod tests {
         let children_map = build_children_map(&filtered, true);
 
         assert!(build_tree(1, &children_map, &filtered, &HashSet::new()).is_none());
+    }
+
+    #[test]
+    fn build_tree_uses_hex_task_ids() {
+        let tasks = vec![task(42, Status::Pending, None)];
+
+        let filtered = collect_tasks(tasks, false);
+        let children_map = build_children_map(&filtered, false);
+        let tree = build_tree(42, &children_map, &filtered, &HashSet::new()).unwrap();
+
+        assert_eq!(tree.id, format_tree_id(42));
     }
 
     #[test]

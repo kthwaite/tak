@@ -873,7 +873,7 @@ mod tests {
 
         let dir = tempdir().unwrap();
         let store = FileStore::init(dir.path()).unwrap();
-        store
+        let task_a = store
             .create(
                 "A".into(),
                 Kind::Task,
@@ -885,7 +885,7 @@ mod tests {
                 Planning::default(),
             )
             .unwrap();
-        store
+        let task_b = store
             .create(
                 "B".into(),
                 Kind::Task,
@@ -901,16 +901,21 @@ mod tests {
         // First open builds index
         let repo = Repo::open(dir.path()).unwrap();
         let avail = repo.index.available(None).unwrap();
-        assert_eq!(avail, tids(&[1, 2]));
+        let expected = vec![TaskId::from(task_a.id), TaskId::from(task_b.id)];
+        assert_eq!(avail, expected);
         drop(repo);
 
-        // Simulate external change: delete task 2's file
-        std::fs::remove_file(dir.path().join(".tak/tasks/2.json")).unwrap();
+        // Simulate external change: delete task B's file
+        let task_b_path = dir
+            .path()
+            .join(".tak/tasks")
+            .join(format!("{}.json", TaskId::from(task_b.id)));
+        std::fs::remove_file(task_b_path).unwrap();
 
         // Re-open should detect staleness and rebuild
         let repo = Repo::open(dir.path()).unwrap();
         let avail = repo.index.available(None).unwrap();
-        assert_eq!(avail, tids(&[1])); // task 2 is gone
+        assert_eq!(avail, vec![TaskId::from(task_a.id)]); // task B is gone
     }
 
     #[test]
@@ -921,7 +926,7 @@ mod tests {
 
         let dir = tempdir().unwrap();
         let store = FileStore::init(dir.path()).unwrap();
-        store
+        let task = store
             .create(
                 "A".into(),
                 Kind::Task,
@@ -936,11 +941,14 @@ mod tests {
 
         let repo = Repo::open(dir.path()).unwrap();
         let avail = repo.index.available(None).unwrap();
-        assert_eq!(avail, tids(&[1]));
+        assert_eq!(avail, vec![TaskId::from(task.id)]);
         drop(repo);
 
         // Simulate external edit: change status directly in JSON
-        let task_path = dir.path().join(".tak/tasks/1.json");
+        let task_path = dir
+            .path()
+            .join(".tak/tasks")
+            .join(format!("{}.json", TaskId::from(task.id)));
         let data = std::fs::read_to_string(&task_path).unwrap();
         let modified = data.replace("\"pending\"", "\"in_progress\"");
         // Sleep to ensure mtime changes on 1-second resolution filesystems
