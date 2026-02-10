@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::Path;
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use colored::Colorize;
 use serde::Serialize;
 
@@ -226,7 +226,7 @@ fn resolve_from_session_cwd_with(
 }
 
 /// Read lease config from `.tak/config.json`, returning (registration_ttl, reservation_ttl).
-fn read_lease_config(repo_root: &Path) -> (u64, u64) {
+pub(crate) fn read_lease_config(repo_root: &Path) -> (u64, u64) {
     let config_path = repo_root.join(".tak").join("config.json");
     let Ok(content) = fs::read_to_string(config_path) else {
         return (DEFAULT_REGISTRATION_TTL_SECS, DEFAULT_RESERVATION_TTL_SECS);
@@ -266,6 +266,53 @@ struct BlockerRecord {
     #[serde(skip_serializing_if = "Option::is_none")]
     reason: Option<String>,
     age_secs: i64,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct ReservationSnapshot {
+    agent: String,
+    path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<String>,
+    created_at: DateTime<Utc>,
+    expires_at: DateTime<Utc>,
+    age_secs: i64,
+}
+
+fn collect_reservation_snapshots(
+    reservations: &[DbReservation],
+    owner_filter: Option<&str>,
+    normalized_targets: &[String],
+) -> Vec<ReservationSnapshot> {
+    let now = Utc::now();
+
+    let mut snapshots: Vec<ReservationSnapshot> = reservations
+        .iter()
+        .filter(|res| {
+            owner_filter.map_or(true, |owner| res.agent == owner)
+                && (normalized_targets.is_empty()
+                    || normalized_targets
+                        .iter()
+                        .any(|target| normalized_paths_conflict(target, &res.path)))
+        })
+        .map(|res| ReservationSnapshot {
+            agent: res.agent.clone(),
+            path: res.path.clone(),
+            reason: res.reason.clone(),
+            created_at: res.created_at,
+            expires_at: res.expires_at,
+            age_secs: (now - res.created_at).num_seconds().max(0),
+        })
+        .collect();
+
+    snapshots.sort_by(|a, b| {
+        a.agent
+            .cmp(&b.agent)
+            .then_with(|| a.path.cmp(&b.path))
+            .then_with(|| a.created_at.cmp(&b.created_at))
+    });
+
+    snapshots
 }
 
 fn collect_blockers(
@@ -715,6 +762,57 @@ pub fn blockers(repo_root: &Path, paths: Vec<String>, format: Format) -> Result<
     Ok(())
 }
 
+pub fn reservations(
+    repo_root: &Path,
+    name: Option<&str>,
+    paths: Vec<String>,
+    format: Format,
+) -> Result<()> {
+    let db = CoordinationDb::from_repo(repo_root)?;
+    let reservations = db.list_reservations()?;
+    let normalized_targets = normalize_targets(paths, repo_root)?;
+    let snapshots = collect_reservation_snapshots(&reservations, name, &normalized_targets);
+
+    match format {
+        Format::Json => println!("{}", serde_json::to_string(&snapshots)?),
+        Format::Pretty => {
+            if snapshots.is_empty() {
+                println!("{}", "No active reservations matched.".dimmed());
+            } else {
+                for reservation in &snapshots {
+                    println!(
+                        "{} {} {}",
+                        format!("[{}]", reservation.agent).cyan().bold(),
+                        reservation.path.green(),
+                        format!("age={}s", reservation.age_secs).dimmed(),
+                    );
+                    if let Some(reason) = reservation.reason.as_deref() {
+                        println!("  {} {}", "reason:".dimmed(), reason);
+                    }
+                    println!(
+                        "  {} {}",
+                        "expires:".dimmed(),
+                        reservation.expires_at.to_rfc3339().dimmed()
+                    );
+                }
+            }
+        }
+        Format::Minimal => {
+            for reservation in &snapshots {
+                println!(
+                    "{}\t{}\t{}\t{}",
+                    reservation.agent,
+                    reservation.path,
+                    reservation.age_secs,
+                    reservation.reason.as_deref().unwrap_or(""),
+                );
+            }
+        }
+    }
+
+    Ok(())
+}
+
 pub fn send(repo_root: &Path, from: &str, to: &str, text: &str, format: Format) -> Result<()> {
     let db = CoordinationDb::from_repo(repo_root)?;
     let msg = db.send_message(from, to, text, None)?;
@@ -1007,6 +1105,55 @@ mod tests {
         let blockers = collect_blockers(&reservations, &["src/store/mesh.rs".into()]);
         assert_eq!(blockers.len(), 1);
         assert_eq!(blockers[0].path, "src/store");
+    }
+
+    #[test]
+    fn collect_reservation_snapshots_filters_by_owner() {
+        let db = CoordinationDb::open_memory().unwrap();
+        db.join_agent("agent-a", "s", "/", None, None).unwrap();
+        db.join_agent("agent-b", "s", "/", None, None).unwrap();
+
+        let a = db.get_agent("agent-a").unwrap();
+        let b = db.get_agent("agent-b").unwrap();
+
+        db.reserve("agent-a", a.generation, "src/store", Some("task-a"), 3600)
+            .unwrap();
+        db.reserve("agent-b", b.generation, "README.md", Some("task-b"), 3600)
+            .unwrap();
+
+        let reservations = db.list_reservations().unwrap();
+        let snapshots = collect_reservation_snapshots(&reservations, Some("agent-a"), &[]);
+
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(snapshots[0].agent, "agent-a");
+        assert_eq!(snapshots[0].path, "src/store");
+        assert_eq!(snapshots[0].reason.as_deref(), Some("task-a"));
+        assert!(snapshots[0].age_secs >= 0);
+    }
+
+    #[test]
+    fn collect_reservation_snapshots_filters_by_path_conflict() {
+        let db = CoordinationDb::open_memory().unwrap();
+        db.join_agent("agent-a", "s", "/", None, None).unwrap();
+        let agent = db.get_agent("agent-a").unwrap();
+
+        db.reserve(
+            "agent-a",
+            agent.generation,
+            "src/store",
+            Some("task-a"),
+            3600,
+        )
+        .unwrap();
+        db.reserve("agent-a", agent.generation, "README.md", None, 3600)
+            .unwrap();
+
+        let reservations = db.list_reservations().unwrap();
+        let snapshots =
+            collect_reservation_snapshots(&reservations, None, &["src/store/mesh.rs".into()]);
+
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(snapshots[0].path, "src/store");
     }
 
     #[test]

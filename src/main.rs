@@ -641,6 +641,15 @@ enum MeshAction {
         #[arg(long = "path")]
         paths: Vec<String>,
     },
+    /// List active reservation leases (optionally filtered by owner/path)
+    Reservations {
+        /// Optional owner filter
+        #[arg(long)]
+        name: Option<String>,
+        /// Optional path filters (repeatable). Uses the same conflict semantics as blockers/wait.
+        #[arg(long = "path")]
+        paths: Vec<String>,
+    },
     /// Reserve file paths for exclusive editing
     Reserve {
         /// Agent name
@@ -1288,6 +1297,9 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
                 ttl_seconds,
             } => tak::commands::mesh::cleanup(&root, stale, dry_run, ttl_seconds, format),
             MeshAction::Blockers { paths } => tak::commands::mesh::blockers(&root, paths, format),
+            MeshAction::Reservations { name, paths } => {
+                tak::commands::mesh::reservations(&root, name.as_deref(), paths, format)
+            }
             MeshAction::Reserve {
                 name,
                 paths,
@@ -1780,6 +1792,31 @@ mod tests {
                 assert_eq!(paths, vec!["src/store/mesh.rs", "README.md"]);
             }
             _ => panic!("expected mesh blockers command"),
+        }
+    }
+
+    #[test]
+    fn parse_mesh_reservations_filters() {
+        let cli = Cli::parse_from([
+            "tak",
+            "mesh",
+            "reservations",
+            "--name",
+            "agent-1",
+            "--path",
+            "src/store",
+            "--path",
+            "README.md",
+        ]);
+
+        match cli.command {
+            Commands::Mesh {
+                action: MeshAction::Reservations { name, paths },
+            } => {
+                assert_eq!(name.as_deref(), Some("agent-1"));
+                assert_eq!(paths, vec!["src/store", "README.md"]);
+            }
+            _ => panic!("expected mesh reservations command"),
         }
     }
 
