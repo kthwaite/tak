@@ -7,7 +7,7 @@ use tak::commands::blackboard::BlackboardTemplate;
 use tak::error::TakError;
 use tak::model::{Contract, Kind, Planning, Status};
 use tak::output::Format;
-use tak::store::blackboard::{BlackboardStatus, BlackboardStore};
+use tak::store::coordination_db::CoordinationDb;
 use tak::store::files::FileStore;
 use tak::store::work::WorkClaimStrategy;
 
@@ -87,20 +87,20 @@ fn cli_only_blocker_cooperation_flow_times_out_then_unblocks_and_claims_next_tas
     )
     .unwrap();
 
-    let board = BlackboardStore::open(&repo_root.join(".tak"));
-    let notes = board
-        .list(
-            Some(BlackboardStatus::Open),
+    let db = CoordinationDb::from_repo(repo_root).unwrap();
+    let notes = db
+        .list_notes(
+            Some("open"),
             Some("blocker"),
-            Some(blocked.id),
+            Some(&blocked.id.to_string()),
             None,
         )
         .unwrap();
     assert_eq!(notes.len(), 1);
     assert!(notes[0].message.contains("template: blocker"));
-    assert_eq!(notes[0].task_ids, vec![blocked.id]);
+    assert_eq!(notes[0].task_ids, vec![blocked.id.to_string()]);
 
-    let note_id = notes[0].id;
+    let note_id = notes[0].id as u64;
 
     let wait_timeout = tak::commands::wait::run(
         repo_root,
@@ -159,8 +159,9 @@ fn cli_only_blocker_cooperation_flow_times_out_then_unblocks_and_claims_next_tas
     )
     .unwrap();
 
-    let closed = board.get(note_id).unwrap();
-    assert_eq!(closed.status, BlackboardStatus::Closed);
+    let db2 = CoordinationDb::from_repo(repo_root).unwrap();
+    let closed = db2.get_note(note_id as i64).unwrap();
+    assert_eq!(closed.status, "closed");
 }
 
 #[test]
