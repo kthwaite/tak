@@ -1,7 +1,9 @@
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
+use tak::commands::blackboard::BlackboardTemplate;
 use tak::model::{DepType, Estimate, Kind, LearningCategory, Priority, Risk, Status};
 use tak::output::Format;
 use tak::store::blackboard::BlackboardStatus;
+use tak::store::work::{WorkClaimStrategy, WorkVerifyMode};
 
 #[derive(Parser)]
 #[command(
@@ -253,6 +255,43 @@ enum Commands {
         #[arg(long)]
         assignee: Option<String>,
     },
+    /// Deterministically wait for a path reservation to clear or a task to become unblocked
+    Wait {
+        /// Wait until this path is no longer blocked by a conflicting reservation
+        #[arg(long, conflicts_with = "on_task", required_unless_present = "on_task")]
+        path: Option<String>,
+        /// Wait until this task is no longer blocked by unfinished dependencies
+        #[arg(
+            long = "on-task",
+            conflicts_with = "path",
+            required_unless_present = "path"
+        )]
+        on_task: Option<String>,
+        /// Timeout in seconds (omit to wait indefinitely)
+        #[arg(long)]
+        timeout: Option<u64>,
+    },
+    /// Manage CLI-native work-loop runtime state (`tak work`, `tak work status`, `tak work stop`)
+    Work {
+        /// Optional action (default: start/resume)
+        #[arg(value_enum)]
+        action: Option<WorkAction>,
+        /// Agent identity override (`--assignee` > `TAK_AGENT` > generated fallback)
+        #[arg(long)]
+        assignee: Option<String>,
+        /// Optional tag filter persisted in loop state
+        #[arg(long)]
+        tag: Option<String>,
+        /// Optional loop limit (remaining units)
+        #[arg(long, value_parser = clap::value_parser!(u32).range(1..))]
+        limit: Option<u32>,
+        /// Verification mode policy hint to persist in loop state
+        #[arg(long, value_enum)]
+        verify: Option<WorkVerifyMode>,
+        /// Claim prioritization strategy for selecting the next task
+        #[arg(long, value_enum)]
+        strategy: Option<WorkClaimStrategy>,
+    },
     /// Run verification commands from task contract
     Verify {
         /// Task ID
@@ -338,6 +377,14 @@ enum Commands {
         #[arg(long)]
         fix: bool,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[clap(rename_all = "snake_case")]
+enum WorkAction {
+    Start,
+    Status,
+    Stop,
 }
 
 #[derive(Subcommand)]
@@ -460,6 +507,33 @@ enum MeshAction {
         #[arg(long)]
         ack: bool,
     },
+    /// Refresh registration and reservation lease liveness metadata
+    Heartbeat {
+        /// Agent name (optional; resolves from session/cwd when omitted)
+        #[arg(long)]
+        name: Option<String>,
+        /// Session ID override for implicit resolution
+        #[arg(long)]
+        session_id: Option<String>,
+    },
+    /// Clean up stale mesh runtime state
+    Cleanup {
+        /// Remove stale registrations/reservations
+        #[arg(long, required = true)]
+        stale: bool,
+        /// Preview what would be removed without mutating state
+        #[arg(long)]
+        dry_run: bool,
+        /// Override stale detection TTL (seconds)
+        #[arg(long)]
+        ttl_seconds: Option<u64>,
+    },
+    /// Diagnose active reservation blockers (owner/path/reason/age)
+    Blockers {
+        /// Optional path filters (repeatable). When omitted, shows all active blockers.
+        #[arg(long = "path")]
+        paths: Vec<String>,
+    },
     /// Reserve file paths for exclusive editing
     Reserve {
         /// Agent name
@@ -499,9 +573,18 @@ enum BlackboardAction {
         /// Author/agent name
         #[arg(long)]
         from: String,
-        /// Message text
+        /// Message text (summary when --template is used)
         #[arg(long)]
         message: String,
+        /// Optional structured template for high-signal coordination notes
+        #[arg(long, value_enum)]
+        template: Option<BlackboardTemplate>,
+        /// Reference a previous note for compact delta updates
+        #[arg(long = "since-note")]
+        since_note: Option<u64>,
+        /// Mark this note as unchanged since --since-note
+        #[arg(long = "no-change-since", requires = "since_note")]
+        no_change_since: bool,
         /// Tags (comma-separated)
         #[arg(long, value_delimiter = ',')]
         tag: Vec<String>,
@@ -812,6 +895,31 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
             format,
         ),
         Commands::Next { assignee } => tak::commands::next::run(&root, assignee, format),
+        Commands::Wait {
+            path,
+            on_task,
+            timeout,
+        } => tak::commands::wait::run(
+            &root,
+            path,
+            resolve_optional_task_id_arg(&root, on_task)?,
+            timeout,
+            format,
+        ),
+        Commands::Work {
+            action,
+            assignee,
+            tag,
+            limit,
+            verify,
+            strategy,
+        } => match action.unwrap_or(WorkAction::Start) {
+            WorkAction::Start => tak::commands::work::start_or_resume_with_strategy(
+                &root, assignee, tag, limit, verify, strategy, format,
+            ),
+            WorkAction::Status => tak::commands::work::status(&root, assignee, format),
+            WorkAction::Stop => tak::commands::work::stop(&root, assignee, format),
+        },
         Commands::Verify { id } => {
             tak::commands::verify::run(&root, resolve_task_id_arg(&root, id)?, format)
         }
@@ -890,6 +998,18 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
             MeshAction::Inbox { name, ack } => {
                 tak::commands::mesh::inbox(&root, &name, ack, format)
             }
+            MeshAction::Heartbeat { name, session_id } => tak::commands::mesh::heartbeat(
+                &root,
+                name.as_deref(),
+                session_id.as_deref(),
+                format,
+            ),
+            MeshAction::Cleanup {
+                stale,
+                dry_run,
+                ttl_seconds,
+            } => tak::commands::mesh::cleanup(&root, stale, dry_run, ttl_seconds, format),
+            MeshAction::Blockers { paths } => tak::commands::mesh::blockers(&root, paths, format),
             MeshAction::Reserve {
                 name,
                 paths,
@@ -904,12 +1024,20 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
             BlackboardAction::Post {
                 from,
                 message,
+                template,
+                since_note,
+                no_change_since,
                 tag,
                 task_ids,
-            } => tak::commands::blackboard::post(
+            } => tak::commands::blackboard::post_with_options(
                 &root,
                 &from,
                 &message,
+                tak::commands::blackboard::BlackboardPostOptions {
+                    template,
+                    since_note,
+                    no_change_since,
+                },
                 tag,
                 resolve_task_id_args(&root, task_ids)?,
                 format,
@@ -962,16 +1090,18 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
     use tak::error::TakError;
     use tak::model::{Contract, Kind, Planning};
     use tak::store::files::FileStore;
     use tempfile::tempdir;
 
-    fn init_repo_with_tasks(count: usize) -> tempfile::TempDir {
+    fn init_repo_with_tasks(count: usize) -> (tempfile::TempDir, Vec<u64>) {
         let dir = tempdir().unwrap();
         let store = FileStore::init(dir.path()).unwrap();
+        let mut ids = Vec::new();
         for i in 0..count {
-            store
+            let task = store
                 .create(
                     format!("task-{i}"),
                     Kind::Task,
@@ -983,24 +1113,110 @@ mod tests {
                     Planning::default(),
                 )
                 .unwrap();
+            ids.push(task.id);
         }
-        dir
+        (dir, ids)
     }
 
     #[test]
     fn resolve_task_id_arg_accepts_canonical_hex_input() {
-        let dir = init_repo_with_tasks(1);
+        let (dir, ids) = init_repo_with_tasks(1);
 
-        let resolved = resolve_task_id_arg(dir.path(), "0000000000000001".into()).unwrap();
-        assert_eq!(resolved, 1);
+        let canonical = format!("{:016x}", ids[0]);
+        let resolved = resolve_task_id_arg(dir.path(), canonical).unwrap();
+        assert_eq!(resolved, ids[0]);
     }
 
     #[test]
     fn resolve_task_id_arg_surfaces_ambiguous_prefix() {
-        let dir = init_repo_with_tasks(2);
+        let (dir, ids) = init_repo_with_tasks(32);
 
-        let err = resolve_task_id_arg(dir.path(), "00000000000000".into()).unwrap_err();
+        let mut by_prefix: HashMap<char, Vec<u64>> = HashMap::new();
+        for id in ids {
+            let hex = format!("{:016x}", id);
+            let prefix = hex.chars().next().unwrap();
+            by_prefix.entry(prefix).or_default().push(id);
+        }
+
+        let ambiguous_prefix = by_prefix
+            .iter()
+            .find_map(|(prefix, bucket)| (bucket.len() >= 2).then(|| prefix.to_string()))
+            .expect("at least one first-hex-digit collision with 32 IDs");
+
+        let err = resolve_task_id_arg(dir.path(), ambiguous_prefix).unwrap_err();
         assert!(matches!(err, TakError::TaskIdAmbiguous(_, _)));
+    }
+
+    #[test]
+    fn parse_blackboard_post_template_flag() {
+        let cli = Cli::parse_from([
+            "tak",
+            "blackboard",
+            "post",
+            "--from",
+            "agent-1",
+            "--message",
+            "Need help with reservation release",
+            "--template",
+            "blocker",
+        ]);
+
+        match cli.command {
+            Commands::Blackboard {
+                action: BlackboardAction::Post { from, template, .. },
+            } => {
+                assert_eq!(from, "agent-1");
+                assert_eq!(template, Some(BlackboardTemplate::Blocker));
+            }
+            _ => panic!("expected blackboard post command"),
+        }
+    }
+
+    #[test]
+    fn parse_blackboard_post_delta_flags() {
+        let cli = Cli::parse_from([
+            "tak",
+            "blackboard",
+            "post",
+            "--from",
+            "agent-1",
+            "--message",
+            "No changes from previous status",
+            "--since-note",
+            "42",
+            "--no-change-since",
+        ]);
+
+        match cli.command {
+            Commands::Blackboard {
+                action:
+                    BlackboardAction::Post {
+                        since_note,
+                        no_change_since,
+                        ..
+                    },
+            } => {
+                assert_eq!(since_note, Some(42));
+                assert!(no_change_since);
+            }
+            _ => panic!("expected blackboard post command"),
+        }
+    }
+
+    #[test]
+    fn parse_blackboard_post_no_change_since_requires_since_note() {
+        let result = Cli::try_parse_from([
+            "tak",
+            "blackboard",
+            "post",
+            "--from",
+            "agent-1",
+            "--message",
+            "unchanged",
+            "--no-change-since",
+        ]);
+
+        assert!(result.is_err());
     }
 
     #[test]
@@ -1052,6 +1268,194 @@ mod tests {
             }
             _ => panic!("expected tree command"),
         }
+    }
+
+    #[test]
+    fn parse_mesh_blockers_paths() {
+        let cli = Cli::parse_from([
+            "tak",
+            "mesh",
+            "blockers",
+            "--path",
+            "src/store/mesh.rs",
+            "--path",
+            "README.md",
+        ]);
+
+        match cli.command {
+            Commands::Mesh {
+                action: MeshAction::Blockers { paths },
+            } => {
+                assert_eq!(paths, vec!["src/store/mesh.rs", "README.md"]);
+            }
+            _ => panic!("expected mesh blockers command"),
+        }
+    }
+
+    #[test]
+    fn parse_wait_path_flag() {
+        let cli = Cli::parse_from([
+            "tak",
+            "wait",
+            "--path",
+            "src/store/mesh.rs",
+            "--timeout",
+            "5",
+        ]);
+        match cli.command {
+            Commands::Wait {
+                path,
+                on_task,
+                timeout,
+            } => {
+                assert_eq!(path.as_deref(), Some("src/store/mesh.rs"));
+                assert!(on_task.is_none());
+                assert_eq!(timeout, Some(5));
+            }
+            _ => panic!("expected wait command"),
+        }
+    }
+
+    #[test]
+    fn parse_wait_on_task_flag() {
+        let cli = Cli::parse_from(["tak", "wait", "--on-task", "42"]);
+        match cli.command {
+            Commands::Wait {
+                path,
+                on_task,
+                timeout,
+            } => {
+                assert!(path.is_none());
+                assert_eq!(on_task.as_deref(), Some("42"));
+                assert!(timeout.is_none());
+            }
+            _ => panic!("expected wait command"),
+        }
+    }
+
+    #[test]
+    fn parse_work_defaults_to_start_resume_action() {
+        let cli = Cli::parse_from(["tak", "work", "--tag", "cli", "--limit", "3"]);
+        match cli.command {
+            Commands::Work {
+                action,
+                assignee,
+                tag,
+                limit,
+                verify,
+                strategy,
+            } => {
+                assert!(action.is_none());
+                assert!(assignee.is_none());
+                assert_eq!(tag.as_deref(), Some("cli"));
+                assert_eq!(limit, Some(3));
+                assert!(verify.is_none());
+                assert!(strategy.is_none());
+            }
+            _ => panic!("expected work command"),
+        }
+    }
+
+    #[test]
+    fn parse_work_start_action_variant() {
+        let cli = Cli::parse_from(["tak", "work", "start", "--verify", "local"]);
+        match cli.command {
+            Commands::Work {
+                action,
+                assignee,
+                tag,
+                limit,
+                verify,
+                strategy,
+            } => {
+                assert_eq!(action, Some(WorkAction::Start));
+                assert!(assignee.is_none());
+                assert!(tag.is_none());
+                assert!(limit.is_none());
+                assert_eq!(verify, Some(WorkVerifyMode::Local));
+                assert!(strategy.is_none());
+            }
+            _ => panic!("expected work command"),
+        }
+    }
+
+    #[test]
+    fn parse_work_start_with_strategy() {
+        let cli = Cli::parse_from(["tak", "work", "start", "--strategy", "epic_closeout"]);
+        match cli.command {
+            Commands::Work {
+                action,
+                assignee,
+                tag,
+                limit,
+                verify,
+                strategy,
+            } => {
+                assert_eq!(action, Some(WorkAction::Start));
+                assert!(assignee.is_none());
+                assert!(tag.is_none());
+                assert!(limit.is_none());
+                assert!(verify.is_none());
+                assert_eq!(strategy, Some(WorkClaimStrategy::EpicCloseout));
+            }
+            _ => panic!("expected work command"),
+        }
+    }
+
+    #[test]
+    fn parse_work_status_action() {
+        let cli = Cli::parse_from(["tak", "work", "status", "--assignee", "agent-1"]);
+        match cli.command {
+            Commands::Work {
+                action,
+                assignee,
+                tag,
+                limit,
+                verify,
+                strategy,
+            } => {
+                assert_eq!(action, Some(WorkAction::Status));
+                assert_eq!(assignee.as_deref(), Some("agent-1"));
+                assert!(tag.is_none());
+                assert!(limit.is_none());
+                assert!(verify.is_none());
+                assert!(strategy.is_none());
+            }
+            _ => panic!("expected work command"),
+        }
+    }
+
+    #[test]
+    fn parse_work_stop_action() {
+        let cli = Cli::parse_from(["tak", "work", "stop"]);
+        match cli.command {
+            Commands::Work {
+                action,
+                assignee,
+                tag,
+                limit,
+                verify,
+                strategy,
+            } => {
+                assert_eq!(action, Some(WorkAction::Stop));
+                assert!(assignee.is_none());
+                assert!(tag.is_none());
+                assert!(limit.is_none());
+                assert!(verify.is_none());
+                assert!(strategy.is_none());
+            }
+            _ => panic!("expected work command"),
+        }
+    }
+
+    #[test]
+    fn parse_wait_rejects_missing_target() {
+        let err = match Cli::try_parse_from(["tak", "wait", "--timeout", "3"]) {
+            Ok(_) => panic!("expected clap parse error"),
+            Err(err) => err,
+        };
+        let rendered = err.to_string();
+        assert!(rendered.contains("required"));
     }
 
     #[test]
