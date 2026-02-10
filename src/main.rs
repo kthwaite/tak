@@ -329,6 +329,15 @@ enum Commands {
         #[arg(long)]
         force: bool,
     },
+    /// Interactive terminal explorer across tasks, learnings, blackboard, mesh, and feed data
+    Tui {
+        /// Start in this section
+        #[arg(long, value_enum, default_value = "tasks")]
+        focus: tak::commands::tui::TuiSection,
+        /// Initial search query
+        #[arg(long)]
+        query: Option<String>,
+    },
     /// Diagnose /tak workflow friction and record therapist observations
     Therapist {
         #[command(subcommand)]
@@ -1241,6 +1250,7 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
                 format,
             ),
         },
+        Commands::Tui { focus, query } => tak::commands::tui::run(&root, focus, query, format),
         Commands::Mesh { action } => match action {
             MeshAction::Join { name, session_id } => {
                 tak::commands::mesh::join(&root, name.as_deref(), session_id.as_deref(), format)
@@ -2303,6 +2313,30 @@ mod tests {
                 _ => panic!("expected completion-time metrics action"),
             },
             _ => panic!("expected metrics command"),
+        }
+    }
+
+    #[test]
+    fn parse_tui_defaults() {
+        let cli = Cli::parse_from(["tak", "tui"]);
+        match cli.command {
+            Commands::Tui { focus, query } => {
+                assert_eq!(focus, tak::commands::tui::TuiSection::Tasks);
+                assert!(query.is_none());
+            }
+            _ => panic!("expected tui command"),
+        }
+    }
+
+    #[test]
+    fn parse_tui_with_focus_and_query() {
+        let cli = Cli::parse_from(["tak", "tui", "--focus", "mesh", "--query", "stale"]);
+        match cli.command {
+            Commands::Tui { focus, query } => {
+                assert_eq!(focus, tak::commands::tui::TuiSection::Mesh);
+                assert_eq!(query.as_deref(), Some("stale"));
+            }
+            _ => panic!("expected tui command"),
         }
     }
 

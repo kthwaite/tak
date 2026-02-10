@@ -21,6 +21,7 @@ pub mod show;
 pub mod takeover;
 pub mod therapist;
 pub mod tree;
+pub mod tui;
 pub mod verify;
 pub mod wait;
 pub mod work;
