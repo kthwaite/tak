@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
 
 import {
@@ -63,6 +63,7 @@ interface MeshAgent {
 	session_id: string;
 	status: string;
 	cwd: string;
+	pid?: string | number;
 }
 
 interface MeshMessage {
@@ -71,6 +72,14 @@ interface MeshMessage {
 	to: string;
 	text: string;
 	timestamp: string;
+}
+
+interface MeshFeedEvent {
+	ts: string;
+	agent: string;
+	type: string;
+	target?: string;
+	preview?: string;
 }
 
 interface MeshReservation {
@@ -599,7 +608,12 @@ function coerceBlackboardNote(value: unknown): BlackboardNote | null {
 
 	return {
 		id,
-		author: typeof value.author === "string" ? value.author : "unknown",
+		author:
+			typeof value.from_agent === "string"
+				? value.from_agent
+				: typeof value.author === "string"
+					? value.author
+					: "unknown",
 		message: typeof value.message === "string" ? value.message : "",
 		status: value.status === "closed" ? "closed" : "open",
 		task_ids: taskIds,
@@ -611,6 +625,164 @@ function coerceBlackboardNote(value: unknown): BlackboardNote | null {
 function coerceBlackboardNoteArray(value: unknown): BlackboardNote[] {
 	if (!Array.isArray(value)) return [];
 	return value.map(coerceBlackboardNote).filter((note): note is BlackboardNote => note !== null);
+}
+
+function coerceMeshMessage(value: unknown): MeshMessage | null {
+	if (!isRecord(value)) return null;
+
+	const rawId = value.id;
+	const id =
+		typeof rawId === "string"
+			? rawId
+			: typeof rawId === "number" && Number.isFinite(rawId)
+				? String(Math.trunc(rawId))
+				: undefined;
+	if (!id) return null;
+
+	const from =
+		typeof value.from_agent === "string"
+			? value.from_agent
+			: typeof value.from === "string"
+				? value.from
+				: "";
+	const to =
+		typeof value.to_agent === "string"
+			? value.to_agent
+			: typeof value.to === "string"
+				? value.to
+				: "";
+	const text =
+		typeof value.text === "string"
+			? value.text
+			: typeof value.message === "string"
+				? value.message
+				: "";
+	const timestamp =
+		typeof value.created_at === "string"
+			? value.created_at
+			: typeof value.timestamp === "string"
+				? value.timestamp
+				: typeof value.ts === "string"
+					? value.ts
+					: "";
+
+	if (!from || !timestamp) return null;
+
+	return {
+		id,
+		from,
+		to,
+		text,
+		timestamp,
+	};
+}
+
+function coerceMeshMessageArray(value: unknown): MeshMessage[] {
+	if (!Array.isArray(value)) return [];
+	return value.map(coerceMeshMessage).filter((message): message is MeshMessage => message !== null);
+}
+
+function coerceMeshFeedEvent(value: unknown): MeshFeedEvent | null {
+	if (!isRecord(value)) return null;
+
+	const timestamp =
+		typeof value.created_at === "string"
+			? value.created_at
+			: typeof value.ts === "string"
+				? value.ts
+				: "";
+	const eventType =
+		typeof value.event_type === "string"
+			? value.event_type
+			: typeof value.type === "string"
+				? value.type
+				: "";
+	if (!timestamp || !eventType) return null;
+
+	return {
+		ts: timestamp,
+		agent: typeof value.agent === "string" ? value.agent : "unknown",
+		type: eventType,
+		target: typeof value.target === "string" ? value.target : undefined,
+		preview: typeof value.preview === "string" ? value.preview : undefined,
+	};
+}
+
+function coerceMeshFeedEventArray(value: unknown): MeshFeedEvent[] {
+	if (!Array.isArray(value)) return [];
+	return value.map(coerceMeshFeedEvent).filter((event): event is MeshFeedEvent => event !== null);
+}
+
+function coerceMeshReservation(value: unknown): MeshReservation | null {
+	if (!isRecord(value)) return null;
+
+	const agent = typeof value.agent === "string" ? value.agent.trim() : "";
+	if (!agent) return null;
+
+	const paths =
+		Array.isArray(value.paths)
+			? value.paths.filter((path): path is string => typeof path === "string")
+			: typeof value.path === "string"
+				? [value.path]
+				: [];
+
+	const normalizedPaths = uniqueNormalizedPaths(paths);
+	if (normalizedPaths.length === 0) return null;
+
+	const since =
+		typeof value.created_at === "string"
+			? value.created_at
+			: typeof value.since === "string"
+				? value.since
+				: "";
+	if (!since) return null;
+
+	return {
+		agent,
+		paths: normalizedPaths,
+		reason: typeof value.reason === "string" ? value.reason : undefined,
+		since,
+	};
+}
+
+function coerceMeshReservationArray(value: unknown): MeshReservation[] {
+	if (!Array.isArray(value)) return [];
+	return value.map(coerceMeshReservation).filter((reservation): reservation is MeshReservation => reservation !== null);
+}
+
+function coerceMeshAgent(value: unknown): MeshAgent | null {
+	if (!isRecord(value)) return null;
+
+	const name = typeof value.name === "string" ? value.name.trim() : "";
+	if (!name) return null;
+
+	const sessionId = typeof value.session_id === "string" ? value.session_id : "";
+	const status = typeof value.status === "string" ? value.status : "active";
+	const cwd = typeof value.cwd === "string" ? value.cwd : "";
+	const pid =
+		typeof value.pid === "string" || (typeof value.pid === "number" && Number.isFinite(value.pid))
+			? value.pid
+			: undefined;
+
+	return {
+		name,
+		session_id: sessionId,
+		status,
+		cwd,
+		pid,
+	};
+}
+
+function coerceMeshAgentArray(value: unknown): MeshAgent[] {
+	if (!Array.isArray(value)) return [];
+	return value.map(coerceMeshAgent).filter((agent): agent is MeshAgent => agent !== null);
+}
+
+function findReloadDanglingAgents(agents: MeshAgent[], sessionId: string, cwd: string): MeshAgent[] {
+	if (!sessionId) return [];
+	return agents
+		.filter((agent) => agent.session_id === sessionId && agent.cwd === cwd)
+		.sort((a, b) => a.name.localeCompare(b.name));
 }
 
 function isDigit(ch: string): boolean {
@@ -1542,46 +1714,30 @@ function toRepoRelativePath(cwd: string, inputPath: string): string {
 	return normalizePathLikeTak(withoutAt);
 }
 
-function loadReservations(cwd: string): MeshReservation[] {
-	const reservationsPath = join(cwd, ".tak", "runtime", "mesh", "reservations.json");
-	if (!existsSync(reservationsPath)) return [];
-	try {
-		const content = readFileSync(reservationsPath, "utf-8");
-		const parsed = JSON.parse(content) as unknown;
-		if (!Array.isArray(parsed)) return [];
-		return parsed as MeshReservation[];
-	} catch {
-		return [];
+async function loadReservationsFromCli(
+	pi: ExtensionAPI,
+): Promise<{ reservations: MeshReservation[]; error?: string }> {
+	const result = await runTak(pi, ["mesh", "reservations"]);
+	if (!result.ok) {
+		return {
+			reservations: [],
+			error: result.errorMessage ?? "tak mesh reservations failed",
+		};
 	}
+
+	return {
+		reservations: coerceMeshReservationArray(result.parsed),
+	};
 }
 
-function loadActiveAgentNames(cwd: string): Set<string> {
-	const registryDir = join(cwd, ".tak", "runtime", "mesh", "registry");
-	if (!existsSync(registryDir)) return new Set<string>();
+async function loadActiveAgentNamesFromCli(pi: ExtensionAPI): Promise<Set<string>> {
+	const result = await runTak(pi, ["mesh", "list"]);
+	if (!result.ok) return new Set<string>();
 
-	const active = new Set<string>();
-	try {
-		for (const entry of readdirSync(registryDir, { withFileTypes: true })) {
-			if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
-			const path = join(registryDir, entry.name);
-			const fallbackName = entry.name.replace(/\.json$/i, "");
-			try {
-				const content = readFileSync(path, "utf-8");
-				const parsed = JSON.parse(content) as { name?: string; status?: string };
-				const name = parsed.name?.trim() || fallbackName;
-				const status = parsed.status?.trim().toLowerCase();
-				if (name && (!status || status === "active")) {
-					active.add(name);
-				}
-			} catch {
-				// Ignore malformed records and continue with remaining entries.
-			}
-		}
-	} catch {
-		return new Set<string>();
-	}
-
-	return active;
+	const names = coerceMeshAgentArray(result.parsed)
+		.filter((agent) => !agent.status || agent.status.toLowerCase() === "active")
+		.map((agent) => agent.name);
+	return new Set(names);
 }
 
 function filterReservationsToActiveAgents(
@@ -2119,24 +2275,20 @@ export default function takPiExtension(pi: ExtensionAPI) {
 		const inProgressTasks = sortTasksUrgentThenOldest(coerceTakTaskArray(inProgressResult.parsed));
 		const openNotes = coerceBlackboardNoteArray(blackboardResult.parsed);
 
-		if (Array.isArray(meshListResult.parsed)) {
-			const agents = meshListResult.parsed as MeshAgent[];
-			peerCount = agents.filter((a) => a.name !== agentName).length;
-		}
+		const agents = coerceMeshAgentArray(meshListResult.parsed);
+		peerCount = agents.filter((a) => a.name !== agentName).length;
 
 		let inboxCount = 0;
 		if (agentName) {
 			const inboxResult = await runTak(pi, ["mesh", "inbox", "--name", agentName]);
-			if (Array.isArray(inboxResult.parsed)) {
-				const messages = inboxResult.parsed as MeshMessage[];
-				inboxCount = messages.length;
+			const messages = coerceMeshMessageArray(inboxResult.parsed);
+			inboxCount = messages.length;
 
-				const unseen = messages.filter((m) => !seenInboxMessageIds.has(m.id));
-				for (const message of messages) seenInboxMessageIds.add(message.id);
+			const unseen = messages.filter((m) => !seenInboxMessageIds.has(m.id));
+			for (const message of messages) seenInboxMessageIds.add(message.id);
 
-				if (unseen.length > 0 && seenInboxMessageIds.size > unseen.length) {
-					ctx.ui.notify(`${unseen.length} new tak mesh message(s). Use /tak inbox.`, "info");
-				}
+			if (unseen.length > 0 && seenInboxMessageIds.size > unseen.length) {
+				ctx.ui.notify(`${unseen.length} new tak mesh message(s). Use /tak inbox.`, "info");
 			}
 		}
 
@@ -2852,18 +3004,14 @@ export default function takPiExtension(pi: ExtensionAPI) {
 					}
 
 					const lines: string[] = ["# tak mesh feed"];
-					const events = Array.isArray(feedResult.parsed) ? (feedResult.parsed as unknown[]) : [];
+					const events = coerceMeshFeedEventArray(feedResult.parsed);
 					if (events.length === 0) {
 						lines.push("(empty)");
 					} else {
-						for (const rawEvent of events) {
-							if (!isRecord(rawEvent)) continue;
-							const ts = typeof rawEvent.ts === "string" ? rawEvent.ts : "?";
-							const agent = typeof rawEvent.agent === "string" ? rawEvent.agent : "unknown";
-							const type = typeof rawEvent.type === "string" ? rawEvent.type : "event";
-							const target = typeof rawEvent.target === "string" ? ` -> ${rawEvent.target}` : "";
-							const preview = typeof rawEvent.preview === "string" ? ` :: ${rawEvent.preview}` : "";
-							lines.push(`- ${ts} ${agent} ${type}${target}${preview}`);
+						for (const event of events) {
+							const target = event.target ? ` -> ${event.target}` : "";
+							const preview = event.preview ? ` :: ${event.preview}` : "";
+							lines.push(`- ${event.ts} ${event.agent} ${event.type}${target}${preview}`);
 						}
 					}
 
@@ -2927,13 +3075,11 @@ export default function takPiExtension(pi: ExtensionAPI) {
 
 				if (agentName) {
 					const inboxResult = await runTak(pi, ["mesh", "inbox", "--name", agentName]);
-					if (Array.isArray(inboxResult.parsed)) {
-						const inbox = inboxResult.parsed as MeshMessage[];
-						lines.push("");
-						lines.push(`inbox (${inbox.length}):`);
-						for (const message of inbox.slice(-5)) {
-							lines.push(`- ${message.from}: ${message.text}`);
-						}
+					const inbox = coerceMeshMessageArray(inboxResult.parsed);
+					lines.push("");
+					lines.push(`inbox (${inbox.length}):`);
+					for (const message of inbox.slice(-5)) {
+						lines.push(`- ${message.from}: ${message.text}`);
 					}
 				}
 
@@ -3012,12 +3158,12 @@ export default function takPiExtension(pi: ExtensionAPI) {
 				if (parsed.filters.ackInbox) inboxArgs.push("--ack");
 
 				const inboxResult = await runTak(pi, inboxArgs);
-				if (!inboxResult.ok || !Array.isArray(inboxResult.parsed)) {
+				if (!inboxResult.ok) {
 					ctx.ui.notify(inboxResult.errorMessage ?? "Could not load inbox", "error");
 					return;
 				}
 
-				const messages = inboxResult.parsed as MeshMessage[];
+				const messages = coerceMeshMessageArray(inboxResult.parsed);
 				if (messages.length === 0) {
 					ctx.ui.notify("Mesh inbox is empty", "info");
 					await refreshStatus(ctx);
@@ -3186,13 +3332,32 @@ export default function takPiExtension(pi: ExtensionAPI) {
 	pi.on("tool_call", async (event, ctx) => {
 		if (!integrationEnabled() || !agentName) return;
 
-		const reservations = filterReservationsToActiveAgents(
-			loadReservations(ctx.cwd),
-			loadActiveAgentNames(ctx.cwd),
-		);
+		const [{ reservations: rawReservations, error: reservationLoadError }, activeAgentNames] = await Promise.all([
+			loadReservationsFromCli(pi),
+			loadActiveAgentNamesFromCli(pi),
+		]);
+		const reservations = filterReservationsToActiveAgents(rawReservations, activeAgentNames);
+
+		const bashCommand = isToolCallEventType("bash", event) ? event.input.command ?? "" : "";
+		const requiresReservationLookup =
+			isToolCallEventType("write", event) ||
+			isToolCallEventType("edit", event) ||
+			(isToolCallEventType("bash", event) &&
+				workLoop.active &&
+				workLoop.verifyMode === "isolated" &&
+				isLikelyBuildOrTestCommand(bashCommand));
+
+		if (reservationLoadError && requiresReservationLookup) {
+			return {
+				block: true,
+				reason:
+					`Work loop guard: could not load reservation snapshot from 'tak mesh reservations' (${reservationLoadError}). ` +
+					"Retry after mesh is healthy, or reserve paths and rerun.",
+			};
+		}
 
 		if (isToolCallEventType("bash", event) && workLoop.active && workLoop.verifyMode === "isolated") {
-			const command = event.input.command ?? "";
+			const command = bashCommand;
 			if (isLikelyBuildOrTestCommand(command)) {
 				const foreignReservations = reservationsForeignTo(agentName, reservations);
 				if (foreignReservations.length > 0) {
