@@ -226,7 +226,7 @@ fn resolve_from_session_cwd_with(
 }
 
 /// Read lease config from `.tak/config.json`, returning (registration_ttl, reservation_ttl).
-fn read_lease_config(repo_root: &Path) -> (u64, u64) {
+pub(crate) fn read_lease_config(repo_root: &Path) -> (u64, u64) {
     let config_path = repo_root.join(".tak").join("config.json");
     let Ok(content) = fs::read_to_string(config_path) else {
         return (DEFAULT_REGISTRATION_TTL_SECS, DEFAULT_RESERVATION_TTL_SECS);
