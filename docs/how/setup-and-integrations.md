@@ -35,6 +35,7 @@ Important invariants:
 Hook commands inserted/maintained:
 
 - `tak reindex 2>/dev/null || true`
+- `tak mesh cleanup --stale --format minimal >/dev/null 2>/dev/null || true`
 - `tak mesh join --format minimal >/dev/null 2>/dev/null || true`
 - `tak mesh leave --format minimal >/dev/null 2>/dev/null || true`
 
@@ -74,6 +75,26 @@ By default, `tak setup` manages hooks. One exception:
 - `tak setup --skills` (skills-only mode) does **not** manage hooks.
 
 `tak setup --pi` **does** manage hooks (unless combined in a mode that disables hook management).
+
+## Ctrl-C/crash behavior and stale cleanup guarantees
+
+`mesh leave` is intentionally **best-effort** at shutdown. If an agent process is interrupted (`Ctrl-C`) or crashes hard, the stop hook may not run, so registrations/reservations can linger temporarily.
+
+Tak’s guarantee is recovery on subsequent sessions, not perfect shutdown:
+
+- Session start runs stale cleanup before mesh join:
+  - `tak mesh cleanup --stale --format minimal ...`
+  - `tak mesh join --format minimal ...`
+- In pi runtime, periodic turn-end heartbeats refresh liveness/lease metadata while the session is active.
+- Stale registrations/reservations are reclaimed by TTL + cleanup policy (manual or session-start), even if shutdown hooks were skipped.
+
+Operator guidance when state looks stuck:
+
+1. Inspect active mesh state: `tak mesh list`
+2. Inspect blockers: `tak mesh blockers`
+3. Preview stale reclamation: `tak mesh cleanup --stale --dry-run`
+4. Apply reclamation: `tak mesh cleanup --stale`
+5. If needed, explicitly release your own holds: `tak mesh release --name <agent> --all`
 
 ## Check and remove semantics
 
