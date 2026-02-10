@@ -22,6 +22,8 @@ const PI_SYSTEM_APPEND_END: &str = "<!-- tak:pi-system:end -->";
 const PI_SYSTEM_APPEND_BODY: &str = "Use `tak` actively as the source of truth for work planning and execution.\n\nCoordination rules:\n- Prefer `/tak` and `tak_cli` for task selection and updates.\n- Prioritise urgent tasks first (critical/high), then oldest tasks first within the same priority.\n- Keep task state accurate with lifecycle commands (`claim/start/handoff/finish/cancel/reopen`).\n- If mesh peers are active, avoid stepping on their toes:\n  - check mesh state/inbox,\n  - reserve files before major edits,\n  - coordinate via mesh and blackboard before overlapping work.\n- Use blackboard notes for blockers, handoffs, and cross-agent context.";
 
 const REINDEX_HOOK_COMMAND: &str = "tak reindex 2>/dev/null || true";
+const MESH_CLEANUP_HOOK_COMMAND: &str =
+    "tak mesh cleanup --stale --format minimal >/dev/null 2>/dev/null || true";
 const MESH_JOIN_HOOK_COMMAND: &str =
     "tak mesh join --format minimal >/dev/null 2>/dev/null || true";
 const MESH_LEAVE_HOOK_COMMAND: &str =
@@ -34,6 +36,11 @@ fn session_start_hook_entry() -> Value {
             {
                 "type": "command",
                 "command": REINDEX_HOOK_COMMAND,
+                "timeout": 10
+            },
+            {
+                "type": "command",
+                "command": MESH_CLEANUP_HOOK_COMMAND,
                 "timeout": 10
             },
             {
@@ -435,6 +442,7 @@ fn is_tak_entry_with_command(entry: &Value, command: &str) -> bool {
 
 fn is_tak_session_start_entry(entry: &Value) -> bool {
     is_tak_entry_with_command(entry, REINDEX_HOOK_COMMAND)
+        || is_tak_entry_with_command(entry, MESH_CLEANUP_HOOK_COMMAND)
         || is_tak_entry_with_command(entry, MESH_JOIN_HOOK_COMMAND)
 }
 
@@ -446,6 +454,9 @@ fn has_session_start_hook(session_start: &[Value]) -> bool {
     session_start
         .iter()
         .any(|entry| is_tak_entry_with_command(entry, REINDEX_HOOK_COMMAND))
+        && session_start
+            .iter()
+            .any(|entry| is_tak_entry_with_command(entry, MESH_CLEANUP_HOOK_COMMAND))
         && session_start
             .iter()
             .any(|entry| is_tak_entry_with_command(entry, MESH_JOIN_HOOK_COMMAND))
@@ -580,7 +591,12 @@ fn install_hook(settings: &mut Map<String, Value>) -> bool {
         "SessionStart",
         session_start_hook_entry(),
         is_tak_session_start_entry,
-        &[REINDEX_HOOK_COMMAND, MESH_JOIN_HOOK_COMMAND],
+        [
+            REINDEX_HOOK_COMMAND,
+            MESH_CLEANUP_HOOK_COMMAND,
+            MESH_JOIN_HOOK_COMMAND,
+        ]
+        .as_ref(),
     );
     changed |= upsert_hook_entry(
         hooks_obj,
@@ -607,8 +623,14 @@ fn remove_hook(settings: &mut Map<String, Value>) -> bool {
         && let Some(arr) = session_start.as_array_mut()
     {
         for entry in arr.iter_mut() {
-            removed |=
-                remove_commands_from_entry(entry, &[REINDEX_HOOK_COMMAND, MESH_JOIN_HOOK_COMMAND]);
+            removed |= remove_commands_from_entry(
+                entry,
+                &[
+                    REINDEX_HOOK_COMMAND,
+                    MESH_CLEANUP_HOOK_COMMAND,
+                    MESH_JOIN_HOOK_COMMAND,
+                ],
+            );
         }
         let before = arr.len();
         arr.retain(|entry| !is_empty_matcher_entry_with_no_hooks(entry));

@@ -33,7 +33,17 @@ impl FileStore {
         }
 
         fs::create_dir_all(root.join("tasks"))?;
-        fs::write(root.join("config.json"), r#"{"version": 2}"#)?;
+        fs::write(
+            root.join("config.json"),
+            r#"{
+  "version": 2,
+  "mesh": {
+    "registration_ttl_secs": 900,
+    "reservation_ttl_secs": 1800,
+    "heartbeat_interval_secs": 30
+  }
+}"#,
+        )?;
 
         Ok(Self { root })
     }
@@ -259,6 +269,30 @@ mod tests {
         assert!(store.root().join("config.json").exists());
         assert!(!store.root().join("counter.json").exists());
         assert!(store.root().join("tasks").is_dir());
+    }
+
+    #[test]
+    fn init_writes_mesh_lease_defaults() {
+        let dir = tempdir().unwrap();
+        let store = FileStore::init(dir.path()).unwrap();
+
+        let config_path = store.root().join("config.json");
+        let config: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(config_path).unwrap()).unwrap();
+
+        assert_eq!(config["version"], serde_json::json!(2));
+        assert_eq!(
+            config["mesh"]["registration_ttl_secs"],
+            serde_json::json!(900)
+        );
+        assert_eq!(
+            config["mesh"]["reservation_ttl_secs"],
+            serde_json::json!(1800)
+        );
+        assert_eq!(
+            config["mesh"]["heartbeat_interval_secs"],
+            serde_json::json!(30)
+        );
     }
 
     #[test]

@@ -142,7 +142,9 @@ tak mesh release --name agent-1 --path src/store
 ### Blackboard coordination
 
 ```bash
-tak blackboard post --from agent-1 --message "Blocked by migration lock" --task 12 --tag blocker,db
+tak blackboard post --from agent-1 --template blocker --message "Blocked by migration lock" --task 12 --tag db
+tak blackboard post --from agent-1 --template handoff --message "Handing off parser follow-up" --task 12
+tak blackboard post --from agent-1 --template status --message "Verification pass complete" --task 12
 tak blackboard list --status open --task 12
 tak blackboard show 7
 tak blackboard close 7 --by agent-2 --reason "Lock released"

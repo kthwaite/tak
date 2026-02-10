@@ -66,7 +66,7 @@ In practice: claim work, reserve paths, post meaningful updates in shared channe
 | `tak context <task-id>` / `tak log <task-id>` / `tak verify <task-id>` | Task sidecars: notes, history, verification |
 | `tak learn <subcommand>` | Manage learnings + suggestions |
 | `tak mesh <subcommand>` | Agent presence, messaging, reservations, activity feed |
-| `tak blackboard <subcommand>` | Shared coordination notes (`post/list/show/close/reopen`) |
+| `tak blackboard <subcommand>` | Shared coordination notes (`post/list/show/close/reopen`), including structured `post --template blocker\|handoff\|status`, delta refs (`--since-note`, `--no-change-since`), and sensitive-text lint warnings |
 | `tak therapist <subcommand>` | Workflow diagnosis (`offline`, `online`, `log`) |
 | `tak migrate-ids [--dry-run\|--apply]` | Task ID migration workflow (preflight/apply rewrite + audit map + config bump) |
 | `tak delete <task-id>` | Delete task (`--force` to cascade orphan/removal behavior) |
@@ -150,7 +150,7 @@ tak claim --assignee agent-1
 tak mesh reserve --name agent-1 --path src/store/mesh.rs --reason task-0000000000000003
 
 # 3) Publish durable team context / blockers
-tak blackboard post --from agent-1 --task 0000000000000003 --tag coordination --message "Implementing reservation conflict diagnostics"
+tak blackboard post --from agent-1 --template status --task 0000000000000003 --message "Reservation diagnostics in progress"
 
 # 4) Keep task-local notes close to execution
 tak context 0000000000000003 --set "Need overlap checks for parent/child paths"
@@ -160,6 +160,24 @@ tak finish 0000000000000003
 # tak handoff 0000000000000003 --summary "Parser done; tests remain"
 tak mesh release --name agent-1 --path src/store/mesh.rs
 ```
+
+Template shortcuts for consistent high-signal notes:
+
+Structured template notes serialize as line-based `key: value` fields (`template`, `summary`, `status`, `scope`, `owner`, `verification`, `blocker`, `next`; blocker adds `requested_action`).
+
+```bash
+tak blackboard post --from agent-1 --template blocker --task 0000000000000003 --message "Blocked on reservation conflict"
+tak blackboard post --from agent-1 --template handoff --task 0000000000000003 --message "Handing off after parser pass"
+tak blackboard post --from agent-1 --template status --task 0000000000000003 --message "Verification pass complete"
+
+# Delta-style follow-up to avoid repeating unchanged context
+# (references B42 and marks no material changes)
+tak blackboard post --from agent-1 --template status --task 0000000000000003 --since-note 42 --no-change-since --message "Waiting on owner confirmation"
+```
+
+Unstructured mode remains supported: omit `--template` to post plain free-text notes exactly as before.
+
+`tak blackboard post` also emits non-blocking warnings when text looks like a secret/token. Redact sensitive values before posting (for example `sk-...abcd` -> `<redacted:...abcd>`).
 
 `tak claim` is atomic and avoids TOCTOU races that can happen with `tak next` + `tak start`. For concurrent work, prefer claim-first execution plus explicit reservation management.
 

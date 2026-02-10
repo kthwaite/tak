@@ -6,17 +6,35 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
+use crate::store::coordination::CoordinationLinks;
 use crate::task_id::TaskId;
 
 /// A single event in a task's history log.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct HistoryEvent {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
     pub timestamp: DateTime<Utc>,
     pub event: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
     #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
     pub detail: serde_json::Map<String, serde_json::Value>,
+    #[serde(default, skip_serializing_if = "CoordinationLinks::is_empty")]
+    pub links: CoordinationLinks,
+}
+
+impl HistoryEvent {
+    fn ensure_normalized_ids(&mut self) {
+        self.id = self
+            .id
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .map(str::to_string)
+            .or_else(|| Some(uuid::Uuid::new_v4().to_string()));
+        self.links.normalize();
+    }
 }
 
 /// Result of running all verification commands for a task.
@@ -269,7 +287,11 @@ impl SidecarStore {
         if !dir.exists() {
             fs::create_dir_all(&dir)?;
         }
-        let mut line = serde_json::to_string(event)?;
+
+        let mut stored_event = event.clone();
+        stored_event.ensure_normalized_ids();
+
+        let mut line = serde_json::to_string(&stored_event)?;
         line.push('\n');
         let path = self.history_path(&task_id);
 
@@ -521,20 +543,24 @@ mod tests {
         assert!(store.read_history(1).unwrap().is_empty());
 
         let evt1 = HistoryEvent {
+            id: None,
             timestamp: Utc::now(),
             event: "started".into(),
             agent: Some("agent-1".into()),
             detail: serde_json::Map::new(),
+            links: CoordinationLinks::default(),
         };
         store.append_history(1, &evt1).unwrap();
 
         let mut detail = serde_json::Map::new();
         detail.insert("reason".into(), serde_json::Value::String("done".into()));
         let evt2 = HistoryEvent {
+            id: None,
             timestamp: Utc::now(),
             event: "finished".into(),
             agent: Some("agent-1".into()),
             detail,
+            links: CoordinationLinks::default(),
         };
         store.append_history(1, &evt2).unwrap();
 
@@ -542,9 +568,38 @@ mod tests {
         assert_eq!(events.len(), 2);
         assert_eq!(events[0].event, "started");
         assert_eq!(events[0].agent.as_deref(), Some("agent-1"));
+        assert!(events[0].id.is_some());
         assert!(events[0].detail.is_empty());
         assert_eq!(events[1].event, "finished");
+        assert!(events[1].id.is_some());
         assert!(!events[1].detail.is_empty());
+    }
+
+    #[test]
+    fn history_append_normalizes_cross_links() {
+        let (_dir, store) = setup();
+
+        let event = HistoryEvent {
+            id: Some("  ".into()),
+            timestamp: Utc::now(),
+            event: "handoff".into(),
+            agent: Some("agent-1".into()),
+            detail: serde_json::Map::new(),
+            links: CoordinationLinks {
+                mesh_message_ids: vec![" m2 ".into(), "m1".into(), "m1".into()],
+                blackboard_note_ids: vec![8, 3, 8],
+                history_event_ids: vec![" h2 ".into(), "h1".into()],
+            },
+        };
+
+        store.append_history(1, &event).unwrap();
+        let events = store.read_history(1).unwrap();
+
+        assert_eq!(events.len(), 1);
+        assert!(events[0].id.as_deref().is_some_and(|id| !id.is_empty()));
+        assert_eq!(events[0].links.mesh_message_ids, vec!["m1", "m2"]);
+        assert_eq!(events[0].links.blackboard_note_ids, vec![3, 8]);
+        assert_eq!(events[0].links.history_event_ids, vec!["h1", "h2"]);
     }
 
     #[test]
@@ -596,10 +651,12 @@ mod tests {
         // Create all types of sidecar data
         store.write_context(1, "ctx").unwrap();
         let evt = HistoryEvent {
+            id: None,
             timestamp: Utc::now(),
             event: "test".into(),
             agent: None,
             detail: serde_json::Map::new(),
+            links: CoordinationLinks::default(),
         };
         store.append_history(1, &evt).unwrap();
         let vr = VerificationResult {

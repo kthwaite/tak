@@ -59,15 +59,30 @@ Support these control variants:
    tak mesh reserve --name <agent> --path <path> --reason task-<id>
    ```
 
-5. **Run the task to completion or handoff**
+5. **Run the task to completion, wait, or handoff**
+   - Optional progress signal:
+     ```bash
+     tak blackboard post --from <agent> --template status --task <id> --message "<delta + next step>"
+     ```
+   - Blocked on reservation overlap (preferred flow):
+     ```bash
+     tak mesh blockers --path <path-you-need>
+     tak blackboard post --from <agent> --template blocker --task <id> --message "Blocked by <owner>/<path>; requesting <exact action>"
+     tak wait --path <blocking-path> --timeout 120
+     ```
+   - Blocked on unfinished dependency:
+     ```bash
+     tak blackboard post --from <agent> --template blocker --task <id> --message "Blocked on dependency <task-id>; requesting owner update"
+     tak wait --on-task <blocking-task-id> --timeout 120
+     ```
    - Done:
      ```bash
      tak finish <id>
      ```
-   - Blocked but resumable:
+   - Blocked and stepping away:
      ```bash
      tak handoff <id> --summary "<what is done, what is blocked, and exact next step>"
-     tak blackboard post --from <agent> --message "<blocker + unblock request>" --task <id> --tag blocker,coordination
+     tak blackboard post --from <agent> --template handoff --task <id> --message "<handoff target + first action>"
      ```
    - Abandon/cancel:
      ```bash
@@ -92,6 +107,7 @@ tak list --available
 tak list --blocked
 tak list --status in_progress --assignee <agent>
 tak blackboard list --status open --limit 10
+tak mesh blockers
 ```
 
 Include whether a loop is active, current task (if any), and remaining limit (if set).
@@ -104,7 +120,7 @@ Stop the loop intent and clean up:
 tak mesh release --name <agent> --all
 ```
 
-If there is an in-progress task, leave it in a truthful lifecycle state (`in_progress` if still active, or handoff/cancel if stepping away).
+If there is an in-progress task, leave it in a truthful lifecycle state (`in_progress` if still active, or handoff/cancel if stepping away). Prefer a `--template handoff` blackboard note when pausing blocked work.
 
 ## Verify mode semantics
 
@@ -118,11 +134,22 @@ When `/tak work verify:isolated` (default), use **path-scoped** gating (not mesh
    - overlap(`V`,`F`) → block.
    - no-overlap(`V`,`F`) → allow.
 
-If blocked, include blocker details (agent/path/reason/age) and offer an explicit wait window, e.g.:
+If blocked:
 
-```bash
-tak wait --path <blocking-path> --timeout 120
-```
+1. Capture diagnostics (owner/path/reason/age):
+   ```bash
+   tak mesh blockers --path <scope-or-blocking-path>
+   ```
+2. Post a durable blocker note:
+   ```bash
+   tak blackboard post --from <agent> --template blocker --task <id> --message "Blocked verify in isolated mode; requesting <action>"
+   ```
+3. Offer an explicit wait window:
+   ```bash
+   tak wait --path <blocking-path> --timeout 120
+   # or
+   tak wait --on-task <blocking-task-id> --timeout 120
+   ```
 
 When `/tak work verify:local`:
 
@@ -149,6 +176,7 @@ When `/tak work verify:local`:
    tak finish <id>
    # or
    tak handoff <id> --summary "..."
+   tak blackboard post --from <agent> --template handoff --task <id> --message "..."
    ```
 
 ## Multi-agent requirements
@@ -160,6 +188,7 @@ When `/tak work verify:local`:
   ```
 - Do not silently take over tasks assigned to another agent.
 - Use mesh + blackboard when blocked on reservations or cross-agent dependencies.
+- Prefer structured templates (`blocker`, `handoff`, `status`) for durable coordination notes.
 
 ## Status transitions
 
@@ -179,4 +208,4 @@ done/cancelled ──→ pending (reopen)
 - Keep one active task at a time unless explicitly parallelizing.
 - Use handoff summaries that are actionable for the next agent.
 - Keep reservation scope narrow (file/dir level, not repo-wide).
-- Keep blackboard notes concise: blocker, owner/path, required action, next check time.
+- Keep blackboard notes concise: blocker owner/path, requested action, and next check time.

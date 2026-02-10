@@ -1,6 +1,7 @@
 use crate::error::{Result, TakError};
 use crate::model::Status;
 use crate::output::{self, Format};
+use crate::store::coordination::{CoordinationLinks, derive_links_from_text};
 use crate::store::repo::Repo;
 use crate::store::sidecars::HistoryEvent;
 use crate::{git, model};
@@ -19,6 +20,12 @@ fn transition(current: Status, target: Status) -> std::result::Result<(), (Strin
     } else {
         Err((current.to_string(), target.to_string()))
     }
+}
+
+fn handoff_links_from_summary(summary: &str) -> CoordinationLinks {
+    let mut links = derive_links_from_text(summary);
+    links.normalize();
+    links
 }
 
 pub fn start(repo_root: &Path, id: u64, assignee: Option<String>, format: Format) -> Result<()> {
@@ -55,10 +62,12 @@ pub fn start(repo_root: &Path, id: u64, assignee: Option<String>, format: Format
 
     // Best-effort history logging
     let evt = HistoryEvent {
+        id: None,
         timestamp: Utc::now(),
         event: "started".into(),
         agent: task.assignee.clone(),
         detail: serde_json::Map::new(),
+        links: CoordinationLinks::default(),
     };
     let _ = repo.sidecars.append_history(id, &evt);
 
@@ -90,10 +99,12 @@ pub fn finish(repo_root: &Path, id: u64, format: Format) -> Result<()> {
 
     // Best-effort history logging
     let evt = HistoryEvent {
+        id: None,
         timestamp: Utc::now(),
         event: "finished".into(),
         agent: task.assignee.clone(),
         detail: serde_json::Map::new(),
+        links: CoordinationLinks::default(),
     };
     let _ = repo.sidecars.append_history(id, &evt);
 
@@ -122,10 +133,12 @@ pub fn cancel(repo_root: &Path, id: u64, reason: Option<String>, format: Format)
         detail.insert("reason".into(), serde_json::Value::String(r.clone()));
     }
     let evt = HistoryEvent {
+        id: None,
         timestamp: Utc::now(),
         event: "cancelled".into(),
         agent: task.assignee.clone(),
         detail,
+        links: CoordinationLinks::default(),
     };
     let _ = repo.sidecars.append_history(id, &evt);
 
@@ -149,12 +162,16 @@ pub fn handoff(repo_root: &Path, id: u64, summary: String, format: Format) -> Re
 
     // Best-effort history logging
     let mut detail = serde_json::Map::new();
+    let links = handoff_links_from_summary(&summary);
     detail.insert("summary".into(), serde_json::Value::String(summary));
+
     let evt = HistoryEvent {
+        id: None,
         timestamp: Utc::now(),
         event: "handoff".into(),
         agent: None,
         detail,
+        links,
     };
     let _ = repo.sidecars.append_history(id, &evt);
 
@@ -177,10 +194,12 @@ pub fn reopen(repo_root: &Path, id: u64, format: Format) -> Result<()> {
 
     // Best-effort history logging
     let evt = HistoryEvent {
+        id: None,
         timestamp: Utc::now(),
         event: "reopened".into(),
         agent: None,
         detail: serde_json::Map::new(),
+        links: CoordinationLinks::default(),
     };
     let _ = repo.sidecars.append_history(id, &evt);
 
@@ -199,13 +218,33 @@ pub fn unassign(repo_root: &Path, id: u64, format: Format) -> Result<()> {
 
     // Best-effort history logging
     let evt = HistoryEvent {
+        id: None,
         timestamp: Utc::now(),
         event: "unassigned".into(),
         agent: None,
         detail: serde_json::Map::new(),
+        links: CoordinationLinks::default(),
     };
     let _ = repo.sidecars.append_history(id, &evt);
 
     output::print_task(&task, format)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn handoff_links_extracts_blackboard_and_mesh_refs() {
+        let links = handoff_links_from_summary(
+            "handoff via B17 after mesh ping 550e8400-e29b-41d4-a716-446655440000",
+        );
+
+        assert_eq!(links.blackboard_note_ids, vec![17]);
+        assert_eq!(
+            links.mesh_message_ids,
+            vec!["550e8400-e29b-41d4-a716-446655440000"]
+        );
+    }
 }

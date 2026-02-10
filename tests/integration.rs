@@ -1,4 +1,7 @@
 use std::fs;
+use std::sync::Mutex;
+use std::thread;
+use std::time::Duration;
 
 use tempfile::tempdir;
 
@@ -17,6 +20,19 @@ fn task_id_hex(id: u64) -> String {
 
 fn tid(id: u64) -> TaskId {
     TaskId::from(id)
+}
+
+// Env-var tests must not run concurrently within this integration test binary.
+static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+struct TakAgentEnvReset;
+
+impl Drop for TakAgentEnvReset {
+    fn drop(&mut self) {
+        unsafe {
+            std::env::remove_var("TAK_AGENT");
+        }
+    }
 }
 
 #[test]
@@ -887,6 +903,7 @@ fn test_setup_install_idempotent() {
         "matcher": "",
         "hooks": [
             {"type": "command", "command": "tak reindex 2>/dev/null || true", "timeout": 10},
+            {"type": "command", "command": "tak mesh cleanup --stale --format minimal >/dev/null 2>/dev/null || true", "timeout": 10},
             {"type": "command", "command": "tak mesh join --format minimal >/dev/null 2>/dev/null || true", "timeout": 10}
         ]
     });
@@ -935,6 +952,7 @@ fn test_setup_remove_cleans_hooks() {
                 "matcher": "",
                 "hooks": [
             {"type": "command", "command": "tak reindex 2>/dev/null || true", "timeout": 10},
+            {"type": "command", "command": "tak mesh cleanup --stale --format minimal >/dev/null 2>/dev/null || true", "timeout": 10},
             {"type": "command", "command": "tak mesh join --format minimal >/dev/null 2>/dev/null || true", "timeout": 10}
         ]
             }]
@@ -954,6 +972,7 @@ fn test_setup_remove_cleans_hooks() {
         "matcher": "",
         "hooks": [
             {"type": "command", "command": "tak reindex 2>/dev/null || true", "timeout": 10},
+            {"type": "command", "command": "tak mesh cleanup --stale --format minimal >/dev/null 2>/dev/null || true", "timeout": 10},
             {"type": "command", "command": "tak mesh join --format minimal >/dev/null 2>/dev/null || true", "timeout": 10}
         ]
     });
@@ -998,6 +1017,7 @@ fn test_setup_preserves_existing_settings() {
         "matcher": "",
         "hooks": [
             {"type": "command", "command": "tak reindex 2>/dev/null || true", "timeout": 10},
+            {"type": "command", "command": "tak mesh cleanup --stale --format minimal >/dev/null 2>/dev/null || true", "timeout": 10},
             {"type": "command", "command": "tak mesh join --format minimal >/dev/null 2>/dev/null || true", "timeout": 10}
         ]
     });
@@ -2648,7 +2668,7 @@ fn test_mesh_reserve_conflict_release() {
         .unwrap_err();
     assert!(matches!(
         err,
-        tak::error::TakError::MeshReservationConflict(_, _)
+        tak::error::TakError::MeshReservationConflict { .. }
     ));
 
     // Non-overlapping path succeeds
@@ -2686,6 +2706,33 @@ fn test_mesh_feed() {
 }
 
 #[test]
+fn test_mesh_blockers_command_runs_for_matching_path() {
+    let dir = tempdir().unwrap();
+    FileStore::init(dir.path()).unwrap();
+
+    use tak::store::mesh::MeshStore;
+    let store = MeshStore::open(&dir.path().join(".tak"));
+    store.join(Some("A"), None).unwrap();
+    store
+        .reserve("A", vec!["src/store/".into()], Some("task-1"))
+        .unwrap();
+
+    // Should succeed and print blocker diagnostics.
+    tak::commands::mesh::blockers(dir.path(), vec!["src/store/mesh.rs".into()], Format::Json)
+        .unwrap();
+}
+
+#[test]
+fn test_mesh_blockers_invalid_path_fails() {
+    let dir = tempdir().unwrap();
+    FileStore::init(dir.path()).unwrap();
+
+    let err = tak::commands::mesh::blockers(dir.path(), vec!["../etc/passwd".into()], Format::Json)
+        .unwrap_err();
+    assert!(matches!(err, TakError::MeshInvalidPath(_)));
+}
+
+#[test]
 fn test_mesh_leave_cleans_reservations() {
     let dir = tempdir().unwrap();
     FileStore::init(dir.path()).unwrap();
@@ -2702,13 +2749,44 @@ fn test_mesh_leave_cleans_reservations() {
 }
 
 #[test]
-fn test_blackboard_post_close_reopen() {
+fn test_wait_on_path_returns_when_reservation_released() {
+    let dir = tempdir().unwrap();
+    FileStore::init(dir.path()).unwrap();
+
+    use tak::store::mesh::MeshStore;
+    let store = MeshStore::open(&dir.path().join(".tak"));
+    store.join(Some("A"), None).unwrap();
+    store
+        .reserve("A", vec!["src/store/".into()], Some("task-1"))
+        .unwrap();
+
+    let tak_root = dir.path().join(".tak");
+    let releaser = thread::spawn(move || {
+        thread::sleep(Duration::from_millis(300));
+        let store = MeshStore::open(&tak_root);
+        store.release("A", vec![]).unwrap();
+    });
+
+    tak::commands::wait::run(
+        dir.path(),
+        Some("./src/store/mesh.rs".into()),
+        None,
+        Some(2),
+        Format::Json,
+    )
+    .unwrap();
+
+    releaser.join().unwrap();
+}
+
+#[test]
+fn test_wait_on_task_returns_when_dependencies_finish() {
     let dir = tempdir().unwrap();
     let store = FileStore::init(dir.path()).unwrap();
 
-    store
+    let blocker = store
         .create(
-            "Investigate flaky test".into(),
+            "Blocker".into(),
             Kind::Task,
             None,
             None,
@@ -2719,12 +2797,86 @@ fn test_blackboard_post_close_reopen() {
         )
         .unwrap();
 
+    let blocked = store
+        .create(
+            "Blocked".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![blocker.id],
+            vec![],
+            Contract::default(),
+            Planning::default(),
+        )
+        .unwrap();
+
+    let repo_root = dir.path().to_path_buf();
+    let blocker_id = blocker.id;
+    let finisher = thread::spawn(move || {
+        thread::sleep(Duration::from_millis(300));
+        let repo = Repo::open(&repo_root).unwrap();
+        let mut task = repo.store.read(blocker_id).unwrap();
+        task.status = Status::Done;
+        task.updated_at = Utc::now();
+        repo.store.write(&task).unwrap();
+        repo.index.upsert(&task).unwrap();
+    });
+
+    tak::commands::wait::run(dir.path(), None, Some(blocked.id), Some(2), Format::Json).unwrap();
+
+    finisher.join().unwrap();
+}
+
+#[test]
+fn test_wait_on_path_times_out_when_still_blocked() {
+    let dir = tempdir().unwrap();
+    FileStore::init(dir.path()).unwrap();
+
+    use tak::store::mesh::MeshStore;
+    let store = MeshStore::open(&dir.path().join(".tak"));
+    store.join(Some("A"), None).unwrap();
+    store
+        .reserve("A", vec!["src/store/".into()], Some("task-1"))
+        .unwrap();
+
+    let err = tak::commands::wait::run(
+        dir.path(),
+        Some("src/store/mesh.rs".into()),
+        None,
+        Some(0),
+        Format::Json,
+    )
+    .unwrap_err();
+
+    assert!(matches!(err, TakError::WaitTimeout(_)));
+}
+
+#[test]
+fn test_blackboard_post_close_reopen() {
+    let dir = tempdir().unwrap();
+    let store = FileStore::init(dir.path()).unwrap();
+
+    let task_id = store
+        .create(
+            "Investigate flaky test".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![],
+            vec![],
+            Contract::default(),
+            Planning::default(),
+        )
+        .unwrap()
+        .id;
+
     tak::commands::blackboard::post(
         dir.path(),
         "agent_1",
         "Need help triaging this",
+        None,
         vec!["triage".into()],
-        vec![1],
+        vec![task_id],
         Format::Json,
     )
     .unwrap();
@@ -2735,7 +2887,7 @@ fn test_blackboard_post_close_reopen() {
     let notes = board.list(None, None, None, None).unwrap();
     assert_eq!(notes.len(), 1);
     assert_eq!(notes[0].status, BlackboardStatus::Open);
-    assert_eq!(notes[0].task_ids, vec![1]);
+    assert_eq!(notes[0].task_ids, vec![task_id]);
 
     tak::commands::blackboard::close(
         dir.path(),
@@ -2764,11 +2916,252 @@ fn test_blackboard_post_invalid_task_link_fails() {
         dir.path(),
         "agent_1",
         "link to missing task",
+        None,
         vec![],
         vec![999],
         Format::Json,
     );
     assert!(matches!(result.unwrap_err(), TakError::TaskNotFound(999)));
+}
+
+#[test]
+fn test_blackboard_post_blocker_template_formats_message_and_tags() {
+    let dir = tempdir().unwrap();
+    let store = FileStore::init(dir.path()).unwrap();
+
+    let task_id = store
+        .create(
+            "Investigate lock contention".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![],
+            vec![],
+            Contract::default(),
+            Planning::default(),
+        )
+        .unwrap()
+        .id;
+
+    use tak::commands::blackboard::BlackboardTemplate;
+    tak::commands::blackboard::post(
+        dir.path(),
+        "agent_1",
+        "Waiting on reservation release from helper",
+        Some(BlackboardTemplate::Blocker),
+        vec!["db".into()],
+        vec![task_id],
+        Format::Json,
+    )
+    .unwrap();
+
+    use tak::store::blackboard::BlackboardStore;
+    let board = BlackboardStore::open(&dir.path().join(".tak"));
+    let notes = board.list(None, None, None, None).unwrap();
+
+    assert_eq!(notes.len(), 1);
+    let note = &notes[0];
+    assert!(note.message.contains("template: blocker"));
+    assert!(note.message.contains("status: blocked"));
+    assert!(note.message.contains(&format!("scope: tasks={task_id}")));
+    assert!(note.message.contains("requested_action:"));
+    assert_eq!(note.tags, vec!["blocker", "coordination", "db"]);
+}
+
+#[test]
+fn test_blackboard_post_plain_message_remains_free_text() {
+    let dir = tempdir().unwrap();
+    let store = FileStore::init(dir.path()).unwrap();
+
+    let task_id = store
+        .create(
+            "Unstructured comms regression".into(),
+            Kind::Task,
+            None,
+            None,
+            vec![],
+            vec![],
+            Contract::default(),
+            Planning::default(),
+        )
+        .unwrap()
+        .id;
+
+    let message = "Heads-up: still using free text while schema rolls out.";
+    tak::commands::blackboard::post(
+        dir.path(),
+        "agent_1",
+        message,
+        None,
+        vec!["freeform".into()],
+        vec![task_id],
+        Format::Json,
+    )
+    .unwrap();
+
+    use tak::store::blackboard::BlackboardStore;
+    let board = BlackboardStore::open(&dir.path().join(".tak"));
+    let notes = board.list(None, None, None, None).unwrap();
+
+    assert_eq!(notes.len(), 1);
+    let note = &notes[0];
+    assert_eq!(note.message, message);
+    assert!(!note.message.contains("template:"));
+    assert!(!note.message.contains("delta_since:"));
+    assert_eq!(note.tags, vec!["freeform"]);
+    assert_eq!(note.task_ids, vec![task_id]);
+}
+
+#[test]
+fn test_work_start_prefers_explicit_assignee_over_tak_agent() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    let _reset = TakAgentEnvReset;
+
+    let dir = tempdir().unwrap();
+    FileStore::init(dir.path()).unwrap();
+
+    unsafe {
+        std::env::set_var("TAK_AGENT", "env-agent");
+    }
+
+    tak::commands::work::start_or_resume(
+        dir.path(),
+        Some("explicit-agent".into()),
+        None,
+        None,
+        None,
+        Format::Json,
+    )
+    .unwrap();
+
+    let explicit_state_path = dir
+        .path()
+        .join(".tak")
+        .join("runtime")
+        .join("work")
+        .join("states")
+        .join("explicit-agent.json");
+    let env_state_path = dir
+        .path()
+        .join(".tak")
+        .join("runtime")
+        .join("work")
+        .join("states")
+        .join("env-agent.json");
+
+    assert!(explicit_state_path.exists());
+    assert!(!env_state_path.exists());
+
+    let value: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(explicit_state_path).unwrap()).unwrap();
+    assert_eq!(
+        value.get("agent").and_then(|v| v.as_str()),
+        Some("explicit-agent")
+    );
+}
+
+#[test]
+fn test_work_repeated_without_assignee_uses_tak_agent_state_key() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    let _reset = TakAgentEnvReset;
+
+    let dir = tempdir().unwrap();
+    FileStore::init(dir.path()).unwrap();
+
+    unsafe {
+        std::env::set_var("TAK_AGENT", "stable-agent");
+    }
+
+    tak::commands::work::start_or_resume(
+        dir.path(),
+        None,
+        Some("cli".into()),
+        Some(2),
+        None,
+        Format::Json,
+    )
+    .unwrap();
+    tak::commands::work::status(dir.path(), None, Format::Json).unwrap();
+    tak::commands::work::stop(dir.path(), None, Format::Json).unwrap();
+
+    let states_dir = dir
+        .path()
+        .join(".tak")
+        .join("runtime")
+        .join("work")
+        .join("states");
+    let stable_state_path = states_dir.join("stable-agent.json");
+
+    assert!(stable_state_path.exists());
+
+    let entries = fs::read_dir(&states_dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(entries, vec!["stable-agent.json"]);
+
+    let value: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(stable_state_path).unwrap()).unwrap();
+    assert_eq!(
+        value.get("agent").and_then(|v| v.as_str()),
+        Some("stable-agent")
+    );
+    assert_eq!(value.get("active").and_then(|v| v.as_bool()), Some(false));
+}
+
+#[test]
+fn test_work_resolution_does_not_mutate_other_agent_state_in_ambiguous_mesh_context() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    let _reset = TakAgentEnvReset;
+
+    let dir = tempdir().unwrap();
+    FileStore::init(dir.path()).unwrap();
+
+    // Create two mesh registrations to emulate multi-agent ambiguity in runtime context.
+    use tak::store::mesh::MeshStore;
+    let mesh = MeshStore::open(&dir.path().join(".tak"));
+    mesh.join(Some("agent-a"), Some("sid-a")).unwrap();
+    mesh.join(Some("agent-b"), Some("sid-b")).unwrap();
+
+    // Seed agent-b state.
+    tak::commands::work::start_or_resume(
+        dir.path(),
+        Some("agent-b".into()),
+        Some("seed".into()),
+        Some(1),
+        None,
+        Format::Json,
+    )
+    .unwrap();
+
+    let agent_b_state_path = dir
+        .path()
+        .join(".tak")
+        .join("runtime")
+        .join("work")
+        .join("states")
+        .join("agent-b.json");
+    let before_b = fs::read_to_string(&agent_b_state_path).unwrap();
+
+    unsafe {
+        std::env::set_var("TAK_AGENT", "agent-a");
+    }
+
+    tak::commands::work::start_or_resume(dir.path(), None, None, None, None, Format::Json).unwrap();
+    tak::commands::work::status(dir.path(), None, Format::Json).unwrap();
+    tak::commands::work::stop(dir.path(), None, Format::Json).unwrap();
+
+    let after_b = fs::read_to_string(&agent_b_state_path).unwrap();
+    assert_eq!(before_b, after_b);
+
+    let agent_a_state_path = dir
+        .path()
+        .join(".tak")
+        .join("runtime")
+        .join("work")
+        .join("states")
+        .join("agent-a.json");
+    assert!(agent_a_state_path.exists());
 }
 
 #[test]

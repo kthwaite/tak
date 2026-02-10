@@ -7,6 +7,7 @@ use chrono::Utc;
 use crate::error::{Result, TakError};
 use crate::model::{Kind, Status, Task};
 use crate::output::{self, Format};
+use crate::store::coordination::CoordinationLinks;
 use crate::store::lock;
 use crate::store::repo::Repo;
 use crate::store::sidecars::HistoryEvent;
@@ -76,10 +77,12 @@ fn claim_next_locked(
 
     // Best-effort history logging
     let evt = HistoryEvent {
+        id: None,
         timestamp: Utc::now(),
         event: "claimed".into(),
         agent: task.assignee.clone(),
         detail: serde_json::Map::new(),
+        links: CoordinationLinks::default(),
     };
     let _ = repo.sidecars.append_history(id, &evt);
 

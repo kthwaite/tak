@@ -6,6 +6,7 @@ use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Result, TakError};
+use crate::store::coordination::CoordinationLinks;
 use crate::store::lock;
 
 /// Lifecycle state of a blackboard note.
@@ -45,6 +46,8 @@ pub struct BlackboardNote {
     pub closed_reason: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub closed_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "CoordinationLinks::is_empty")]
+    pub links: CoordinationLinks,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -147,12 +150,30 @@ impl BlackboardStore {
         tags: Vec<String>,
         task_ids: Vec<u64>,
     ) -> Result<BlackboardNote> {
+        self.post_with_links(
+            author,
+            message,
+            tags,
+            task_ids,
+            CoordinationLinks::default(),
+        )
+    }
+
+    pub fn post_with_links(
+        &self,
+        author: &str,
+        message: &str,
+        tags: Vec<String>,
+        task_ids: Vec<u64>,
+        mut links: CoordinationLinks,
+    ) -> Result<BlackboardNote> {
         Self::validate_name(author)?;
 
         let message = message.trim();
         if message.is_empty() {
             return Err(TakError::BlackboardInvalidMessage);
         }
+        links.normalize();
 
         self.ensure_dirs()?;
 
@@ -173,6 +194,7 @@ impl BlackboardStore {
             closed_by: None,
             closed_reason: None,
             closed_at: None,
+            links,
         };
 
         notes.push(note.clone());
@@ -353,6 +375,32 @@ mod tests {
         let fetched = store.get(note.id).unwrap();
         assert_eq!(fetched.message, "Need eyes on migration ordering");
         assert_eq!(fetched.tags, vec!["db", "review"]);
+    }
+
+    #[test]
+    fn post_with_links_normalizes_and_persists() {
+        let (_dir, store) = setup_board();
+
+        let note = store
+            .post_with_links(
+                "agent_1",
+                "Need linkage",
+                vec![],
+                vec![],
+                CoordinationLinks {
+                    mesh_message_ids: vec![" m2 ".into(), "m1".into(), "m1".into()],
+                    blackboard_note_ids: vec![7, 2, 7],
+                    history_event_ids: vec![" h2 ".into(), "h1".into()],
+                },
+            )
+            .unwrap();
+
+        assert_eq!(note.links.mesh_message_ids, vec!["m1", "m2"]);
+        assert_eq!(note.links.blackboard_note_ids, vec![2, 7]);
+        assert_eq!(note.links.history_event_ids, vec!["h1", "h2"]);
+
+        let fetched = store.get(note.id).unwrap();
+        assert_eq!(fetched.links, note.links);
     }
 
     #[test]

@@ -1,10 +1,13 @@
 pub mod blackboard;
+pub mod coordination;
 pub mod files;
 pub mod index;
 pub mod learnings;
 pub mod lock;
 pub mod mesh;
 pub mod migration;
+pub mod paths;
 pub mod repo;
 pub mod sidecars;
 pub mod therapist;
+pub mod work;

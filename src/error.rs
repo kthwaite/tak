@@ -58,8 +58,19 @@ pub enum TakError {
     #[error("mesh: agent name must be non-empty ASCII alphanumeric/hyphen/underscore")]
     MeshInvalidName,
 
-    #[error("mesh: reservation conflict — path '{0}' is held by agent '{1}'")]
-    MeshReservationConflict(String, String),
+    #[error("mesh: invalid reservation path '{0}'")]
+    MeshInvalidPath(String),
+
+    #[error(
+        "mesh: reservation conflict — requested '{requested_path}' overlaps held '{held_path}' by agent '{owner}' (reason: {reason}, age: {age_secs}s)"
+    )]
+    MeshReservationConflict {
+        requested_path: String,
+        held_path: String,
+        owner: String,
+        reason: String,
+        age_secs: i64,
+    },
 
     #[error("mesh: corrupt file '{0}': {1}")]
     MeshCorruptFile(String, String),
@@ -75,6 +86,18 @@ pub enum TakError {
 
     #[error("blackboard: corrupt file '{0}': {1}")]
     BlackboardCorruptFile(String, String),
+
+    #[error("wait: specify exactly one of --path or --on-task")]
+    WaitInvalidTarget,
+
+    #[error("wait timed out: {0}")]
+    WaitTimeout(String),
+
+    #[error("work: invalid agent name '{0}' (expected ASCII alphanumeric/hyphen/underscore)")]
+    WorkInvalidAgentName(String),
+
+    #[error("work: corrupt file '{0}': {1}")]
+    WorkCorruptFile(String, String),
 
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
@@ -107,12 +130,17 @@ impl TakError {
             Self::MeshAmbiguousAgent(_) => "mesh_ambiguous_agent",
             Self::MeshNameConflict(_) => "mesh_name_conflict",
             Self::MeshInvalidName => "mesh_invalid_name",
-            Self::MeshReservationConflict(_, _) => "mesh_reservation_conflict",
+            Self::MeshInvalidPath(_) => "mesh_invalid_path",
+            Self::MeshReservationConflict { .. } => "mesh_reservation_conflict",
             Self::MeshCorruptFile(_, _) => "mesh_corrupt_file",
             Self::BlackboardNoteNotFound(_) => "blackboard_note_not_found",
             Self::BlackboardInvalidName => "blackboard_invalid_name",
             Self::BlackboardInvalidMessage => "blackboard_invalid_message",
             Self::BlackboardCorruptFile(_, _) => "blackboard_corrupt_file",
+            Self::WaitInvalidTarget => "wait_invalid_target",
+            Self::WaitTimeout(_) => "wait_timeout",
+            Self::WorkInvalidAgentName(_) => "work_invalid_agent_name",
+            Self::WorkCorruptFile(_, _) => "work_corrupt_file",
             Self::Io(_) => "io_error",
             Self::Json(_) => "json_error",
             Self::Db(_) => "db_error",

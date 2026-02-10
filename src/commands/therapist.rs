@@ -746,6 +746,7 @@ fn print_pretty_observation(observation: &TherapistObservation, log_path: Option
 mod tests {
     use super::*;
     use crate::store::blackboard::BlackboardStatus;
+    use crate::store::coordination::CoordinationLinks;
 
     fn feed_event(event_type: &str, preview: &str) -> FeedEvent {
         FeedEvent {
@@ -770,6 +771,7 @@ mod tests {
             closed_by: None,
             closed_reason: None,
             closed_at: None,
+            links: CoordinationLinks::default(),
         }
     }
 
