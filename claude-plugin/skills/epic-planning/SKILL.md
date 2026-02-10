@@ -10,6 +10,17 @@ Guide users through structured decomposition of large initiatives into an epic w
 
 **Critical:** create/update plan artifacts with `tak` commands only. Never hand-edit `.tak/*` data files.
 
+## Task ID input forms
+
+Wherever a command expects a task ID, you can pass:
+- canonical 16-char hex ID,
+- unique hex prefix (case-insensitive), or
+- legacy decimal ID.
+
+Resolution is exact-match first (canonical or legacy), then unique prefix; ambiguous prefixes return an error, so use a longer prefix.
+
+Examples: `tak show ef94`, `tak depend b48b --on ef94`.
+
 ## Planning workflow
 
 ### 1) Create the epic
@@ -100,12 +111,12 @@ Update/close as plan stabilizes.
 tak create "User authentication system" --kind epic -d "Registration, login, sessions"
 
 # Children
-tak create "Design auth schema" --parent 1 --kind feature --priority high
-tak create "Registration API" --parent 1 --kind task --depends-on 2
-tak create "Login API" --parent 1 --kind task --depends-on 2
-tak create "Session middleware" --parent 1 --kind feature --depends-on 3,4
-tak create "Auth integration tests" --parent 1 --kind task --depends-on 5
+tak create "Design auth schema" --parent <epic-id-or-prefix> --kind feature --priority high
+tak create "Registration API" --parent <epic-id-or-prefix> --kind task --depends-on <schema-task-id-or-prefix>
+tak create "Login API" --parent <epic-id-or-prefix> --kind task --depends-on <schema-task-id-or-prefix>
+tak create "Session middleware" --parent <epic-id-or-prefix> --kind feature --depends-on <registration-id-or-prefix>,<login-id-or-prefix>
+tak create "Auth integration tests" --parent <epic-id-or-prefix> --kind task --depends-on <session-id-or-prefix>
 
 # Review
-tak tree 1 --pretty
+tak tree <epic-id-or-prefix> --pretty
 ```

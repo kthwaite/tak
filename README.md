@@ -43,6 +43,12 @@ tak work done --assignee agent-1 --pause
 tak work stop --assignee agent-1
 ```
 
+**Task ID input forms:** every `<task-id>` argument accepts a full canonical 16-char hex ID, a unique hex prefix (case-insensitive), or a legacy decimal ID. Resolution is exact-match first, then unique prefix; ambiguous prefixes error.
+
+Examples:
+- `tak show ef94`
+- `tak depend b48b --on ef94`
+
 ### `tak work done` closeout helper
 
 Use `tak work done` when you want one command to close the current unit and clean up loop state.
@@ -78,6 +84,8 @@ Bottom-up principles:
 In practice: claim work, reserve paths, post meaningful updates in shared channels, then finish/handoff and release reservations.
 
 ## Commands
+
+Task ID arguments across commands accept canonical hex, unique hex prefixes, and legacy decimal IDs.
 
 | Command | Description |
 |---------|-------------|
@@ -121,6 +129,10 @@ New task IDs are allocated from OS-backed CSPRNG entropy (counterless allocation
 When a command expects a task ID, tak resolves input as:
 1. exact canonical hex or legacy decimal match,
 2. otherwise a unique hex prefix match (case-insensitive).
+
+Prefix examples:
+- `tak show ef94`
+- `tak depend b48b --on ef94`
 
 If your repository still has legacy numeric filenames (`.tak/tasks/1.json`, etc.), run:
 

@@ -8,6 +8,17 @@ allowed-tools: "Read,Bash(tak:*)"
 
 You have access to `tak`, a git-native task manager CLI. Tasks are stored as JSON files in `.tak/tasks/`, indexed in SQLite for fast querying, and coordinated through mesh + blackboard runtime state.
 
+## Task ID input forms
+
+Wherever a command expects a task ID, you can pass:
+- canonical 16-char hex ID,
+- unique hex prefix (case-insensitive), or
+- legacy decimal ID.
+
+Resolution is exact-match first (canonical or legacy), then unique prefix; ambiguous prefixes return an error, so use a longer prefix.
+
+Examples: `tak show ef94`, `tak depend b48b --on ef94`.
+
 ## Critical rule: use CLI commands, never manual `.tak/*` edits
 
 For task/learning/context/history/coordination changes:
@@ -56,6 +67,7 @@ Reference: `docs/how/isolated-verification.md`.
 ## Quick reference
 
 All commands output JSON by default. Add `--pretty` for readable output.
+Task ID arguments in the examples can be full hex IDs, unique prefixes, or legacy decimal IDs.
 
 ### Create tasks
 
@@ -80,7 +92,7 @@ tak create "Refactor auth module" \
 ### Query tasks
 
 ```bash
-tak show 12
+tak show ef94
 tak list
 tak list --available
 tak list --blocked
@@ -89,57 +101,57 @@ tak list --kind feature
 tak list --tag backend
 tak list --assignee agent-1
 tak list --priority critical
-tak list --children-of 5
+tak list --children-of ef94
 tak tree
-tak tree 5 --pretty
+tak tree ef94 --pretty
 ```
 
 ### Update tasks
 
 ```bash
-tak edit 12 --title "New title" -d "Updated description" --kind task --tag auth,api
-tak edit 12 --objective "Updated objective" --verify "cargo test"
-tak edit 12 --priority critical --estimate s --risk high --skill rust --skill sql
-tak edit 12 --pr "https://github.com/org/repo/pull/42"
+tak edit ef94 --title "New title" -d "Updated description" --kind task --tag auth,api
+tak edit ef94 --objective "Updated objective" --verify "cargo test"
+tak edit ef94 --priority critical --estimate s --risk high --skill rust --skill sql
+tak edit ef94 --pr "https://github.com/org/repo/pull/42"
 ```
 
 Lifecycle:
 
 ```bash
 tak claim --assignee agent-1
-tak start 12 --assignee agent-1
-tak handoff 12 --summary "Implemented parser; blocked on schema migration"
-tak finish 12
-tak cancel 12 --reason "Superseded by new approach"
-tak reopen 12
-tak unassign 12
+tak start ef94 --assignee agent-1
+tak handoff ef94 --summary "Implemented parser; blocked on schema migration"
+tak finish ef94
+tak cancel ef94 --reason "Superseded by new approach"
+tak reopen ef94
+tak unassign ef94
 ```
 
 ### Dependencies and hierarchy
 
 ```bash
-tak depend 12 --on 3,4 --dep-type hard --reason "Needs schema + API"
-tak undepend 12 --on 3
-tak reparent 12 --to 2
-tak orphan 12
+tak depend b48b --on ef94,74cd --dep-type hard --reason "Needs schema + API"
+tak undepend b48b --on ef94
+tak reparent b48b --to 74cd
+tak orphan b48b
 ```
 
 ### Context, history, verification
 
 ```bash
-tak context 12 --set "Careful: migration must be backwards-compatible"
-tak context 12
-tak context 12 --clear
-tak log 12
-tak verify 12
+tak context ef94 --set "Careful: migration must be backwards-compatible"
+tak context ef94
+tak context ef94 --clear
+tak log ef94
+tak verify ef94
 ```
 
 ### Learnings
 
 ```bash
-tak learn add "Avoid N+1 query" --category pattern -d "Batch preload relationships" --tag db,perf --task 12
+tak learn add "Avoid N+1 query" --category pattern -d "Batch preload relationships" --tag db,perf --task ef94
 tak learn list --tag perf
-tak learn suggest 12
+tak learn suggest ef94
 ```
 
 ### Mesh coordination
@@ -156,10 +168,10 @@ tak mesh release --name agent-1 --path src/store
 ### Blackboard coordination
 
 ```bash
-tak blackboard post --from agent-1 --template blocker --message "Blocked by migration lock" --task 12 --tag db
-tak blackboard post --from agent-1 --template handoff --message "Handing off parser follow-up" --task 12
-tak blackboard post --from agent-1 --template status --message "Verification pass complete" --task 12
-tak blackboard list --status open --task 12
+tak blackboard post --from agent-1 --template blocker --message "Blocked by migration lock" --task ef94 --tag db
+tak blackboard post --from agent-1 --template handoff --message "Handing off parser follow-up" --task ef94
+tak blackboard post --from agent-1 --template status --message "Verification pass complete" --task ef94
+tak blackboard list --status open --task ef94
 tak blackboard show 7
 tak blackboard close 7 --by agent-2 --reason "Lock released"
 tak blackboard reopen 7 --by agent-1
