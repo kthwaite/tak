@@ -333,6 +333,9 @@ pub struct Task {
     pub extensions: serde_json::Map<String, serde_json::Value>,
 }
 
+pub const TRACE_ORIGIN_IDEA_ID_KEY: &str = "origin_idea_id";
+pub const TRACE_REFINEMENT_TASK_IDS_KEY: &str = "refinement_task_ids";
+
 impl std::fmt::Display for Status {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -357,7 +360,68 @@ impl std::fmt::Display for Kind {
     }
 }
 
+fn extension_u64(value: &serde_json::Value) -> Option<u64> {
+    match value {
+        serde_json::Value::Number(num) => num.as_u64(),
+        serde_json::Value::String(s) => s.parse::<u64>().ok(),
+        _ => None,
+    }
+}
+
+fn extension_u64_vec(value: &serde_json::Value) -> Vec<u64> {
+    match value {
+        serde_json::Value::Array(values) => values.iter().filter_map(extension_u64).collect(),
+        _ => vec![],
+    }
+}
+
 impl Task {
+    /// Origin `idea` task ID, if this task was promoted from an idea.
+    pub fn origin_idea_id(&self) -> Option<u64> {
+        self.extensions
+            .get(TRACE_ORIGIN_IDEA_ID_KEY)
+            .and_then(extension_u64)
+    }
+
+    pub fn set_origin_idea_id(&mut self, origin_idea_id: Option<u64>) {
+        match origin_idea_id {
+            Some(id) => {
+                self.extensions
+                    .insert(TRACE_ORIGIN_IDEA_ID_KEY.to_string(), serde_json::json!(id));
+            }
+            None => {
+                self.extensions.remove(TRACE_ORIGIN_IDEA_ID_KEY);
+            }
+        }
+    }
+
+    /// Refinement `meta` task IDs that contributed to this task's promotion.
+    pub fn refinement_task_ids(&self) -> Vec<u64> {
+        self.extensions
+            .get(TRACE_REFINEMENT_TASK_IDS_KEY)
+            .map(extension_u64_vec)
+            .unwrap_or_default()
+    }
+
+    pub fn set_refinement_task_ids(&mut self, mut refinement_task_ids: Vec<u64>) {
+        refinement_task_ids.sort_unstable();
+        refinement_task_ids.dedup();
+
+        if refinement_task_ids.is_empty() {
+            self.extensions.remove(TRACE_REFINEMENT_TASK_IDS_KEY);
+        } else {
+            self.extensions.insert(
+                TRACE_REFINEMENT_TASK_IDS_KEY.to_string(),
+                serde_json::Value::Array(
+                    refinement_task_ids
+                        .into_iter()
+                        .map(|id| serde_json::json!(id))
+                        .collect(),
+                ),
+            );
+        }
+    }
+
     /// Trim whitespace, drop empty tags, then deduplicate and sort for deterministic storage.
     pub fn normalize(&mut self) {
         for tag in &mut self.tags {
@@ -371,6 +435,16 @@ impl Task {
         self.depends_on.dedup_by_key(|d| d.id);
         self.tags.sort();
         self.tags.dedup();
+
+        // Canonicalize reserved traceability extension keys if present.
+        if self.extensions.contains_key(TRACE_ORIGIN_IDEA_ID_KEY) {
+            let origin_idea_id = self.origin_idea_id();
+            self.set_origin_idea_id(origin_idea_id);
+        }
+        if self.extensions.contains_key(TRACE_REFINEMENT_TASK_IDS_KEY) {
+            let refinement_task_ids = self.refinement_task_ids();
+            self.set_refinement_task_ids(refinement_task_ids);
+        }
     }
 }
 
@@ -581,6 +655,51 @@ mod tests {
         let reparsed: serde_json::Value = serde_json::from_str(&serialized).unwrap();
         assert_eq!(reparsed["custom_field"], "preserved");
         assert_eq!(reparsed["nested"]["key"], "value");
+    }
+
+    #[test]
+    fn traceability_extension_helpers_round_trip_and_normalize() {
+        let now = Utc::now();
+        let mut task = Task {
+            id: 1,
+            title: "Traceable".into(),
+            description: None,
+            status: Status::Pending,
+            kind: Kind::Feature,
+            parent: None,
+            depends_on: vec![],
+            assignee: None,
+            tags: vec![],
+            contract: Contract::default(),
+            planning: Planning::default(),
+            git: GitInfo::default(),
+            execution: Execution::default(),
+            learnings: vec![],
+            created_at: now,
+            updated_at: now,
+            extensions: serde_json::Map::new(),
+        };
+
+        task.set_origin_idea_id(Some(42));
+        task.set_refinement_task_ids(vec![9, 3, 9]);
+
+        assert_eq!(task.origin_idea_id(), Some(42));
+        assert_eq!(task.refinement_task_ids(), vec![3, 9]);
+
+        // Ensure normalize canonicalizes invalid/messy traceability values.
+        task.extensions.insert(
+            TRACE_REFINEMENT_TASK_IDS_KEY.to_string(),
+            serde_json::json!([9, "oops", 1]),
+        );
+        task.normalize();
+        assert_eq!(task.refinement_task_ids(), vec![1, 9]);
+
+        let json = serde_json::to_value(&task).unwrap();
+        assert_eq!(json[TRACE_ORIGIN_IDEA_ID_KEY], 42);
+        assert_eq!(
+            json[TRACE_REFINEMENT_TASK_IDS_KEY],
+            serde_json::json!([1, 9])
+        );
     }
 
     #[test]

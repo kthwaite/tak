@@ -203,6 +203,20 @@ fn print_task_pretty_table(task: &Task) {
         rows.push(("depends on".to_string(), deps));
     }
 
+    if let Some(origin_idea_id) = task.origin_idea_id() {
+        rows.push(("origin idea".to_string(), format_task_id(origin_idea_id)));
+    }
+
+    let refinement_task_ids = task.refinement_task_ids();
+    if !refinement_task_ids.is_empty() {
+        let refinement = refinement_task_ids
+            .into_iter()
+            .map(format_task_id)
+            .collect::<Vec<_>>()
+            .join(", ");
+        rows.push(("refined by".to_string(), refinement));
+    }
+
     if let Some(ref assignee) = task.assignee {
         rows.push(("assignee".to_string(), assignee.clone()));
     } else {
