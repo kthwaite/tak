@@ -3,7 +3,7 @@ use tak::commands::blackboard::BlackboardTemplate;
 use tak::model::{DepType, Estimate, Kind, LearningCategory, Priority, Risk, Status};
 use tak::output::Format;
 use tak::store::blackboard::BlackboardStatus;
-use tak::store::work::{WorkClaimStrategy, WorkVerifyMode};
+use tak::store::work::{WorkClaimStrategy, WorkCoordinationVerbosity, WorkStore, WorkVerifyMode};
 
 #[derive(Parser)]
 #[command(
@@ -182,6 +182,9 @@ enum Commands {
         /// Summary of progress so far (required)
         #[arg(long, required = true)]
         summary: String,
+        /// Coordination verbosity override for this handoff
+        #[arg(long, value_enum)]
+        verbosity: Option<WorkCoordinationVerbosity>,
     },
     /// Atomically find and start the next available task
     Claim {
@@ -291,6 +294,9 @@ enum Commands {
         /// Claim prioritization strategy for selecting the next task
         #[arg(long, value_enum)]
         strategy: Option<WorkClaimStrategy>,
+        /// Default coordination verbosity to persist in loop state
+        #[arg(long, value_enum)]
+        verbosity: Option<WorkCoordinationVerbosity>,
     },
     /// Run verification commands from task contract
     Verify {
@@ -488,6 +494,9 @@ enum MeshAction {
         /// Message text
         #[arg(long)]
         message: String,
+        /// Coordination verbosity override for this message
+        #[arg(long, value_enum)]
+        verbosity: Option<WorkCoordinationVerbosity>,
     },
     /// Broadcast a message to all agents
     Broadcast {
@@ -497,6 +506,9 @@ enum MeshAction {
         /// Message text
         #[arg(long)]
         message: String,
+        /// Coordination verbosity override for this broadcast
+        #[arg(long, value_enum)]
+        verbosity: Option<WorkCoordinationVerbosity>,
     },
     /// Read inbox messages
     Inbox {
@@ -585,6 +597,9 @@ enum BlackboardAction {
         /// Mark this note as unchanged since --since-note
         #[arg(long = "no-change-since", requires = "since_note")]
         no_change_since: bool,
+        /// Coordination verbosity override for this note
+        #[arg(long, value_enum)]
+        verbosity: Option<WorkCoordinationVerbosity>,
         /// Tags (comma-separated)
         #[arg(long, value_delimiter = ',')]
         tag: Vec<String>,
@@ -686,6 +701,64 @@ fn resolve_task_id_args(
         .into_iter()
         .map(|id| resolve_task_id_arg(repo_root, id))
         .collect()
+}
+
+fn resolve_effective_coordination_verbosity(
+    repo_root: &std::path::Path,
+    agent: Option<&str>,
+    override_level: Option<WorkCoordinationVerbosity>,
+) -> WorkCoordinationVerbosity {
+    if let Some(level) = override_level {
+        return level;
+    }
+
+    let Some(agent) = agent else {
+        return WorkCoordinationVerbosity::default();
+    };
+
+    let store = WorkStore::open(&repo_root.join(".tak"));
+    store
+        .status(agent)
+        .map(|state| state.coordination_verbosity)
+        .unwrap_or_default()
+}
+
+fn apply_coordination_verbosity_label(
+    message: &str,
+    level: WorkCoordinationVerbosity,
+    explicit_override: bool,
+) -> String {
+    let trimmed = message.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    if !explicit_override && level == WorkCoordinationVerbosity::Medium {
+        return trimmed.to_string();
+    }
+
+    format!("[verbosity={level}] {trimmed}")
+}
+
+fn maybe_add_verbosity_tag(
+    tags: &mut Vec<String>,
+    level: WorkCoordinationVerbosity,
+    explicit_override: bool,
+) {
+    if !explicit_override && level == WorkCoordinationVerbosity::Medium {
+        return;
+    }
+
+    tags.push(format!("verbosity-{level}"));
+}
+
+fn task_assignee_for_verbosity(
+    repo_root: &std::path::Path,
+    task_id: u64,
+) -> tak::error::Result<Option<String>> {
+    let repo = tak::store::repo::Repo::open(repo_root)?;
+    let task = repo.store.read(task_id)?;
+    Ok(task.assignee)
 }
 
 fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
@@ -838,12 +911,19 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
         Commands::Cancel { id, reason } => {
             tak::commands::lifecycle::cancel(&root, resolve_task_id_arg(&root, id)?, reason, format)
         }
-        Commands::Handoff { id, summary } => tak::commands::lifecycle::handoff(
-            &root,
-            resolve_task_id_arg(&root, id)?,
+        Commands::Handoff {
+            id,
             summary,
-            format,
-        ),
+            verbosity,
+        } => {
+            let task_id = resolve_task_id_arg(&root, id)?;
+            let assignee = task_assignee_for_verbosity(&root, task_id)?;
+            let effective =
+                resolve_effective_coordination_verbosity(&root, assignee.as_deref(), verbosity);
+            let summary =
+                apply_coordination_verbosity_label(&summary, effective, verbosity.is_some());
+            tak::commands::lifecycle::handoff(&root, task_id, summary, format)
+        }
         Commands::Claim { assignee, tag } => {
             let assignee = assignee
                 .or_else(tak::agent::resolve_agent)
@@ -913,9 +993,10 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
             limit,
             verify,
             strategy,
+            verbosity,
         } => match action.unwrap_or(WorkAction::Start) {
             WorkAction::Start => tak::commands::work::start_or_resume_with_strategy(
-                &root, assignee, tag, limit, verify, strategy, format,
+                &root, assignee, tag, limit, verify, strategy, verbosity, format,
             ),
             WorkAction::Status => tak::commands::work::status(&root, assignee, format),
             WorkAction::Stop => tak::commands::work::stop(&root, assignee, format),
@@ -989,10 +1070,27 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
                 tak::commands::mesh::leave(&root, name.as_deref(), format)
             }
             MeshAction::List => tak::commands::mesh::list(&root, format),
-            MeshAction::Send { from, to, message } => {
+            MeshAction::Send {
+                from,
+                to,
+                message,
+                verbosity,
+            } => {
+                let effective =
+                    resolve_effective_coordination_verbosity(&root, Some(&from), verbosity);
+                let message =
+                    apply_coordination_verbosity_label(&message, effective, verbosity.is_some());
                 tak::commands::mesh::send(&root, &from, &to, &message, format)
             }
-            MeshAction::Broadcast { from, message } => {
+            MeshAction::Broadcast {
+                from,
+                message,
+                verbosity,
+            } => {
+                let effective =
+                    resolve_effective_coordination_verbosity(&root, Some(&from), verbosity);
+                let message =
+                    apply_coordination_verbosity_label(&message, effective, verbosity.is_some());
                 tak::commands::mesh::broadcast(&root, &from, &message, format)
             }
             MeshAction::Inbox { name, ack } => {
@@ -1027,21 +1125,30 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
                 template,
                 since_note,
                 no_change_since,
-                tag,
+                verbosity,
+                mut tag,
                 task_ids,
-            } => tak::commands::blackboard::post_with_options(
-                &root,
-                &from,
-                &message,
-                tak::commands::blackboard::BlackboardPostOptions {
-                    template,
-                    since_note,
-                    no_change_since,
-                },
-                tag,
-                resolve_task_id_args(&root, task_ids)?,
-                format,
-            ),
+            } => {
+                let effective =
+                    resolve_effective_coordination_verbosity(&root, Some(&from), verbosity);
+                let message =
+                    apply_coordination_verbosity_label(&message, effective, verbosity.is_some());
+                maybe_add_verbosity_tag(&mut tag, effective, verbosity.is_some());
+
+                tak::commands::blackboard::post_with_options(
+                    &root,
+                    &from,
+                    &message,
+                    tak::commands::blackboard::BlackboardPostOptions {
+                        template,
+                        since_note,
+                        no_change_since,
+                    },
+                    tag,
+                    resolve_task_id_args(&root, task_ids)?,
+                    format,
+                )
+            }
             BlackboardAction::List {
                 status,
                 tag,
@@ -1148,6 +1255,43 @@ mod tests {
     }
 
     #[test]
+    fn apply_coordination_verbosity_label_skips_default_medium_without_override() {
+        let rendered = apply_coordination_verbosity_label(
+            "status update",
+            WorkCoordinationVerbosity::Medium,
+            false,
+        );
+        assert_eq!(rendered, "status update");
+    }
+
+    #[test]
+    fn apply_coordination_verbosity_label_adds_marker_when_needed() {
+        let rendered = apply_coordination_verbosity_label(
+            "status update",
+            WorkCoordinationVerbosity::High,
+            false,
+        );
+        assert_eq!(rendered, "[verbosity=high] status update");
+    }
+
+    #[test]
+    fn apply_coordination_verbosity_label_keeps_empty_input_empty() {
+        let rendered =
+            apply_coordination_verbosity_label("   ", WorkCoordinationVerbosity::High, true);
+        assert_eq!(rendered, "");
+    }
+
+    #[test]
+    fn maybe_add_verbosity_tag_skips_default_medium_without_override() {
+        let mut tags = vec!["coordination".to_string()];
+        maybe_add_verbosity_tag(&mut tags, WorkCoordinationVerbosity::Medium, false);
+        assert_eq!(tags, vec!["coordination"]);
+
+        maybe_add_verbosity_tag(&mut tags, WorkCoordinationVerbosity::High, false);
+        assert_eq!(tags, vec!["coordination", "verbosity-high"]);
+    }
+
+    #[test]
     fn parse_blackboard_post_template_flag() {
         let cli = Cli::parse_from([
             "tak",
@@ -1167,6 +1311,30 @@ mod tests {
             } => {
                 assert_eq!(from, "agent-1");
                 assert_eq!(template, Some(BlackboardTemplate::Blocker));
+            }
+            _ => panic!("expected blackboard post command"),
+        }
+    }
+
+    #[test]
+    fn parse_blackboard_post_verbosity_flag() {
+        let cli = Cli::parse_from([
+            "tak",
+            "blackboard",
+            "post",
+            "--from",
+            "agent-1",
+            "--message",
+            "status update",
+            "--verbosity",
+            "high",
+        ]);
+
+        match cli.command {
+            Commands::Blackboard {
+                action: BlackboardAction::Post { verbosity, .. },
+            } => {
+                assert_eq!(verbosity, Some(WorkCoordinationVerbosity::High));
             }
             _ => panic!("expected blackboard post command"),
         }
@@ -1217,6 +1385,67 @@ mod tests {
         ]);
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_mesh_send_verbosity_flag() {
+        let cli = Cli::parse_from([
+            "tak",
+            "mesh",
+            "send",
+            "--from",
+            "agent-1",
+            "--to",
+            "agent-2",
+            "--message",
+            "ping",
+            "--verbosity",
+            "low",
+        ]);
+
+        match cli.command {
+            Commands::Mesh {
+                action:
+                    MeshAction::Send {
+                        from,
+                        to,
+                        message,
+                        verbosity,
+                    },
+            } => {
+                assert_eq!(from, "agent-1");
+                assert_eq!(to, "agent-2");
+                assert_eq!(message, "ping");
+                assert_eq!(verbosity, Some(WorkCoordinationVerbosity::Low));
+            }
+            _ => panic!("expected mesh send command"),
+        }
+    }
+
+    #[test]
+    fn parse_handoff_verbosity_flag() {
+        let cli = Cli::parse_from([
+            "tak",
+            "handoff",
+            "42",
+            "--summary",
+            "blocked by reservation",
+            "--verbosity",
+            "high",
+        ]);
+
+        match cli.command {
+            Commands::Handoff {
+                id,
+                summary,
+                verbosity,
+            } => {
+                assert_eq!(id, "42");
+                assert_eq!(summary, "blocked by reservation");
+                assert_eq!(verbosity, Some(WorkCoordinationVerbosity::High));
+            }
+            _ => panic!("expected handoff command"),
+        }
     }
 
     #[test]
@@ -1344,6 +1573,7 @@ mod tests {
                 limit,
                 verify,
                 strategy,
+                verbosity,
             } => {
                 assert!(action.is_none());
                 assert!(assignee.is_none());
@@ -1351,6 +1581,7 @@ mod tests {
                 assert_eq!(limit, Some(3));
                 assert!(verify.is_none());
                 assert!(strategy.is_none());
+                assert!(verbosity.is_none());
             }
             _ => panic!("expected work command"),
         }
@@ -1367,6 +1598,7 @@ mod tests {
                 limit,
                 verify,
                 strategy,
+                verbosity,
             } => {
                 assert_eq!(action, Some(WorkAction::Start));
                 assert!(assignee.is_none());
@@ -1374,6 +1606,7 @@ mod tests {
                 assert!(limit.is_none());
                 assert_eq!(verify, Some(WorkVerifyMode::Local));
                 assert!(strategy.is_none());
+                assert!(verbosity.is_none());
             }
             _ => panic!("expected work command"),
         }
@@ -1390,6 +1623,7 @@ mod tests {
                 limit,
                 verify,
                 strategy,
+                verbosity,
             } => {
                 assert_eq!(action, Some(WorkAction::Start));
                 assert!(assignee.is_none());
@@ -1397,6 +1631,32 @@ mod tests {
                 assert!(limit.is_none());
                 assert!(verify.is_none());
                 assert_eq!(strategy, Some(WorkClaimStrategy::EpicCloseout));
+                assert!(verbosity.is_none());
+            }
+            _ => panic!("expected work command"),
+        }
+    }
+
+    #[test]
+    fn parse_work_start_with_verbosity() {
+        let cli = Cli::parse_from(["tak", "work", "start", "--verbosity", "high"]);
+        match cli.command {
+            Commands::Work {
+                action,
+                assignee,
+                tag,
+                limit,
+                verify,
+                strategy,
+                verbosity,
+            } => {
+                assert_eq!(action, Some(WorkAction::Start));
+                assert!(assignee.is_none());
+                assert!(tag.is_none());
+                assert!(limit.is_none());
+                assert!(verify.is_none());
+                assert!(strategy.is_none());
+                assert_eq!(verbosity, Some(WorkCoordinationVerbosity::High));
             }
             _ => panic!("expected work command"),
         }
@@ -1413,6 +1673,7 @@ mod tests {
                 limit,
                 verify,
                 strategy,
+                verbosity,
             } => {
                 assert_eq!(action, Some(WorkAction::Status));
                 assert_eq!(assignee.as_deref(), Some("agent-1"));
@@ -1420,6 +1681,7 @@ mod tests {
                 assert!(limit.is_none());
                 assert!(verify.is_none());
                 assert!(strategy.is_none());
+                assert!(verbosity.is_none());
             }
             _ => panic!("expected work command"),
         }
@@ -1436,6 +1698,7 @@ mod tests {
                 limit,
                 verify,
                 strategy,
+                verbosity,
             } => {
                 assert_eq!(action, Some(WorkAction::Stop));
                 assert!(assignee.is_none());
@@ -1443,6 +1706,7 @@ mod tests {
                 assert!(limit.is_none());
                 assert!(verify.is_none());
                 assert!(strategy.is_none());
+                assert!(verbosity.is_none());
             }
             _ => panic!("expected work command"),
         }

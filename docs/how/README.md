@@ -30,3 +30,5 @@ Each page should include:
 - [`setup-and-integrations.md`](./setup-and-integrations.md) — `tak setup` behavior (hooks, plugin, skills, `--pi`)
 - [`storage-and-index.md`](./storage-and-index.md) — JSON file store + SQLite index model and rebuild semantics
 - [`task-lifecycle.md`](./task-lifecycle.md) — lifecycle state machine and command side effects
+- [`coordination-verbosity.md`](./coordination-verbosity.md) — low/medium/high coordination trigger matrix and concrete message examples
+- [`channel-contract.md`](./channel-contract.md) — normative channel-role contract for mesh/blackboard/context/history with concrete usage examples

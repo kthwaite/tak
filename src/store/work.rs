@@ -48,6 +48,26 @@ impl std::fmt::Display for WorkClaimStrategy {
     }
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
+#[serde(rename_all = "snake_case")]
+#[clap(rename_all = "snake_case")]
+pub enum WorkCoordinationVerbosity {
+    Low,
+    #[default]
+    Medium,
+    High,
+}
+
+impl std::fmt::Display for WorkCoordinationVerbosity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Low => write!(f, "low"),
+            Self::Medium => write!(f, "medium"),
+            Self::High => write!(f, "high"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct WorkState {
     pub agent: String,
@@ -64,6 +84,8 @@ pub struct WorkState {
     pub verify_mode: WorkVerifyMode,
     #[serde(default)]
     pub claim_strategy: WorkClaimStrategy,
+    #[serde(default)]
+    pub coordination_verbosity: WorkCoordinationVerbosity,
     pub started_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     #[serde(flatten)]
@@ -81,6 +103,7 @@ impl WorkState {
             processed: 0,
             verify_mode: WorkVerifyMode::default(),
             claim_strategy: WorkClaimStrategy::default(),
+            coordination_verbosity: WorkCoordinationVerbosity::default(),
             started_at: now,
             updated_at: now,
             extensions: serde_json::Map::new(),
@@ -184,6 +207,7 @@ impl WorkStore {
         limit: Option<u32>,
         verify_mode: Option<WorkVerifyMode>,
         claim_strategy: Option<WorkClaimStrategy>,
+        coordination_verbosity: Option<WorkCoordinationVerbosity>,
     ) -> Result<ActivationOutcome> {
         Self::validate_agent_name(agent)?;
         self.ensure_dirs()?;
@@ -203,6 +227,7 @@ impl WorkStore {
                     current.remaining = None;
                     current.verify_mode = WorkVerifyMode::default();
                     current.claim_strategy = WorkClaimStrategy::default();
+                    current.coordination_verbosity = WorkCoordinationVerbosity::default();
                 }
                 (resumed, current)
             }
@@ -227,6 +252,9 @@ impl WorkStore {
         }
         if let Some(claim_strategy) = claim_strategy {
             state.claim_strategy = claim_strategy;
+        }
+        if let Some(coordination_verbosity) = coordination_verbosity {
+            state.coordination_verbosity = coordination_verbosity;
         }
 
         state.updated_at = now;
@@ -333,6 +361,7 @@ mod tests {
                 Some(3),
                 Some(WorkVerifyMode::Local),
                 Some(WorkClaimStrategy::EpicCloseout),
+                Some(WorkCoordinationVerbosity::High),
             )
             .unwrap();
 
@@ -346,6 +375,10 @@ mod tests {
             outcome.state.claim_strategy,
             WorkClaimStrategy::EpicCloseout
         );
+        assert_eq!(
+            outcome.state.coordination_verbosity,
+            WorkCoordinationVerbosity::High
+        );
 
         let loaded = store.load("agent_1").unwrap().unwrap();
         assert_eq!(loaded, outcome.state);
@@ -356,10 +389,12 @@ mod tests {
         let (_dir, store) = setup_store();
 
         let first = store
-            .activate("agent-1", Some("core".into()), Some(2), None, None)
+            .activate("agent-1", Some("core".into()), Some(2), None, None, None)
             .unwrap()
             .state;
-        let second = store.activate("agent-1", None, None, None, None).unwrap();
+        let second = store
+            .activate("agent-1", None, None, None, None, None)
+            .unwrap();
 
         assert!(second.resumed);
         assert_eq!(second.state.started_at, first.started_at);
@@ -369,6 +404,10 @@ mod tests {
             second.state.claim_strategy,
             WorkClaimStrategy::PriorityThenAge
         );
+        assert_eq!(
+            second.state.coordination_verbosity,
+            WorkCoordinationVerbosity::Medium
+        );
         assert!(second.state.updated_at >= first.updated_at);
     }
 
@@ -377,7 +416,7 @@ mod tests {
         let (_dir, store) = setup_store();
 
         let mut active = store
-            .activate("agent-1", None, Some(1), None, None)
+            .activate("agent-1", None, Some(1), None, None, None)
             .unwrap()
             .state;
         active.current_task_id = Some(42);
@@ -408,7 +447,7 @@ mod tests {
         let (_dir, store) = setup_store();
 
         let mut state = store
-            .activate("agent-1", Some("cli".into()), Some(2), None, None)
+            .activate("agent-1", Some("cli".into()), Some(2), None, None, None)
             .unwrap()
             .state;
         state.current_task_id = Some(42);
@@ -443,7 +482,7 @@ mod tests {
         .unwrap();
 
         let _ = store
-            .activate("agent-1", None, Some(4), None, None)
+            .activate("agent-1", None, Some(4), None, None, None)
             .unwrap();
 
         let raw = fs::read_to_string(store.state_path("agent-1")).unwrap();
@@ -468,6 +507,7 @@ mod tests {
                             Some(limit),
                             Some(WorkVerifyMode::Isolated),
                             Some(WorkClaimStrategy::EpicCloseout),
+                            Some(WorkCoordinationVerbosity::Low),
                         )
                         .unwrap();
                 })
@@ -488,6 +528,10 @@ mod tests {
         assert_eq!(
             value.get("claim_strategy").and_then(|v| v.as_str()),
             Some("epic_closeout")
+        );
+        assert_eq!(
+            value.get("coordination_verbosity").and_then(|v| v.as_str()),
+            Some("low")
         );
     }
 

@@ -8,7 +8,9 @@ use crate::model::{Status, Task};
 use crate::output::Format;
 use crate::store::mesh::MeshStore;
 use crate::store::repo::Repo;
-use crate::store::work::{WorkClaimStrategy, WorkState, WorkStore, WorkVerifyMode};
+use crate::store::work::{
+    WorkClaimStrategy, WorkCoordinationVerbosity, WorkState, WorkStore, WorkVerifyMode,
+};
 use crate::task_id::TaskId;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -54,7 +56,16 @@ pub fn start_or_resume(
     verify_mode: Option<WorkVerifyMode>,
     format: Format,
 ) -> Result<()> {
-    start_or_resume_with_strategy(repo_root, assignee, tag, limit, verify_mode, None, format)
+    start_or_resume_with_strategy(
+        repo_root,
+        assignee,
+        tag,
+        limit,
+        verify_mode,
+        None,
+        None,
+        format,
+    )
 }
 
 pub fn start_or_resume_with_strategy(
@@ -64,11 +75,19 @@ pub fn start_or_resume_with_strategy(
     limit: Option<u32>,
     verify_mode: Option<WorkVerifyMode>,
     claim_strategy: Option<WorkClaimStrategy>,
+    coordination_verbosity: Option<WorkCoordinationVerbosity>,
     format: Format,
 ) -> Result<()> {
     let agent = resolve_agent_identity(assignee)?;
-    let response =
-        reconcile_start_or_resume(repo_root, agent, tag, limit, verify_mode, claim_strategy)?;
+    let response = reconcile_start_or_resume(
+        repo_root,
+        agent,
+        tag,
+        limit,
+        verify_mode,
+        claim_strategy,
+        coordination_verbosity,
+    )?;
     print_response(response, format)
 }
 
@@ -91,10 +110,18 @@ fn reconcile_start_or_resume(
     limit: Option<u32>,
     verify_mode: Option<WorkVerifyMode>,
     claim_strategy: Option<WorkClaimStrategy>,
+    coordination_verbosity: Option<WorkCoordinationVerbosity>,
 ) -> Result<WorkResponse> {
     let work_store = WorkStore::open(&repo_root.join(".tak"));
     let mut state = work_store
-        .activate(&agent, tag, limit, verify_mode, claim_strategy)?
+        .activate(
+            &agent,
+            tag,
+            limit,
+            verify_mode,
+            claim_strategy,
+            coordination_verbosity,
+        )?
         .state;
     let repo = Repo::open(repo_root)?;
 
@@ -329,6 +356,11 @@ fn print_response(response: WorkResponse, format: Format) -> Result<()> {
                 "strategy:".dimmed(),
                 response.state.claim_strategy.to_string()
             );
+            println!(
+                "  {} {}",
+                "verbosity:".dimmed(),
+                response.state.coordination_verbosity.to_string()
+            );
         }
         Format::Minimal => {
             let state = if response.state.active {
@@ -456,7 +488,7 @@ mod tests {
         let task_id = create_task(dir.path(), "pending");
 
         let response =
-            reconcile_start_or_resume(dir.path(), "agent-1".into(), None, None, None, None)
+            reconcile_start_or_resume(dir.path(), "agent-1".into(), None, None, None, None, None)
                 .unwrap();
 
         assert_eq!(response.event, WorkEvent::Claimed);
@@ -479,14 +511,14 @@ mod tests {
 
         let store = WorkStore::open(&dir.path().join(".tak"));
         let mut state = store
-            .activate("agent-1", None, None, None, None)
+            .activate("agent-1", None, None, None, None, None)
             .unwrap()
             .state;
         state.current_task_id = Some(task_id);
         store.save(&state).unwrap();
 
         let response =
-            reconcile_start_or_resume(dir.path(), "agent-1".into(), None, None, None, None)
+            reconcile_start_or_resume(dir.path(), "agent-1".into(), None, None, None, None, None)
                 .unwrap();
 
         assert_eq!(response.event, WorkEvent::Continued);
@@ -507,7 +539,7 @@ mod tests {
         });
 
         let response =
-            reconcile_start_or_resume(dir.path(), "agent-1".into(), None, None, None, None)
+            reconcile_start_or_resume(dir.path(), "agent-1".into(), None, None, None, None, None)
                 .unwrap();
 
         assert_eq!(response.event, WorkEvent::Attached);
@@ -522,7 +554,7 @@ mod tests {
     fn reconcile_deactivates_when_no_work_is_available() {
         let dir = setup_repo();
         let response =
-            reconcile_start_or_resume(dir.path(), "agent-1".into(), None, None, None, None)
+            reconcile_start_or_resume(dir.path(), "agent-1".into(), None, None, None, None, None)
                 .unwrap();
 
         assert_eq!(response.event, WorkEvent::NoWork);
@@ -542,14 +574,14 @@ mod tests {
 
         let store = WorkStore::open(&dir.path().join(".tak"));
         let mut state = store
-            .activate("agent-1", None, Some(1), None, None)
+            .activate("agent-1", None, Some(1), None, None, None)
             .unwrap()
             .state;
         state.current_task_id = Some(finished_task_id);
         store.save(&state).unwrap();
 
         let response =
-            reconcile_start_or_resume(dir.path(), "agent-1".into(), None, None, None, None)
+            reconcile_start_or_resume(dir.path(), "agent-1".into(), None, None, None, None, None)
                 .unwrap();
 
         assert_eq!(response.event, WorkEvent::LimitReached);
@@ -576,6 +608,7 @@ mod tests {
             Some(2),
             None,
             Some(WorkClaimStrategy::EpicCloseout),
+            Some(WorkCoordinationVerbosity::High),
             Format::Minimal,
         )
         .unwrap();
@@ -600,6 +633,10 @@ mod tests {
         assert_eq!(
             value.get("claim_strategy").and_then(|v| v.as_str()),
             Some("priority_then_age")
+        );
+        assert_eq!(
+            value.get("coordination_verbosity").and_then(|v| v.as_str()),
+            Some("medium")
         );
 
         unsafe {
