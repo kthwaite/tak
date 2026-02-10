@@ -64,9 +64,66 @@ fn format_dependency(dep: &crate::model::Dependency) -> String {
     }
 }
 
+fn task_id_string_from_json(value: &serde_json::Value) -> Option<String> {
+    match value {
+        serde_json::Value::Number(num) => num.as_u64().map(format_task_id),
+        serde_json::Value::String(raw) => TaskId::parse_cli(raw).ok().map(|id| id.to_string()),
+        _ => None,
+    }
+}
+
+fn rewrite_task_id_value(value: &mut serde_json::Value) {
+    if let Some(id) = task_id_string_from_json(value) {
+        *value = serde_json::Value::String(id);
+    }
+}
+
+fn rewrite_task_id_array(values: &mut [serde_json::Value]) {
+    for value in values {
+        rewrite_task_id_value(value);
+    }
+}
+
+fn task_to_json_value(task: &Task) -> Result<serde_json::Value> {
+    let mut value = serde_json::to_value(task)?;
+
+    if let Some(obj) = value.as_object_mut() {
+        if let Some(id) = obj.get_mut("id") {
+            rewrite_task_id_value(id);
+        }
+
+        if let Some(parent) = obj.get_mut("parent") {
+            rewrite_task_id_value(parent);
+        }
+
+        if let Some(depends_on) = obj.get_mut("depends_on").and_then(|v| v.as_array_mut()) {
+            for dep in depends_on {
+                if let Some(dep_obj) = dep.as_object_mut()
+                    && let Some(dep_id) = dep_obj.get_mut("id")
+                {
+                    rewrite_task_id_value(dep_id);
+                }
+            }
+        }
+
+        if let Some(origin_idea_id) = obj.get_mut(crate::model::TRACE_ORIGIN_IDEA_ID_KEY) {
+            rewrite_task_id_value(origin_idea_id);
+        }
+
+        if let Some(refinement_task_ids) = obj
+            .get_mut(crate::model::TRACE_REFINEMENT_TASK_IDS_KEY)
+            .and_then(|v| v.as_array_mut())
+        {
+            rewrite_task_id_array(refinement_task_ids);
+        }
+    }
+
+    Ok(value)
+}
+
 pub fn print_task(task: &Task, format: Format) -> Result<()> {
     match format {
-        Format::Json => println!("{}", serde_json::to_string(&task)?),
+        Format::Json => println!("{}", serde_json::to_string(&task_to_json_value(task)?)?),
         Format::Pretty => print_task_pretty_table(task),
         Format::Minimal => {
             let assignee = task.assignee.as_deref().unwrap_or("-");
@@ -555,7 +612,13 @@ fn print_tasks_pretty_table(tasks: &[Task]) {
 
 pub fn print_tasks(tasks: &[Task], format: Format) -> Result<()> {
     match format {
-        Format::Json => println!("{}", serde_json::to_string(tasks)?),
+        Format::Json => {
+            let values: Vec<serde_json::Value> = tasks
+                .iter()
+                .map(task_to_json_value)
+                .collect::<Result<_>>()?;
+            println!("{}", serde_json::to_string(&values)?);
+        }
         Format::Pretty => print_tasks_pretty_table(tasks),
         Format::Minimal => {
             const ASSIGNEE_HEADER: &str = "ASSIGNEE";
@@ -650,6 +713,32 @@ mod tests {
         assert_eq!(
             format_dependency(&dep),
             "00000000000000ff (soft) [ordering]"
+        );
+    }
+
+    #[test]
+    fn rewrite_task_id_value_normalizes_legacy_decimal_strings() {
+        let mut value = serde_json::json!("42");
+        rewrite_task_id_value(&mut value);
+        assert_eq!(value, serde_json::json!("000000000000002a"));
+    }
+
+    #[test]
+    fn task_to_json_value_serializes_task_ids_as_canonical_hex() {
+        let mut task = task(42, Some(1));
+        task.depends_on = vec![Dependency::simple(255)];
+        task.set_origin_idea_id(Some(7));
+        task.set_refinement_task_ids(vec![10, 9]);
+
+        let value = task_to_json_value(&task).unwrap();
+
+        assert_eq!(value["id"], "000000000000002a");
+        assert_eq!(value["parent"], "0000000000000001");
+        assert_eq!(value["depends_on"][0]["id"], "00000000000000ff");
+        assert_eq!(value["origin_idea_id"], "0000000000000007");
+        assert_eq!(
+            value["refinement_task_ids"],
+            serde_json::json!(["0000000000000009", "000000000000000a"])
         );
     }
 
