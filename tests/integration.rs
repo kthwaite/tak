@@ -370,6 +370,94 @@ fn test_start_rejects_blocked_task() {
 }
 
 #[test]
+fn test_meta_lifecycle_and_dependency_parity() {
+    let dir = tempdir().unwrap();
+    let store = FileStore::init(dir.path()).unwrap();
+
+    let blocker_id = store
+        .create(
+            "Meta blocker".into(),
+            Kind::Meta,
+            None,
+            None,
+            vec![],
+            vec![],
+            Contract::default(),
+            Planning::default(),
+        )
+        .unwrap()
+        .id;
+    let blocked_id = store
+        .create(
+            "Meta blocked".into(),
+            Kind::Meta,
+            None,
+            None,
+            vec![blocker_id],
+            vec![],
+            Contract::default(),
+            Planning::default(),
+        )
+        .unwrap()
+        .id;
+
+    let idx = Index::open(&store.root().join("index.db")).unwrap();
+    idx.rebuild(&store.list_all().unwrap()).unwrap();
+    drop(idx);
+
+    let blocked_start =
+        tak::commands::lifecycle::start(dir.path(), blocked_id, Some("agent-meta".into()), Format::Json);
+    assert!(matches!(
+        blocked_start,
+        Err(TakError::TaskBlocked(id)) if id == blocked_id
+    ));
+
+    tak::commands::lifecycle::start(dir.path(), blocker_id, Some("agent-meta".into()), Format::Json)
+        .unwrap();
+    tak::commands::lifecycle::finish(dir.path(), blocker_id, Format::Json).unwrap();
+
+    tak::commands::lifecycle::start(dir.path(), blocked_id, Some("agent-meta".into()), Format::Json)
+        .unwrap();
+    let in_progress = store.read(blocked_id).unwrap();
+    assert_eq!(in_progress.kind, Kind::Meta);
+    assert_eq!(in_progress.status, Status::InProgress);
+    assert_eq!(in_progress.assignee.as_deref(), Some("agent-meta"));
+
+    tak::commands::lifecycle::handoff(
+        dir.path(),
+        blocked_id,
+        "waiting on meta review".into(),
+        Format::Json,
+    )
+    .unwrap();
+    let handed_off = store.read(blocked_id).unwrap();
+    assert_eq!(handed_off.status, Status::Pending);
+    assert!(handed_off.assignee.is_none());
+    assert_eq!(
+        handed_off.execution.handoff_summary.as_deref(),
+        Some("waiting on meta review")
+    );
+
+    tak::commands::lifecycle::start(dir.path(), blocked_id, Some("agent-meta".into()), Format::Json)
+        .unwrap();
+    tak::commands::lifecycle::cancel(
+        dir.path(),
+        blocked_id,
+        Some("meta run paused".into()),
+        Format::Json,
+    )
+    .unwrap();
+    let cancelled = store.read(blocked_id).unwrap();
+    assert_eq!(cancelled.status, Status::Cancelled);
+    assert_eq!(cancelled.execution.last_error.as_deref(), Some("meta run paused"));
+
+    tak::commands::lifecycle::reopen(dir.path(), blocked_id, Format::Json).unwrap();
+    let reopened = store.read(blocked_id).unwrap();
+    assert_eq!(reopened.status, Status::Pending);
+    assert!(reopened.assignee.is_none());
+}
+
+#[test]
 fn test_list_filters() {
     let dir = tempdir().unwrap();
     let store = FileStore::init(dir.path()).unwrap();
@@ -509,6 +597,61 @@ fn test_claim_assigns_next_available() {
 
     let result = tak::commands::claim::run(dir.path(), "agent-2".into(), None, Format::Json);
     assert!(matches!(result.unwrap_err(), TakError::NoAvailableTask));
+}
+
+#[test]
+fn test_claim_assigns_meta_tasks_with_dependency_parity() {
+    let dir = tempdir().unwrap();
+    let store = FileStore::init(dir.path()).unwrap();
+
+    let meta_a_id = store
+        .create(
+            "Meta A".into(),
+            Kind::Meta,
+            None,
+            None,
+            vec![],
+            vec![],
+            Contract::default(),
+            Planning::default(),
+        )
+        .unwrap()
+        .id;
+    let meta_b_id = store
+        .create(
+            "Meta B".into(),
+            Kind::Meta,
+            None,
+            None,
+            vec![meta_a_id],
+            vec![],
+            Contract::default(),
+            Planning::default(),
+        )
+        .unwrap()
+        .id;
+
+    let idx = Index::open(&store.root().join("index.db")).unwrap();
+    idx.rebuild(&store.list_all().unwrap()).unwrap();
+    drop(idx);
+
+    tak::commands::claim::run(dir.path(), "agent-meta-1".into(), None, Format::Json).unwrap();
+
+    let meta_a = store.read(meta_a_id).unwrap();
+    assert_eq!(meta_a.kind, Kind::Meta);
+    assert_eq!(meta_a.status, Status::InProgress);
+    assert_eq!(meta_a.assignee.as_deref(), Some("agent-meta-1"));
+
+    let blocked_claim = tak::commands::claim::run(dir.path(), "agent-meta-2".into(), None, Format::Json);
+    assert!(matches!(blocked_claim.unwrap_err(), TakError::NoAvailableTask));
+
+    tak::commands::lifecycle::finish(dir.path(), meta_a_id, Format::Json).unwrap();
+    tak::commands::claim::run(dir.path(), "agent-meta-2".into(), None, Format::Json).unwrap();
+
+    let meta_b = store.read(meta_b_id).unwrap();
+    assert_eq!(meta_b.kind, Kind::Meta);
+    assert_eq!(meta_b.status, Status::InProgress);
+    assert_eq!(meta_b.assignee.as_deref(), Some("agent-meta-2"));
 }
 
 #[test]
