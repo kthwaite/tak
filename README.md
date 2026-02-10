@@ -114,7 +114,7 @@ Task ID arguments across commands accept canonical hex, unique hex prefixes, and
 |---------|-------------|
 | `tak init` | Initialize `.tak/` in the current repository |
 | `tak create <title>` | Create a task (`--kind`, `--parent`, `--depends-on`, contract + planning flags) |
-| `tak import <source>` | Import YAML/JSON task plans (`--dry-run` validates and previews without writing) |
+| `tak import <source>` | Import strict YAML v2 plans (`epic` + `features` + `tasks`; `--dry-run` previews without writing) |
 | `tak show <task-id>` / `tak list` / `tak tree [task-id]` | Query tasks and hierarchy |
 | `tak edit <task-id>` | Update task metadata (`--title`, `--kind`, tags, contract/planning, `--pr`) |
 | `tak claim` / `tak start <task-id>` | Start work (atomic claim preferred in multi-agent mode) |
@@ -135,6 +135,64 @@ Task ID arguments across commands accept canonical hex, unique hex prefixes, and
 | `tak delete <task-id>` | Delete task (`--force` to cascade orphan/removal behavior) |
 | `tak reindex` | Rebuild SQLite index from task files |
 | `tak setup` / `tak doctor` | Install/check integrations and environment health |
+
+### Import v2 (strict YAML plan materializer)
+
+`tak import` now accepts one canonical YAML schema: top-level `epic`, nested `features`, and nested `tasks`.
+
+> Breaking change: legacy import payloads (for example top-level `tasks:` list/JSON wrappers from older versions) are no longer accepted.
+
+```yaml
+epic: Agentic Chat
+description: Claude Code for writers
+tags: [agentic-chat]
+priority: high
+
+features:
+  - &infra
+    alias: infra
+    title: Tool Infrastructure
+    priority: high
+    tasks:
+      - &schemas
+        alias: schemas
+        title: Define tool schemas in server/src/tools/
+        tags: [backend]
+        estimate: m
+
+      - title: Add agentMode flag to ChatCompletionRequest
+        depends_on: [*schemas]
+
+  - &read
+    alias: read
+    title: Read Tools
+    depends_on: [*infra]
+    tasks:
+      - title: Wire up get_outline and read_scene handlers
+
+  - title: Write Tools and Approval Gates
+    depends_on: [*read]
+    tasks:
+      - &approval
+        alias: approval
+        title: Build approval gate UI component
+        estimate: l
+
+      - title: Wire up edit_scene tool with diff view
+        depends_on: [*approval, *schemas]
+```
+
+Symbolic dependency references are document-scoped and resolved during import (no hex ID juggling needed).
+
+```bash
+# Validate + preview hierarchy/dependencies/metadata without writes
+tak import plan.yaml --dry-run
+
+# Materialize the full plan in one command
+tak import plan.yaml
+```
+
+See [`docs/how/import-v2.md`](docs/how/import-v2.md) for schema details and migration notes.
 
 ### Bulk reparent example
 

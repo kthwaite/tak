@@ -84,7 +84,7 @@ Tasks are JSON files in `.tak/tasks/` (the git-committed source of truth). A git
 - **`src/commands/`** — One file per command group. Most take `&Path` (repo root) and return `Result<()>`. `doctor` doesn't require a repo; `setup` supports global mode anywhere but project-scoped setup requires a git repo root.
 - **`src/commands/work.rs`** — CLI-native work-loop handlers (`start/resume`, `status`, `done`, `stop`) with reconciliation events (`continued`/`attached`/`claimed`/`done`/`no_work`/`limit_reached`) and format-specific output rendering.
 - **`src/commands/takeover.rs`** — stale-owner reassignment command with inactivity/force guardrails, structured decision output, and lifecycle history logging.
-- **`src/commands/import.rs`** — YAML/JSON task-plan import pipeline (`tak import`) with dry-run previews, alias/reference resolution, graph validation, and deterministic create ordering.
+- **`src/commands/import.rs`** — strict YAML v2 plan-materialization pipeline (`tak import`) with canonical `epic`/`features`/`tasks` parsing, symbolic dependency resolution, metadata-rich dry-run previews, and rollback-backed apply semantics.
 - **`src/commands/wait.rs`** — deterministic wait helpers (`tak wait`) for reservation-path and dependency-unblock readiness with timeout diagnostics.
 - **`src/commands/metrics.rs`** — metrics handlers for `burndown`, `completion-time`, and `tui` including shared query validation and format-specific renderers.
 - **`src/commands/tui.rs`** — top-level interactive explorer (`tak tui`) for tasks/learnings/blackboard/mesh/feed with searchable list + deep detail panes (including task sidecars).
@@ -104,7 +104,7 @@ For task-taking commands, `TASK_ID` accepts canonical 16-hex IDs, unique hex pre
 |---------|---------|
 | `init` | Initialize `.tak/` directory (`tasks/`, sidecars, `learnings/`, `therapist/`, runtime `coordination.db`, work-state dirs, `.gitignore`) |
 | `create TITLE` | Create task (`--kind`, `--parent`, `--depends-on`, `-d`, `--tag`, `--objective`, `--verify`, `--constraint`, `--criterion`, `--priority`, `--estimate`, `--skill`, `--risk`) |
-| `import SOURCE` | Import YAML/JSON task plans (`--dry-run` validates/prints plan without writing) |
+| `import SOURCE` | Import strict YAML v2 plans (`epic` + `features` + `tasks`, symbolic refs); `--dry-run` validates/prints plan without writing |
 | `delete TASK_ID` | Delete a task (`--force` to cascade: orphans children, removes deps); also cleans up sidecar files |
 | `show TASK_ID` | Display a single task |
 | `list` | Query tasks (`--status`, `--kind`, `--tag`, `--assignee`, `--available`, `--blocked`, `--children-of`, `--priority`) |
