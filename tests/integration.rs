@@ -465,7 +465,7 @@ fn test_claim_assigns_next_available() {
     let dir = tempdir().unwrap();
     let store = FileStore::init(dir.path()).unwrap();
 
-    store
+    let task_a_id = store
         .create(
             "Task A".into(),
             Kind::Task,
@@ -476,32 +476,37 @@ fn test_claim_assigns_next_available() {
             Contract::default(),
             Planning::default(),
         )
-        .unwrap();
-    store
+        .unwrap()
+        .id;
+    let task_b_id = store
         .create(
             "Task B".into(),
             Kind::Task,
             None,
             None,
-            vec![1],
+            vec![task_a_id],
             vec![],
             Contract::default(),
             Planning::default(),
         )
-        .unwrap();
+        .unwrap()
+        .id;
 
     let idx = Index::open(&store.root().join("index.db")).unwrap();
     idx.rebuild(&store.list_all().unwrap()).unwrap();
     drop(idx);
 
-    // Claim as agent-1 — should get task 1 (only available)
+    // Claim as agent-1 — should get task A (only available)
     tak::commands::claim::run(dir.path(), "agent-1".into(), None, Format::Json).unwrap();
 
-    let t1 = store.read(1).unwrap();
-    assert_eq!(t1.status, Status::InProgress);
-    assert_eq!(t1.assignee.as_deref(), Some("agent-1"));
+    let task_a = store.read(task_a_id).unwrap();
+    assert_eq!(task_a.status, Status::InProgress);
+    assert_eq!(task_a.assignee.as_deref(), Some("agent-1"));
 
-    // Task 2 is still blocked, nothing available
+    // Task B is still blocked, so nothing else is available
+    let task_b = store.read(task_b_id).unwrap();
+    assert_eq!(task_b.status, Status::Pending);
+
     let result = tak::commands::claim::run(dir.path(), "agent-2".into(), None, Format::Json);
     assert!(matches!(result.unwrap_err(), TakError::NoAvailableTask));
 }
@@ -510,7 +515,7 @@ fn test_claim_assigns_next_available() {
 fn test_reopen_transitions() {
     let dir = tempdir().unwrap();
     let store = FileStore::init(dir.path()).unwrap();
-    store
+    let task_id = store
         .create(
             "Test".into(),
             Kind::Task,
@@ -521,21 +526,22 @@ fn test_reopen_transitions() {
             Contract::default(),
             Planning::default(),
         )
-        .unwrap();
+        .unwrap()
+        .id;
 
     let idx = Index::open(&store.root().join("index.db")).unwrap();
     idx.rebuild(&store.list_all().unwrap()).unwrap();
     drop(idx);
 
     // pending -> in_progress -> done
-    tak::commands::lifecycle::start(dir.path(), 1, None, Format::Json).unwrap();
-    tak::commands::lifecycle::finish(dir.path(), 1, Format::Json).unwrap();
-    let t = store.read(1).unwrap();
+    tak::commands::lifecycle::start(dir.path(), task_id, None, Format::Json).unwrap();
+    tak::commands::lifecycle::finish(dir.path(), task_id, Format::Json).unwrap();
+    let t = store.read(task_id).unwrap();
     assert_eq!(t.status, Status::Done);
 
     // done -> pending (reopen)
-    tak::commands::lifecycle::reopen(dir.path(), 1, Format::Json).unwrap();
-    let t = store.read(1).unwrap();
+    tak::commands::lifecycle::reopen(dir.path(), task_id, Format::Json).unwrap();
+    let t = store.read(task_id).unwrap();
     assert_eq!(t.status, Status::Pending);
     assert!(t.assignee.is_none(), "reopen should clear assignee");
 }
