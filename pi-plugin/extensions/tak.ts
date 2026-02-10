@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
 
 import {
@@ -69,6 +69,14 @@ interface MeshReservation {
 	paths: string[];
 	reason?: string;
 	since: string;
+}
+
+interface VerifyOverlapBlocker {
+	agent: string;
+	scopePath: string;
+	heldPath: string;
+	reason?: string;
+	ageSeconds: number;
 }
 
 interface TherapistObservation {
@@ -194,7 +202,7 @@ Work mode notes:
 - When the current task is finished/handed off/cancelled, the next task is auto-claimed.
 - Cue mode defaults to editor prefill; use auto (or cue:auto) to push each claimed task as a user message.
 - In work mode, edits are blocked unless the path is reserved by your agent.
-- With verify:isolated (default), local build/test/check commands are blocked when peers hold reservations.
+- With verify:isolated (default), local build/test/check commands are blocked only when reservation scope overlaps (or when scope is undefined while peers hold reservations).
 `;
 
 const COMPLETIONS = [
@@ -251,6 +259,8 @@ const SOURCE_SET: Set<string> = new Set([
 	"blackboard",
 	"inbox",
 ]);
+
+const HEARTBEAT_INTERVAL_FALLBACK_MS = 30_000;
 
 function parseTakError(stderr: string): string | undefined {
 	const trimmed = stderr.trim();
@@ -619,8 +629,49 @@ function loadReservations(cwd: string): MeshReservation[] {
 	}
 }
 
+function loadActiveAgentNames(cwd: string): Set<string> {
+	const registryDir = join(cwd, ".tak", "runtime", "mesh", "registry");
+	if (!existsSync(registryDir)) return new Set<string>();
+
+	const active = new Set<string>();
+	try {
+		for (const entry of readdirSync(registryDir, { withFileTypes: true })) {
+			if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
+			const path = join(registryDir, entry.name);
+			const fallbackName = entry.name.replace(/\.json$/i, "");
+			try {
+				const content = readFileSync(path, "utf-8");
+				const parsed = JSON.parse(content) as { name?: string; status?: string };
+				const name = parsed.name?.trim() || fallbackName;
+				const status = parsed.status?.trim().toLowerCase();
+				if (name && (!status || status === "active")) {
+					active.add(name);
+				}
+			} catch {
+				// Ignore malformed records and continue with remaining entries.
+			}
+		}
+	} catch {
+		return new Set<string>();
+	}
+
+	return active;
+}
+
+function filterReservationsToActiveAgents(
+	reservations: MeshReservation[],
+	activeAgentNames: Set<string>,
+): MeshReservation[] {
+	if (activeAgentNames.size === 0) return reservations;
+	return reservations.filter((reservation) => activeAgentNames.has(reservation.agent));
+}
+
 function reservationsOwnedBy(agentName: string, reservations: MeshReservation[]): MeshReservation[] {
 	return reservations.filter((reservation) => reservation.agent === agentName);
+}
+
+function reservationsForeignTo(agentName: string, reservations: MeshReservation[]): MeshReservation[] {
+	return reservations.filter((reservation) => reservation.agent !== agentName);
 }
 
 function hasOwnedReservationForPath(agentName: string, targetPath: string, reservations: MeshReservation[]): boolean {
@@ -629,8 +680,64 @@ function hasOwnedReservationForPath(agentName: string, targetPath: string, reser
 	);
 }
 
-function hasForeignReservations(agentName: string, reservations: MeshReservation[]): boolean {
-	return reservations.some((reservation) => reservation.agent !== agentName);
+function uniqueNormalizedPaths(paths: string[]): string[] {
+	const seen = new Set<string>();
+	const ordered: string[] = [];
+	for (const path of paths) {
+		const normalized = normalizePathLikeTak(path);
+		if (!normalized || seen.has(normalized)) continue;
+		seen.add(normalized);
+		ordered.push(normalized);
+	}
+	return ordered;
+}
+
+function deriveVerifyScopePaths(agentName: string, reservations: MeshReservation[]): string[] {
+	const ownedPaths = reservationsOwnedBy(agentName, reservations).flatMap((reservation) => reservation.paths);
+	return uniqueNormalizedPaths(ownedPaths);
+}
+
+function reservationAgeSeconds(reservation: MeshReservation): number {
+	const parsed = Date.parse(reservation.since);
+	if (!Number.isFinite(parsed)) return 0;
+	return Math.max(0, Math.floor((Date.now() - parsed) / 1000));
+}
+
+function findVerifyOverlapBlockers(
+	scopePaths: string[],
+	foreignReservations: MeshReservation[],
+): VerifyOverlapBlocker[] {
+	const blockers: VerifyOverlapBlocker[] = [];
+	for (const scopePath of scopePaths) {
+		for (const reservation of foreignReservations) {
+			for (const heldPath of reservation.paths) {
+				if (!pathsConflict(scopePath, heldPath)) continue;
+				blockers.push({
+					agent: reservation.agent,
+					scopePath,
+					heldPath: normalizePathLikeTak(heldPath),
+					reason: reservation.reason,
+					ageSeconds: reservationAgeSeconds(reservation),
+				});
+			}
+		}
+	}
+
+	blockers.sort((a, b) => {
+		if (a.agent !== b.agent) return a.agent.localeCompare(b.agent);
+		if (a.scopePath !== b.scopePath) return a.scopePath.localeCompare(b.scopePath);
+		return a.heldPath.localeCompare(b.heldPath);
+	});
+
+	const deduped: VerifyOverlapBlocker[] = [];
+	const seen = new Set<string>();
+	for (const blocker of blockers) {
+		const key = `${blocker.agent}|${blocker.scopePath}|${blocker.heldPath}`;
+		if (seen.has(key)) continue;
+		seen.add(key);
+		deduped.push(blocker);
+	}
+	return deduped;
 }
 
 function isLikelyBuildOrTestCommand(command: string): boolean {
@@ -641,6 +748,42 @@ function isLikelyBuildOrTestCommand(command: string): boolean {
 		/\bpytest\b/,
 		/\b(go\s+test|gradle\s+test|mvn\s+test|ctest|jest|vitest)\b/,
 	].some((pattern) => pattern.test(normalized));
+}
+
+function formatVerifyGuardReason(
+	agentName: string,
+	scopePaths: string[],
+	foreignReservations: MeshReservation[],
+	blockers: VerifyOverlapBlocker[],
+): string {
+	if (scopePaths.length === 0) {
+		const hintPath = foreignReservations[0]?.paths[0];
+		const waitHint = hintPath
+			? `Queue/window option: tak wait --path ${normalizePathLikeTak(hintPath)} --timeout 120.`
+			: "Queue/window option: tak wait --path <path> --timeout 120.";
+		return [
+			"Work loop guard (verify:isolated): verification scope is empty while peers hold reservations.",
+			`Reserve your verify scope first (tak mesh reserve --name ${agentName} --path <path> --reason task-current).`,
+			waitHint,
+			"Or switch to verify:local.",
+		].join(" ");
+	}
+
+	const first = blockers[0]!;
+	const reason = first.reason ?? "none";
+	const waitHint = `Queue/window option: tak wait --path ${first.heldPath} --timeout 120.`;
+	const details = blockers
+		.slice(0, 3)
+		.map((blocker) => `${blocker.agent}:${blocker.scopePath}↔${blocker.heldPath}`)
+		.join(", ");
+	const extra = blockers.length > 3 ? ` (+${blockers.length - 3} more)` : "";
+
+	return [
+		`Work loop guard (verify:isolated): overlapping reservation scope with '${first.agent}' (scope='${first.scopePath}', held='${first.heldPath}', reason=${reason}, age=${first.ageSeconds}s).`,
+		`Overlaps: ${details}${extra}.`,
+		waitHint,
+		"Or switch to verify:local.",
+	].join(" ");
 }
 
 function formatWorkLoopStatus(workLoop: WorkLoopState): string {
@@ -851,6 +994,7 @@ export default function takPiExtension(pi: ExtensionAPI) {
 	let meshJoined = false;
 	let agentName: string | undefined;
 	let peerCount = 0;
+	let lastHeartbeatAt = 0;
 	const seenInboxMessageIds = new Set<string>();
 	let workLoop: WorkLoopState = {
 		active: false,
@@ -883,6 +1027,27 @@ export default function takPiExtension(pi: ExtensionAPI) {
 	async function releaseOwnReservations(): Promise<void> {
 		if (!agentName) return;
 		await runTak(pi, ["mesh", "release", "--name", agentName, "--all"]);
+	}
+
+	async function maybeHeartbeat(ctx: ExtensionContext): Promise<void> {
+		if (!integrationEnabled() || !meshJoined || !agentName) return;
+
+		const now = Date.now();
+		if (now - lastHeartbeatAt < HEARTBEAT_INTERVAL_FALLBACK_MS) {
+			return;
+		}
+
+		lastHeartbeatAt = now;
+		const heartbeatResult = await runTak(pi, ["mesh", "heartbeat", "--name", agentName], {
+			json: false,
+			timeoutMs: 10000,
+		});
+		if (!heartbeatResult.ok) {
+			ctx.ui.notify(
+				heartbeatResult.errorMessage ?? "tak mesh heartbeat failed",
+				"warning",
+			);
+		}
 	}
 
 	function cueTaskForWorkLoop(ctx: ExtensionContext, task: TakTask, notes: BlackboardNote[]): void {
@@ -1471,6 +1636,7 @@ export default function takPiExtension(pi: ExtensionAPI) {
 		meshJoined = false;
 		agentName = undefined;
 		peerCount = 0;
+		lastHeartbeatAt = 0;
 		seenInboxMessageIds.clear();
 		resetWorkLoop();
 
@@ -1489,6 +1655,7 @@ export default function takPiExtension(pi: ExtensionAPI) {
 		takAvailable = true;
 
 		await runTak(pi, ["reindex"], { json: false, timeoutMs: 20000 });
+		await runTak(pi, ["mesh", "cleanup", "--stale"], { json: false, timeoutMs: 20000 });
 
 		const envAgent = process.env.TAK_AGENT?.trim();
 		const joinArgs = ["mesh", "join"];
@@ -1502,7 +1669,10 @@ export default function takPiExtension(pi: ExtensionAPI) {
 		if (joinResult.ok && joinResult.parsed && typeof joinResult.parsed === "object") {
 			agentName = (joinResult.parsed as { name?: string }).name;
 			meshJoined = Boolean(agentName);
-			if (agentName) ctx.ui.notify(`tak mesh joined as ${agentName}`, "info");
+			if (agentName) {
+				lastHeartbeatAt = Date.now();
+				ctx.ui.notify(`tak mesh joined as ${agentName}`, "info");
+			}
 		}
 
 		await refreshStatus(ctx);
@@ -1515,6 +1685,7 @@ export default function takPiExtension(pi: ExtensionAPI) {
 
 	pi.on("turn_end", async (_event, ctx) => {
 		await syncWorkLoop(ctx);
+		await maybeHeartbeat(ctx);
 		await refreshStatus(ctx);
 	});
 
@@ -1535,16 +1706,32 @@ export default function takPiExtension(pi: ExtensionAPI) {
 	pi.on("tool_call", async (event, ctx) => {
 		if (!integrationEnabled() || !agentName) return;
 
-		const reservations = loadReservations(ctx.cwd);
+		const reservations = filterReservationsToActiveAgents(
+			loadReservations(ctx.cwd),
+			loadActiveAgentNames(ctx.cwd),
+		);
 
 		if (isToolCallEventType("bash", event) && workLoop.active && workLoop.verifyMode === "isolated") {
 			const command = event.input.command ?? "";
-			if (isLikelyBuildOrTestCommand(command) && hasForeignReservations(agentName, reservations)) {
-				return {
-					block: true,
-					reason:
-						"Work loop guard: local build/test/check is blocked while peers hold reservations. Wait for reservations to clear or hand off if blocked.",
-				};
+			if (isLikelyBuildOrTestCommand(command)) {
+				const foreignReservations = reservationsForeignTo(agentName, reservations);
+				if (foreignReservations.length > 0) {
+					const verifyScopePaths = deriveVerifyScopePaths(agentName, reservations);
+					if (verifyScopePaths.length === 0) {
+						return {
+							block: true,
+							reason: formatVerifyGuardReason(agentName, verifyScopePaths, foreignReservations, []),
+						};
+					}
+
+					const blockers = findVerifyOverlapBlockers(verifyScopePaths, foreignReservations);
+					if (blockers.length > 0) {
+						return {
+							block: true,
+							reason: formatVerifyGuardReason(agentName, verifyScopePaths, foreignReservations, blockers),
+						};
+					}
+				}
 			}
 		}
 
