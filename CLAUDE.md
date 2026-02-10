@@ -79,6 +79,7 @@ Tasks are JSON files in `.tak/tasks/` (the git-committed source of truth). A git
 - **`src/commands/import.rs`** — YAML/JSON task-plan import pipeline (`tak import`) with dry-run previews, alias/reference resolution, graph validation, and deterministic create ordering.
 - **`src/commands/wait.rs`** — deterministic wait helpers (`tak wait`) for reservation-path and dependency-unblock readiness with timeout diagnostics.
 - **`src/commands/metrics.rs`** — metrics handlers for `burndown`, `completion-time`, and `tui` including shared query validation and format-specific renderers.
+- **`src/commands/tui.rs`** — top-level interactive explorer (`tak tui`) for tasks/learnings/blackboard/mesh/feed with searchable list + deep detail panes (including task sidecars).
 - **`src/commands/mesh.rs`** — 13 mesh subcommand handlers: join, leave, list, send, broadcast, inbox, heartbeat, cleanup, blockers, reservations, reserve, release, feed
 - **`src/commands/blackboard.rs`** — 5 blackboard subcommand handlers: post, list, show, close, reopen
 - **`src/commands/therapist.rs`** — therapist handlers: offline diagnosis, online RPC interview, and observation log listing
@@ -120,6 +121,7 @@ For task-taking commands, `TASK_ID` accepts canonical 16-hex IDs, unique hex pre
 | `log TASK_ID` | Display structured JSONL task history log |
 | `verify TASK_ID` | Run contract verification commands; stores result; exits 1 if any fail |
 | `metrics <burndown\|completion-time\|tui>` | Metrics trends + TUI dashboard (`--from`, `--to`, `--bucket day\|week`, filters; completion-time `--metric lead\|cycle`; `--include-cancelled` for burndown/TUI) |
+| `tui` | Interactive cross-domain explorer for tasks/learnings/blackboard/mesh/feed (`--focus`, `--query`) |
 | `learn add TITLE` | Record a learning (`--category`, `-d`, `--tag`, `--task`) |
 | `learn list` | List learnings (`--category`, `--tag`, `--task`) |
 | `learn show ID` | Display a single learning |

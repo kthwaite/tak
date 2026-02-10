@@ -103,6 +103,7 @@ Task ID arguments across commands accept canonical hex, unique hex prefixes, and
 | `tak mesh <subcommand>` | Agent presence, messaging, reservations, activity feed |
 | `tak blackboard <subcommand>` | Shared coordination notes (`post/list/show/close/reopen`), including structured `post --template blocker\|handoff\|status`, delta refs (`--since-note`, `--no-change-since`), and sensitive-text lint warnings |
 | `tak therapist <subcommand>` | Workflow diagnosis (`offline`, `online`, `log`) |
+| `tak tui` | Interactive cross-domain explorer for tasks/learnings/blackboard/mesh/feed (`--focus`, `--query`) |
 | `tak migrate-ids [--dry-run\|--apply]` | Task ID migration workflow (preflight/apply rewrite + audit map + config bump) |
 | `tak delete <task-id>` | Delete task (`--force` to cascade orphan/removal behavior) |
 | `tak reindex` | Rebuild SQLite index from task files |
