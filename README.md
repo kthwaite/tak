@@ -43,6 +43,12 @@ tak work done --assignee agent-1 --pause
 tak work stop --assignee agent-1
 ```
 
+**Task ID input forms:** every `<task-id>` argument accepts a full canonical 16-char hex ID, a unique hex prefix (case-insensitive), or a legacy decimal ID. Resolution is exact-match first, then unique prefix; ambiguous prefixes error.
+
+Examples:
+- `tak show ef94`
+- `tak depend b48b --on ef94`
+
 ### `tak work done` closeout helper
 
 Use `tak work done` when you want one command to close the current unit and clean up loop state.
@@ -78,6 +84,8 @@ Bottom-up principles:
 In practice: claim work, reserve paths, post meaningful updates in shared channels, then finish/handoff and release reservations.
 
 ## Commands
+
+Task ID arguments across commands accept canonical hex, unique hex prefixes, and legacy decimal IDs.
 
 | Command | Description |
 |---------|-------------|
@@ -121,6 +129,10 @@ New task IDs are allocated from OS-backed CSPRNG entropy (counterless allocation
 When a command expects a task ID, tak resolves input as:
 1. exact canonical hex or legacy decimal match,
 2. otherwise a unique hex prefix match (case-insensitive).
+
+Prefix examples:
+- `tak show ef94`
+- `tak depend b48b --on ef94`
 
 If your repository still has legacy numeric filenames (`.tak/tasks/1.json`, etc.), run:
 
@@ -167,13 +179,17 @@ Adding `--rekey-random` remaps all task IDs (including already-canonical reposit
   artifacts/{task_id}/                # Task artifacts (gitignored)
   learnings/*.json                    # Learning records (committed)
   migrations/task-id-map-*.json       # ID migration audit logs (written by migrate-ids --apply)
-  runtime/mesh/*                      # Agent registry/inbox/reservations/feed (gitignored)
-  runtime/blackboard/*                # Shared note board (gitignored)
+  runtime/coordination.db             # Coordination runtime DB (WAL, gitignored)
+  runtime/coordination.db-wal         # SQLite WAL sidecar (gitignored)
+  runtime/coordination.db-shm         # SQLite shared-memory sidecar (gitignored)
+  runtime/work/states/*.json          # Per-agent work-loop state (gitignored)
   therapist/observations.jsonl        # Workflow observations (committed)
   index.db                            # SQLite index (gitignored, rebuilt on demand)
 ```
 
 Task files are the source of truth. The SQLite index is derived and rebuilt automatically when missing (e.g., after a fresh clone).
+
+Coordination state is runtime-only and now backed by `.tak/runtime/coordination.db`. Legacy `.tak/runtime/mesh/` and `.tak/runtime/blackboard/` directories are inert after migration; `tak doctor --fix` can clean them up.
 
 ## Stigmergic Multi-Agent Workflow
 
@@ -256,8 +272,10 @@ Tak also ships a pi package under [`pi-plugin/`](./pi-plugin):
 - `/tak` task picker with filtering (`ready`, `blocked`, `all`, `mine`, `in_progress`) and default **urgent → oldest** ordering
 - `tak_cli` tool for structured task/mesh/blackboard command execution
 - Mesh + blackboard integration (`/tak mesh`, `/tak inbox`, `/tak blackboard`)
+- Guard inputs are CLI-backed (`tak mesh reservations`, `tak mesh list`) rather than direct runtime file reads
 - Auto `tak reindex` + mesh join/leave lifecycle behavior
 - System-prompt augmentation that enforces active tak usage and cross-agent coordination
+- Fail-safe guard behavior: when reservation snapshots are unavailable, guarded write/verify paths block with actionable remediation guidance
 
 Install project-local pi integration from the repo root:
 

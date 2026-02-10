@@ -72,8 +72,12 @@ pub enum TakError {
         age_secs: i64,
     },
 
-    #[error("mesh: corrupt file '{0}': {1}")]
-    MeshCorruptFile(String, String),
+    #[error("mesh: stale generation token (expected {expected}, got {got}) for agent '{agent}'")]
+    MeshStaleGeneration {
+        agent: String,
+        expected: i64,
+        got: i64,
+    },
 
     #[error("blackboard: note {0} not found")]
     BlackboardNoteNotFound(u64),
@@ -83,9 +87,6 @@ pub enum TakError {
 
     #[error("blackboard: message cannot be empty")]
     BlackboardInvalidMessage,
-
-    #[error("blackboard: corrupt file '{0}': {1}")]
-    BlackboardCorruptFile(String, String),
 
     #[error("therapist: session '{0}' not found")]
     TherapistSessionNotFound(String),
@@ -104,6 +105,9 @@ pub enum TakError {
 
     #[error("wait timed out: {0}")]
     WaitTimeout(String),
+
+    #[error("metrics: invalid query options: {0}")]
+    MetricsInvalidQuery(String),
 
     #[error("work: invalid agent name '{0}' (expected ASCII alphanumeric/hyphen/underscore)")]
     WorkInvalidAgentName(String),
@@ -147,17 +151,17 @@ impl TakError {
             Self::MeshInvalidName => "mesh_invalid_name",
             Self::MeshInvalidPath(_) => "mesh_invalid_path",
             Self::MeshReservationConflict { .. } => "mesh_reservation_conflict",
-            Self::MeshCorruptFile(_, _) => "mesh_corrupt_file",
+            Self::MeshStaleGeneration { .. } => "mesh_stale_generation",
             Self::BlackboardNoteNotFound(_) => "blackboard_note_not_found",
             Self::BlackboardInvalidName => "blackboard_invalid_name",
             Self::BlackboardInvalidMessage => "blackboard_invalid_message",
-            Self::BlackboardCorruptFile(_, _) => "blackboard_corrupt_file",
             Self::TherapistSessionNotFound(_) => "therapist_session_not_found",
             Self::TherapistSessionAmbiguous { .. } => "therapist_session_ambiguous",
             Self::TherapistRpcTimeout(_) => "therapist_rpc_timeout",
             Self::TherapistRpcProtocol(_) => "therapist_rpc_protocol",
             Self::WaitInvalidTarget => "wait_invalid_target",
             Self::WaitTimeout(_) => "wait_timeout",
+            Self::MetricsInvalidQuery(_) => "metrics_invalid_query",
             Self::WorkInvalidAgentName(_) => "work_invalid_agent_name",
             Self::WorkCorruptFile(_, _) => "work_corrupt_file",
             Self::EpicFinishHygiene(_) => "epic_finish_hygiene",

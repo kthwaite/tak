@@ -4,7 +4,7 @@ use tak::commands::blackboard::BlackboardTemplate;
 use tak::metrics::{CompletionMetric, MetricsBucket};
 use tak::model::{DepType, Estimate, Kind, LearningCategory, Priority, Risk, Status};
 use tak::output::Format;
-use tak::store::blackboard::BlackboardStatus;
+use tak::store::coordination_db::BlackboardStatus;
 use tak::store::work::{WorkClaimStrategy, WorkCoordinationVerbosity, WorkStore, WorkVerifyMode};
 
 #[derive(Parser)]
@@ -33,7 +33,7 @@ enum Commands {
     },
     /// Set a task to cancelled
     Cancel {
-        /// Task ID to cancel
+        /// Task ID to cancel (canonical hex, unique prefix, or legacy decimal)
         id: String,
         /// Reason for cancellation (recorded as last_error)
         #[arg(long)]
@@ -113,9 +113,9 @@ enum Commands {
     },
     /// Add dependency edges (task cannot start until deps are done)
     Depend {
-        /// Task ID that will gain dependencies
+        /// Task ID that will gain dependencies (canonical hex, unique prefix, or legacy decimal)
         id: String,
-        /// IDs of tasks it depends on (comma-separated)
+        /// IDs of tasks it depends on (canonical/prefix/legacy, comma-separated)
         #[arg(long, required = true, value_delimiter = ',')]
         on: Vec<String>,
         /// Dependency type (hard or soft)
@@ -304,12 +304,12 @@ enum Commands {
     },
     /// Display a single task
     Show {
-        /// Task ID to show
+        /// Task ID to show (canonical hex, unique prefix, or legacy decimal)
         id: String,
     },
     /// Set a task to in_progress
     Start {
-        /// Task ID to start
+        /// Task ID to start (canonical hex, unique prefix, or legacy decimal)
         id: String,
         /// Who is working on it
         #[arg(long)]
@@ -638,6 +638,15 @@ enum MeshAction {
     /// Diagnose active reservation blockers (owner/path/reason/age)
     Blockers {
         /// Optional path filters (repeatable). When omitted, shows all active blockers.
+        #[arg(long = "path")]
+        paths: Vec<String>,
+    },
+    /// List active reservation leases (optionally filtered by owner/path)
+    Reservations {
+        /// Optional owner filter
+        #[arg(long)]
+        name: Option<String>,
+        /// Optional path filters (repeatable). Uses the same conflict semantics as blockers/wait.
         #[arg(long = "path")]
         paths: Vec<String>,
     },
@@ -1288,6 +1297,9 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
                 ttl_seconds,
             } => tak::commands::mesh::cleanup(&root, stale, dry_run, ttl_seconds, format),
             MeshAction::Blockers { paths } => tak::commands::mesh::blockers(&root, paths, format),
+            MeshAction::Reservations { name, paths } => {
+                tak::commands::mesh::reservations(&root, name.as_deref(), paths, format)
+            }
             MeshAction::Reserve {
                 name,
                 paths,
@@ -1780,6 +1792,31 @@ mod tests {
                 assert_eq!(paths, vec!["src/store/mesh.rs", "README.md"]);
             }
             _ => panic!("expected mesh blockers command"),
+        }
+    }
+
+    #[test]
+    fn parse_mesh_reservations_filters() {
+        let cli = Cli::parse_from([
+            "tak",
+            "mesh",
+            "reservations",
+            "--name",
+            "agent-1",
+            "--path",
+            "src/store",
+            "--path",
+            "README.md",
+        ]);
+
+        match cli.command {
+            Commands::Mesh {
+                action: MeshAction::Reservations { name, paths },
+            } => {
+                assert_eq!(name.as_deref(), Some("agent-1"));
+                assert_eq!(paths, vec!["src/store", "README.md"]);
+            }
+            _ => panic!("expected mesh reservations command"),
         }
     }
 

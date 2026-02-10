@@ -14,12 +14,17 @@ Pi extension + skill bundle for tak.
 - Mesh + blackboard aware workflows (`/tak mesh`, `/tak inbox`, `/tak blackboard`)
 - Automatic session behavior in tak repos:
   - `tak reindex` on session start
-  - `tak mesh join` on session start (best effort)
+  - `tak mesh` stale self-registration cleanup on session start (reload safety)
+  - `tak mesh join --session-id <pi-session-id>` on session start (best effort)
   - `tak mesh leave` on session shutdown (best effort)
 - Per-turn system prompt injection reinforcing active tak usage + agent coordination
+- Coordination runtime data is sourced through CLI snapshots backed by `.tak/runtime/coordination.db` (no direct runtime file reads)
 - Write/edit reservation guard: blocks edits to files reserved by other mesh agents
 - Work-mode strict reservation guard: blocks write/edit unless your agent reserved the path
-- Work-mode verify guard (`verify:isolated`): blocks local build/test/check while peers hold reservations
+- Work-mode verify guard (`verify:isolated`): blocks local build/test/check on overlapping reservation scope
+- Fail-safe behavior: if reservation snapshots cannot be loaded, guarded write/verify paths block with remediation guidance
+
+Legacy `.tak/runtime/mesh/` and `.tak/runtime/blackboard/` directories are no longer the source of truth after CoordinationDb migration; use `tak doctor --fix` to clean stale runtime folders.
 
 ## Install (project-local)
 

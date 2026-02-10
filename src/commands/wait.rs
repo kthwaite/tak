@@ -7,9 +7,10 @@ use colored::Colorize;
 use serde_json::json;
 
 use crate::error::{Result, TakError};
+use crate::json_ids::format_task_id;
 use crate::model::Status;
 use crate::output::Format;
-use crate::store::mesh::{MeshStore, Reservation};
+use crate::store::coordination_db::{CoordinationDb, DbReservation};
 use crate::store::repo::Repo;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(200);
@@ -42,12 +43,12 @@ fn wait_for_path(
     timeout_secs: Option<u64>,
     format: Format,
 ) -> Result<()> {
-    let store = MeshStore::open(&repo_root.join(".tak"));
+    let db = CoordinationDb::from_repo(repo_root)?;
     let target = normalize_path(path);
     let started = Instant::now();
 
     loop {
-        let reservations = store.list_reservations()?;
+        let reservations = db.list_reservations()?;
         let blockers = find_path_blockers(&target, &reservations);
 
         if blockers.is_empty() {
@@ -114,20 +115,18 @@ fn unresolved_dependency_ids(repo: &Repo, task_id: u64) -> Result<Vec<u64>> {
     Ok(blockers)
 }
 
-fn find_path_blockers(target: &str, reservations: &[Reservation]) -> Vec<PathBlocker> {
+fn find_path_blockers(target: &str, reservations: &[DbReservation]) -> Vec<PathBlocker> {
     let now = Utc::now();
     let mut blockers = Vec::new();
 
     for reservation in reservations {
-        for held_path in &reservation.paths {
-            if paths_conflict(target, held_path) {
-                blockers.push(PathBlocker {
-                    agent: reservation.agent.clone(),
-                    held_path: held_path.clone(),
-                    reason: reservation.reason.clone(),
-                    age_secs: (now - reservation.since).num_seconds().max(0),
-                });
-            }
+        if paths_conflict(target, &reservation.path) {
+            blockers.push(PathBlocker {
+                agent: reservation.agent.clone(),
+                held_path: reservation.path.clone(),
+                reason: reservation.reason.clone(),
+                age_secs: (now - reservation.created_at).num_seconds().max(0),
+            });
         }
     }
 
@@ -159,6 +158,7 @@ fn print_path_ready(path: &str, waited: Duration, format: Format) {
 
 fn print_task_ready(task_id: u64, waited: Duration, format: Format) {
     let waited_ms = waited.as_millis() as u64;
+    let task_id = format_task_id(task_id);
     match format {
         Format::Json => println!(
             "{}",
@@ -172,7 +172,7 @@ fn print_task_ready(task_id: u64, waited: Duration, format: Format) {
         Format::Pretty => println!(
             "{} task {} {}",
             "Ready:".green().bold(),
-            task_id.to_string().cyan(),
+            task_id.cyan(),
             format!("(waited {waited_ms}ms)").dimmed()
         ),
         Format::Minimal => println!("{task_id}"),
@@ -194,12 +194,13 @@ fn format_path_timeout(path: &str, waited: Duration, blockers: &[PathBlocker]) -
 
 fn format_task_timeout(task_id: u64, waited: Duration, blockers: &[u64]) -> String {
     let waited_ms = waited.as_millis();
+    let task_id = format_task_id(task_id);
     if blockers.is_empty() {
         format!("task {task_id} is still blocked after {waited_ms}ms")
     } else {
         let deps = blockers
             .iter()
-            .map(|id| id.to_string())
+            .map(|id| format_task_id(*id))
             .collect::<Vec<_>>()
             .join(",");
         format!(
@@ -279,14 +280,15 @@ mod tests {
 
     #[test]
     fn find_path_blockers_includes_metadata() {
-        let reservations = vec![Reservation {
+        let now = Utc::now();
+        let reservations = vec![DbReservation {
+            id: 1,
             agent: "A".into(),
-            paths: vec!["src/store/".into()],
+            generation: 1,
+            path: "src/store/".into(),
             reason: Some("task-1".into()),
-            since: Utc::now(),
-            ttl_secs: None,
-            last_heartbeat_at: None,
-            expires_at: None,
+            created_at: now,
+            expires_at: now + chrono::Duration::seconds(3600),
         }];
 
         let blockers = find_path_blockers("src/store/mesh.rs", &reservations);

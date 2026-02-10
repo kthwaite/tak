@@ -1,10 +1,9 @@
-pub mod blackboard;
 pub mod coordination;
+pub mod coordination_db;
 pub mod files;
 pub mod index;
 pub mod learnings;
 pub mod lock;
-pub mod mesh;
 pub mod migration;
 pub mod paths;
 pub mod repo;

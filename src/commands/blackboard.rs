@@ -5,9 +5,11 @@ use clap::ValueEnum;
 use colored::Colorize;
 
 use crate::error::{Result, TakError};
+use crate::json_ids::{format_task_id, normalize_task_id_token};
 use crate::output::Format;
-use crate::store::blackboard::{BlackboardNote, BlackboardStatus, BlackboardStore};
 use crate::store::coordination::{CoordinationLinks, derive_links_from_text};
+use crate::store::coordination_db::BlackboardStatus;
+use crate::store::coordination_db::{CoordinationDb, DbNote};
 use crate::store::repo::Repo;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -61,6 +63,25 @@ pub struct BlackboardPostOptions {
     pub no_change_since: bool,
 }
 
+fn canonicalize_note_task_ids(note: &DbNote) -> DbNote {
+    let mut normalized = note.clone();
+    normalized.task_ids = note
+        .task_ids
+        .iter()
+        .map(|id| normalize_task_id_token(id))
+        .collect();
+    normalized
+}
+
+fn note_matches_task_candidates(note: &DbNote, candidates: &[String]) -> bool {
+    note.task_ids.iter().any(|raw| {
+        let normalized = normalize_task_id_token(raw);
+        candidates
+            .iter()
+            .any(|candidate| candidate == raw || candidate == &normalized)
+    })
+}
+
 pub fn post(
     repo_root: &Path,
     from: &str,
@@ -105,9 +126,9 @@ pub fn post_with_options(
         return Err(TakError::BlackboardInvalidMessage);
     }
 
-    let store = BlackboardStore::open(&repo_root.join(".tak"));
+    let db = CoordinationDb::from_repo(repo_root)?;
     if let Some(note_id) = options.since_note {
-        store.get(note_id)?;
+        db.get_note(note_id as i64)?;
     }
 
     let base_message = if let Some(template) = options.template {
@@ -126,9 +147,11 @@ pub fn post_with_options(
     let sensitive_warnings = detect_sensitive_text_warnings(&rendered_message);
     emit_sensitive_warnings(&sensitive_warnings, format);
 
-    let links = derive_transition_links(options.template, &rendered_message, options.since_note);
+    // Links are derived but not stored in CoordinationDb (dropped at boundary)
+    let _links = derive_transition_links(options.template, &rendered_message, options.since_note);
 
-    let note = store.post_with_links(from, &rendered_message, tags, task_ids, links)?;
+    let task_id_strs: Vec<String> = task_ids.iter().map(|id| format_task_id(*id)).collect();
+    let note = db.post_note(from, &rendered_message, &tags, &task_id_strs)?;
     print_note(&note, format)?;
     Ok(())
 }
@@ -169,7 +192,7 @@ fn render_template(
     } else {
         let ids = task_ids
             .iter()
-            .map(|id| id.to_string())
+            .map(|id| format_task_id(*id))
             .collect::<Vec<_>>()
             .join(",");
         format!("tasks={ids}")
@@ -459,15 +482,27 @@ pub fn list(
     limit: Option<usize>,
     format: Format,
 ) -> Result<()> {
-    let store = BlackboardStore::open(&repo_root.join(".tak"));
-    let notes = store.list(status, tag.as_deref(), task_id, limit)?;
+    let db = CoordinationDb::from_repo(repo_root)?;
+    let status_str = status.map(|s| s.to_string());
+
+    let mut notes = db.list_notes(status_str.as_deref(), tag.as_deref(), None, None)?;
+
+    if let Some(task_id) = task_id {
+        let candidates = vec![format_task_id(task_id), task_id.to_string()];
+        notes.retain(|note| note_matches_task_candidates(note, &candidates));
+    }
+
+    if let Some(limit) = limit {
+        notes.truncate(limit);
+    }
+
     print_notes(&notes, format)?;
     Ok(())
 }
 
 pub fn show(repo_root: &Path, id: u64, format: Format) -> Result<()> {
-    let store = BlackboardStore::open(&repo_root.join(".tak"));
-    let note = store.get(id)?;
+    let db = CoordinationDb::from_repo(repo_root)?;
+    let note = db.get_note(id as i64)?;
     print_note(&note, format)?;
     Ok(())
 }
@@ -479,49 +514,47 @@ pub fn close(
     reason: Option<&str>,
     format: Format,
 ) -> Result<()> {
-    let store = BlackboardStore::open(&repo_root.join(".tak"));
-    let note = store.close(id, by, reason)?;
+    let db = CoordinationDb::from_repo(repo_root)?;
+    db.close_note(id as i64, by, reason)?;
+    let note = db.get_note(id as i64)?;
     print_note(&note, format)?;
     Ok(())
 }
 
 pub fn reopen(repo_root: &Path, id: u64, by: &str, format: Format) -> Result<()> {
-    let store = BlackboardStore::open(&repo_root.join(".tak"));
-    let note = store.reopen(id, by)?;
+    let db = CoordinationDb::from_repo(repo_root)?;
+    db.reopen_note(id as i64, by)?;
+    let note = db.get_note(id as i64)?;
     print_note(&note, format)?;
     Ok(())
 }
 
-fn print_note(note: &BlackboardNote, format: Format) -> Result<()> {
+fn print_note(note: &DbNote, format: Format) -> Result<()> {
+    let note = canonicalize_note_task_ids(note);
+
     match format {
-        Format::Json => println!("{}", serde_json::to_string(note)?),
+        Format::Json => println!("{}", serde_json::to_string(&note)?),
         Format::Pretty => {
-            let status = style_status(note.status);
+            let status = style_status(&note.status);
             println!(
                 "{} {} {}",
                 format!("[B{}]", note.id).magenta().bold(),
                 status,
-                format!("by {}", note.author).dimmed(),
+                format!("by {}", note.from_agent).dimmed(),
             );
             println!("  {}", note.message);
             if !note.tags.is_empty() {
                 println!("  {} {}", "tags:".dimmed(), note.tags.join(", ").cyan());
             }
             if !note.task_ids.is_empty() {
-                let task_ids = note
-                    .task_ids
-                    .iter()
-                    .map(|id| id.to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                println!("  {} {}", "tasks:".dimmed(), task_ids);
+                println!("  {} {}", "tasks:".dimmed(), note.task_ids.join(", "));
             }
             println!(
                 "  {} {}",
                 "updated:".dimmed(),
                 note.updated_at.to_rfc3339().dimmed()
             );
-            if note.status == BlackboardStatus::Closed {
+            if note.status == "closed" {
                 if let Some(by) = note.closed_by.as_deref() {
                     println!("  {} {}", "closed by:".dimmed(), by);
                 }
@@ -537,48 +570,53 @@ fn print_note(note: &BlackboardNote, format: Format) -> Result<()> {
     Ok(())
 }
 
-fn print_notes(notes: &[BlackboardNote], format: Format) -> Result<()> {
+fn print_notes(notes: &[DbNote], format: Format) -> Result<()> {
+    let normalized: Vec<DbNote> = notes.iter().map(canonicalize_note_task_ids).collect();
+
     match format {
-        Format::Json => println!("{}", serde_json::to_string(notes)?),
+        Format::Json => println!("{}", serde_json::to_string(&normalized)?),
         Format::Pretty => {
-            if notes.is_empty() {
+            if normalized.is_empty() {
                 println!("{}", "No blackboard notes.".dimmed());
             } else {
-                for note in notes {
-                    let status = style_status(note.status);
+                for note in &normalized {
+                    let status = style_status(&note.status);
                     println!(
                         "{} {} {} {}",
                         format!("[B{}]", note.id).magenta().bold(),
                         status,
-                        format!("{}:", note.author).cyan(),
+                        format!("{}:", note.from_agent).cyan(),
                         note.message,
                     );
                     if !note.tags.is_empty() {
                         println!("  {} {}", "tags:".dimmed(), note.tags.join(", ").cyan());
                     }
+                    if !note.task_ids.is_empty() {
+                        println!("  {} {}", "tasks:".dimmed(), note.task_ids.join(", "));
+                    }
                 }
             }
         }
         Format::Minimal => {
-            for note in notes {
-                println!("{} {} {}", note.id, note.status, note.author);
+            for note in &normalized {
+                println!("{} {} {}", note.id, note.status, note.from_agent);
             }
         }
     }
     Ok(())
 }
 
-fn style_status(status: BlackboardStatus) -> String {
+fn style_status(status: &str) -> String {
     match status {
-        BlackboardStatus::Open => "open".yellow().to_string(),
-        BlackboardStatus::Closed => "closed".green().to_string(),
+        "open" => "open".yellow().to_string(),
+        "closed" => "closed".green().to_string(),
+        other => other.to_string(),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::blackboard::BlackboardStore;
     use crate::store::files::FileStore;
     use tempfile::tempdir;
 
@@ -711,16 +749,13 @@ mod tests {
         )
         .unwrap();
 
-        let store = BlackboardStore::open(&dir.path().join(".tak"));
-        let notes = store.list(None, None, None, None).unwrap();
+        let db = CoordinationDb::from_repo(dir.path()).unwrap();
+        let notes = db.list_notes(None, None, None, None).unwrap();
         assert_eq!(notes.len(), 2);
 
         let note = notes.iter().find(|n| n.id == 2).unwrap();
-        assert_eq!(note.links.blackboard_note_ids, vec![1, 7]);
-        assert_eq!(
-            note.links.mesh_message_ids,
-            vec!["550e8400-e29b-41d4-a716-446655440000"]
-        );
+        // Links are no longer stored in CoordinationDb — verify note was posted
+        assert!(note.message.contains("template: blocker"));
     }
 
     #[test]

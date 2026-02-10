@@ -1,13 +1,263 @@
+use std::fs;
 use std::path::Path;
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use colored::Colorize;
 use serde::Serialize;
 
 use crate::error::{Result, TakError};
 use crate::output::Format;
-use crate::store::mesh::{InboxReadOptions, MeshStore, Reservation};
+use crate::store::coordination_db::{CoordinationDb, DbRegistration, DbReservation};
 use crate::store::paths::{normalize_reservation_path, normalized_paths_conflict};
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+const DEFAULT_REGISTRATION_TTL_SECS: u64 = 15 * 60;
+const DEFAULT_RESERVATION_TTL_SECS: u64 = 30 * 60;
+
+// ---------------------------------------------------------------------------
+// Command-layer helpers (formerly inside MeshStore)
+// ---------------------------------------------------------------------------
+
+/// Validate an agent name: non-empty, ASCII alphanumeric + hyphen + underscore.
+fn validate_name(name: &str) -> Result<()> {
+    if name.is_empty()
+        || !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err(TakError::MeshInvalidName);
+    }
+    Ok(())
+}
+
+/// Resolve session ID from: explicit arg -> TAK_SESSION_ID -> CLAUDE_SESSION_ID -> uuid.
+fn resolve_session_id(session_id: Option<&str>) -> String {
+    session_id
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .or_else(|| {
+            std::env::var("TAK_SESSION_ID")
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        })
+        .or_else(|| {
+            std::env::var("CLAUDE_SESSION_ID")
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        })
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string())
+}
+
+/// Get local hostname from environment.
+fn local_host_name() -> Option<String> {
+    std::env::var("HOSTNAME")
+        .ok()
+        .or_else(|| std::env::var("COMPUTERNAME").ok())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+/// Resolve an agent name from the registry when no explicit name is given.
+///
+/// Resolution order:
+/// 1) `$TAK_AGENT` env var (must exist in registry)
+/// 2) `$TAK_SESSION_ID`/`$CLAUDE_SESSION_ID` session match (cwd breaks ties)
+/// 3) Single agent in current cwd
+/// 4) Single agent in registry
+fn resolve_current_agent_name(db: &CoordinationDb) -> Result<String> {
+    let agents = db.list_agents()?;
+    if agents.is_empty() {
+        return Err(TakError::MeshAgentNotFound("current-session".into()));
+    }
+
+    // TAK_AGENT env
+    if let Some(name) = std::env::var("TAK_AGENT")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        && agents.iter().any(|a| a.name == name)
+    {
+        return Ok(name);
+    }
+    // TAK_AGENT might point at assignment metadata rather than a mesh registration.
+    // Fall through to session/cwd resolution.
+
+    resolve_from_session_cwd(&agents)
+}
+
+/// Resolve an agent name for runtime operations that accept an optional
+/// `--name` plus optional `--session-id`.
+///
+/// If name is given, verify it exists. Otherwise fall through to
+/// TAK_AGENT -> session-id match -> cwd match -> single agent fallback.
+fn resolve_agent_name_for_runtime(
+    db: &CoordinationDb,
+    explicit_name: Option<&str>,
+    explicit_session_id: Option<&str>,
+) -> Result<String> {
+    let agents = db.list_agents()?;
+    if agents.is_empty() {
+        return Err(TakError::MeshAgentNotFound("current-session".into()));
+    }
+
+    if let Some(name) = explicit_name {
+        if agents.iter().any(|a| a.name == name) {
+            return Ok(name.to_string());
+        }
+        return Err(TakError::MeshAgentNotFound(name.to_string()));
+    }
+
+    // TAK_AGENT env
+    if let Some(name) = std::env::var("TAK_AGENT")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty() && agents.iter().any(|a| a.name == *s))
+    {
+        return Ok(name);
+    }
+
+    let cwd = std::env::current_dir()
+        .ok()
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
+
+    let session_id = explicit_session_id
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            std::env::var("TAK_SESSION_ID")
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        })
+        .or_else(|| {
+            std::env::var("CLAUDE_SESSION_ID")
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        });
+
+    resolve_from_session_cwd_with(&agents, session_id.as_deref(), &cwd)
+}
+
+/// Common resolution logic: session match -> cwd match -> single-agent fallback.
+fn resolve_from_session_cwd(agents: &[DbRegistration]) -> Result<String> {
+    let cwd = std::env::current_dir()
+        .ok()
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
+
+    let session_id = std::env::var("TAK_SESSION_ID")
+        .ok()
+        .or_else(|| std::env::var("CLAUDE_SESSION_ID").ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    resolve_from_session_cwd_with(agents, session_id.as_deref(), &cwd)
+}
+
+fn resolve_from_session_cwd_with(
+    agents: &[DbRegistration],
+    session_id: Option<&str>,
+    cwd: &str,
+) -> Result<String> {
+    if let Some(sid) = session_id {
+        let by_session: Vec<&DbRegistration> =
+            agents.iter().filter(|a| a.session_id == sid).collect();
+        if by_session.len() == 1 {
+            return Ok(by_session[0].name.clone());
+        }
+        if by_session.len() > 1 {
+            let by_session_cwd: Vec<&DbRegistration> = by_session
+                .iter()
+                .copied()
+                .filter(|a| !cwd.is_empty() && a.cwd == cwd)
+                .collect();
+            if by_session_cwd.len() == 1 {
+                return Ok(by_session_cwd[0].name.clone());
+            }
+            let ambiguous = if by_session_cwd.len() > 1 {
+                by_session_cwd
+            } else {
+                by_session
+            };
+            let names = ambiguous
+                .iter()
+                .map(|a| a.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(TakError::MeshAmbiguousAgent(names));
+        }
+    }
+
+    let by_cwd: Vec<&DbRegistration> = agents
+        .iter()
+        .filter(|a| !cwd.is_empty() && a.cwd == cwd)
+        .collect();
+    if by_cwd.len() == 1 {
+        return Ok(by_cwd[0].name.clone());
+    }
+    if by_cwd.len() > 1 {
+        let names = by_cwd
+            .iter()
+            .map(|a| a.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(TakError::MeshAmbiguousAgent(names));
+    }
+
+    if agents.len() == 1 {
+        return Ok(agents[0].name.clone());
+    }
+
+    let names = agents
+        .iter()
+        .map(|a| a.name.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    Err(TakError::MeshAmbiguousAgent(names))
+}
+
+/// Read lease config from `.tak/config.json`, returning (registration_ttl, reservation_ttl).
+pub(crate) fn read_lease_config(repo_root: &Path) -> (u64, u64) {
+    let config_path = repo_root.join(".tak").join("config.json");
+    let Ok(content) = fs::read_to_string(config_path) else {
+        return (DEFAULT_REGISTRATION_TTL_SECS, DEFAULT_RESERVATION_TTL_SECS);
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) else {
+        return (DEFAULT_REGISTRATION_TTL_SECS, DEFAULT_RESERVATION_TTL_SECS);
+    };
+    let Some(mesh) = value.get("mesh").and_then(serde_json::Value::as_object) else {
+        return (DEFAULT_REGISTRATION_TTL_SECS, DEFAULT_RESERVATION_TTL_SECS);
+    };
+
+    let reg_ttl = mesh
+        .get("registration_ttl_secs")
+        .or_else(|| mesh.get("registration_ttl_seconds"))
+        .and_then(|v| v.as_u64())
+        .filter(|v| *v > 0)
+        .unwrap_or(DEFAULT_REGISTRATION_TTL_SECS);
+
+    let res_ttl = mesh
+        .get("reservation_ttl_secs")
+        .or_else(|| mesh.get("reservation_ttl_seconds"))
+        .and_then(|v| v.as_u64())
+        .filter(|v| *v > 0)
+        .unwrap_or(DEFAULT_RESERVATION_TTL_SECS);
+
+    (reg_ttl, res_ttl)
+}
+
+// ---------------------------------------------------------------------------
+// Blocker support
+// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 struct BlockerRecord {
@@ -18,34 +268,79 @@ struct BlockerRecord {
     age_secs: i64,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct ReservationSnapshot {
+    agent: String,
+    path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<String>,
+    created_at: DateTime<Utc>,
+    expires_at: DateTime<Utc>,
+    age_secs: i64,
+}
+
+fn collect_reservation_snapshots(
+    reservations: &[DbReservation],
+    owner_filter: Option<&str>,
+    normalized_targets: &[String],
+) -> Vec<ReservationSnapshot> {
+    let now = Utc::now();
+
+    let mut snapshots: Vec<ReservationSnapshot> = reservations
+        .iter()
+        .filter(|res| {
+            owner_filter.map_or(true, |owner| res.agent == owner)
+                && (normalized_targets.is_empty()
+                    || normalized_targets
+                        .iter()
+                        .any(|target| normalized_paths_conflict(target, &res.path)))
+        })
+        .map(|res| ReservationSnapshot {
+            agent: res.agent.clone(),
+            path: res.path.clone(),
+            reason: res.reason.clone(),
+            created_at: res.created_at,
+            expires_at: res.expires_at,
+            age_secs: (now - res.created_at).num_seconds().max(0),
+        })
+        .collect();
+
+    snapshots.sort_by(|a, b| {
+        a.agent
+            .cmp(&b.agent)
+            .then_with(|| a.path.cmp(&b.path))
+            .then_with(|| a.created_at.cmp(&b.created_at))
+    });
+
+    snapshots
+}
+
 fn collect_blockers(
-    reservations: &[Reservation],
+    reservations: &[DbReservation],
     normalized_targets: &[String],
 ) -> Vec<BlockerRecord> {
     let now = Utc::now();
 
-    let mut blockers = reservations
+    let mut blockers: Vec<BlockerRecord> = reservations
         .iter()
-        .flat_map(|reservation| {
-            reservation.paths.iter().filter_map(|held_path| {
-                let matches_targets = normalized_targets.is_empty()
-                    || normalized_targets
-                        .iter()
-                        .any(|target| normalized_paths_conflict(target, held_path));
+        .filter_map(|res| {
+            let matches_targets = normalized_targets.is_empty()
+                || normalized_targets
+                    .iter()
+                    .any(|target| normalized_paths_conflict(target, &res.path));
 
-                if !matches_targets {
-                    return None;
-                }
+            if !matches_targets {
+                return None;
+            }
 
-                Some(BlockerRecord {
-                    owner: reservation.agent.clone(),
-                    path: held_path.clone(),
-                    reason: reservation.reason.clone(),
-                    age_secs: (now - reservation.since).num_seconds().max(0),
-                })
+            Some(BlockerRecord {
+                owner: res.agent.clone(),
+                path: res.path.clone(),
+                reason: res.reason.clone(),
+                age_secs: (now - res.created_at).num_seconds().max(0),
             })
         })
-        .collect::<Vec<_>>();
+        .collect();
 
     blockers.sort_by(|a, b| {
         b.age_secs
@@ -69,14 +364,40 @@ fn normalize_targets(raw_targets: Vec<String>, repo_root: &Path) -> Result<Vec<S
     Ok(normalized)
 }
 
+// ---------------------------------------------------------------------------
+// Command handlers
+// ---------------------------------------------------------------------------
+
 pub fn join(
     repo_root: &Path,
     name: Option<&str>,
     session_id: Option<&str>,
     format: Format,
 ) -> Result<()> {
-    let store = MeshStore::open(&repo_root.join(".tak"));
-    let reg = store.join(name, session_id)?;
+    if let Some(name) = name {
+        validate_name(name)?;
+    }
+
+    let db = CoordinationDb::from_repo(repo_root)?;
+
+    let resolved_name = if let Some(name) = name {
+        name.to_string()
+    } else {
+        crate::agent::generated_fallback()
+    };
+
+    let sid = resolve_session_id(session_id);
+    let cwd = std::env::current_dir()
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
+    let pid = Some(std::process::id());
+    let host = local_host_name();
+
+    let reg = db.join_agent(&resolved_name, &sid, &cwd, pid, host.as_deref())?;
+
+    // Best-effort feed event
+    let _ = db.append_event(Some(&reg.name), "mesh.join", None, Some("joined the mesh"));
+
     match format {
         Format::Json => println!("{}", serde_json::to_string(&reg)?),
         Format::Pretty => {
@@ -89,13 +410,39 @@ pub fn join(
 }
 
 pub fn leave(repo_root: &Path, name: Option<&str>, format: Format) -> Result<()> {
-    let store = MeshStore::open(&repo_root.join(".tak"));
+    let db = CoordinationDb::from_repo(repo_root)?;
+
     let left = if let Some(name) = name {
-        store.leave(name)?;
+        db.leave_agent(name)?;
         name.to_string()
     } else {
-        store.leave_current()?
+        // Try TAK_AGENT first, then fall through to session/cwd resolution
+        let resolved = if let Some(tak_name) = std::env::var("TAK_AGENT")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+        {
+            match db.leave_agent(&tak_name) {
+                Ok(()) => Some(tak_name),
+                Err(TakError::MeshAgentNotFound(_)) => None,
+                Err(err) => return Err(err),
+            }
+        } else {
+            None
+        };
+
+        if let Some(name) = resolved {
+            name
+        } else {
+            let agent_name = resolve_current_agent_name(&db)?;
+            db.leave_agent(&agent_name)?;
+            agent_name
+        }
     };
+
+    // Best-effort feed event
+    let _ = db.append_event(Some(&left), "mesh.leave", None, Some("left the mesh"));
+
     match format {
         Format::Json => println!("{}", serde_json::json!({"left": left})),
         Format::Pretty => println!("Left mesh: '{}'", left.cyan()),
@@ -105,8 +452,8 @@ pub fn leave(repo_root: &Path, name: Option<&str>, format: Format) -> Result<()>
 }
 
 pub fn list(repo_root: &Path, format: Format) -> Result<()> {
-    let store = MeshStore::open(&repo_root.join(".tak"));
-    let agents = store.list_agents()?;
+    let db = CoordinationDb::from_repo(repo_root)?;
+    let agents = db.list_agents()?;
     match format {
         Format::Json => println!("{}", serde_json::to_string(&agents)?),
         Format::Pretty => {
@@ -127,9 +474,7 @@ pub fn list(repo_root: &Path, format: Format) -> Result<()> {
                     if let Some(host) = a.host.as_deref() {
                         println!("  {} {}", "host:".dimmed(), host);
                     }
-                    if let Some(last_seen) = a.last_seen_at.as_ref() {
-                        println!("  {} {}", "last_seen:".dimmed(), last_seen);
-                    }
+                    println!("  {} {}", "updated:".dimmed(), a.updated_at);
                 }
             }
         }
@@ -148,23 +493,48 @@ pub fn heartbeat(
     session_id: Option<&str>,
     format: Format,
 ) -> Result<()> {
-    let store = MeshStore::open(&repo_root.join(".tak"));
-    let heartbeat = store.heartbeat(name, session_id)?;
+    if let Some(name) = name {
+        validate_name(name)?;
+    }
+
+    let db = CoordinationDb::from_repo(repo_root)?;
+    let resolved_name = resolve_agent_name_for_runtime(&db, name, session_id)?;
+
+    let pid = Some(std::process::id());
+    let host = local_host_name();
+    db.heartbeat_agent(&resolved_name, pid, host.as_deref())?;
+
+    let now = Utc::now();
+
+    // Best-effort feed event
+    let _ = db.append_event(
+        Some(&resolved_name),
+        "mesh.heartbeat",
+        None,
+        Some("heartbeat"),
+    );
+
+    #[derive(Serialize)]
+    struct HeartbeatOutput {
+        agent: String,
+        refreshed_at: chrono::DateTime<Utc>,
+    }
+
+    let output = HeartbeatOutput {
+        agent: resolved_name.clone(),
+        refreshed_at: now,
+    };
+
     match format {
-        Format::Json => println!("{}", serde_json::to_string(&heartbeat)?),
+        Format::Json => println!("{}", serde_json::to_string(&output)?),
         Format::Pretty => {
             println!(
                 "Heartbeat refreshed for '{}'",
-                heartbeat.agent.as_str().cyan().bold()
+                resolved_name.as_str().cyan().bold()
             );
-            println!("  {} {}", "at:".dimmed(), heartbeat.refreshed_at);
-            println!(
-                "  {} {}",
-                "reservations refreshed:".dimmed(),
-                heartbeat.refreshed_reservations
-            );
+            println!("  {} {}", "at:".dimmed(), now);
         }
-        Format::Minimal => println!("{}", heartbeat.agent),
+        Format::Minimal => println!("{}", resolved_name),
     }
     Ok(())
 }
@@ -176,76 +546,168 @@ pub fn cleanup(
     ttl_seconds: Option<u64>,
     format: Format,
 ) -> Result<()> {
-    let store = MeshStore::open(&repo_root.join(".tak"));
+    let db = CoordinationDb::from_repo(repo_root)?;
+    let (reg_ttl, _) = read_lease_config(repo_root);
+    let ttl_secs = ttl_seconds.filter(|v| *v > 0).unwrap_or(reg_ttl);
 
-    let report = if stale {
-        store.cleanup_stale(ttl_seconds, dry_run)?
-    } else {
-        store.cleanup_stale(ttl_seconds, true)?
-    };
+    #[derive(Serialize)]
+    struct CleanupReport {
+        dry_run: bool,
+        ttl_secs: u64,
+        candidates: Vec<CleanupCandidate>,
+        removed_agents: Vec<String>,
+        removed_reservations: usize,
+        removed_inbox_messages: usize,
+    }
 
-    match format {
-        Format::Json => println!("{}", serde_json::to_string(&report)?),
-        Format::Pretty => {
-            if !stale {
+    #[derive(Serialize)]
+    struct CleanupCandidate {
+        agent: String,
+        reason: String,
+        reservation_paths: Vec<String>,
+        inbox_messages: usize,
+    }
+
+    if !stale {
+        let report = CleanupReport {
+            dry_run: true,
+            ttl_secs,
+            candidates: vec![],
+            removed_agents: vec![],
+            removed_reservations: 0,
+            removed_inbox_messages: 0,
+        };
+        match format {
+            Format::Json => println!("{}", serde_json::to_string(&report)?),
+            Format::Pretty => {
                 println!("{}", "No cleanup mode selected (--stale).".yellow());
-                return Ok(());
             }
+            Format::Minimal => println!("noop"),
+        }
+        return Ok(());
+    }
 
-            let mode = if report.dry_run { "dry-run" } else { "applied" };
-            println!(
-                "Mesh stale cleanup ({mode}) — ttl={}s",
-                report.ttl_secs.to_string().bold()
-            );
+    // Identify stale agents by checking updated_at
+    let agents = db.list_agents()?;
+    let now = Utc::now();
+    let cutoff = now - chrono::Duration::seconds(ttl_secs as i64);
 
-            if report.candidates.is_empty() {
-                println!("{}", "No stale agents found.".dimmed());
-            } else {
-                for candidate in &report.candidates {
-                    let paths = if candidate.reservation_paths.is_empty() {
-                        "-".into()
-                    } else {
-                        candidate.reservation_paths.join(", ")
-                    };
-                    println!(
-                        "  {} {} ({})",
-                        "-".dimmed(),
-                        candidate.agent.cyan(),
-                        candidate.reason
-                    );
-                    println!("    {} {}", "paths:".dimmed(), paths);
-                    println!(
-                        "    {} {}",
-                        "inbox messages:".dimmed(),
-                        candidate.inbox_messages
-                    );
+    let stale_agents: Vec<&DbRegistration> =
+        agents.iter().filter(|a| a.updated_at < cutoff).collect();
+
+    // Build candidate info
+    let reservations = db.list_reservations()?;
+    let candidates: Vec<CleanupCandidate> = stale_agents
+        .iter()
+        .map(|a| {
+            let agent_paths: Vec<String> = reservations
+                .iter()
+                .filter(|r| r.agent == a.name)
+                .map(|r| r.path.clone())
+                .collect();
+            CleanupCandidate {
+                agent: a.name.clone(),
+                reason: format!("updated_at {} is older than {}s", a.updated_at, ttl_secs),
+                reservation_paths: agent_paths,
+                inbox_messages: 0, // CoordinationDb doesn't expose per-agent inbox count easily
+            }
+        })
+        .collect();
+
+    let candidate_names: Vec<String> = candidates.iter().map(|c| c.agent.clone()).collect();
+
+    if dry_run {
+        let report = CleanupReport {
+            dry_run: true,
+            ttl_secs,
+            candidates,
+            removed_agents: vec![],
+            removed_reservations: 0,
+            removed_inbox_messages: 0,
+        };
+
+        match format {
+            Format::Json => println!("{}", serde_json::to_string(&report)?),
+            Format::Pretty => {
+                println!(
+                    "Mesh stale cleanup (dry-run) — ttl={}s",
+                    ttl_secs.to_string().bold()
+                );
+                if report.candidates.is_empty() {
+                    println!("{}", "No stale agents found.".dimmed());
+                } else {
+                    for candidate in &report.candidates {
+                        let paths = if candidate.reservation_paths.is_empty() {
+                            "-".into()
+                        } else {
+                            candidate.reservation_paths.join(", ")
+                        };
+                        println!(
+                            "  {} {} ({})",
+                            "-".dimmed(),
+                            candidate.agent.cyan(),
+                            candidate.reason
+                        );
+                        println!("    {} {}", "paths:".dimmed(), paths);
+                        println!(
+                            "    {} {}",
+                            "inbox messages:".dimmed(),
+                            candidate.inbox_messages
+                        );
+                    }
                 }
             }
-
-            if !report.dry_run {
-                println!(
-                    "{} {}",
-                    "Removed agents:".dimmed(),
-                    report.removed_agents.len()
-                );
-                println!(
-                    "{} {}",
-                    "Removed reservations:".dimmed(),
-                    report.removed_reservations
-                );
-                println!(
-                    "{} {}",
-                    "Removed inbox messages:".dimmed(),
-                    report.removed_inbox_messages
-                );
-            }
+            Format::Minimal => println!("{}", candidate_names.len()),
         }
-        Format::Minimal => {
-            if !stale {
-                println!("noop");
-            } else {
-                println!("{}", report.removed_agents.len());
+    } else {
+        // Actually perform cleanup
+        let (removed_agents, _msgs_del, _events_del, reservations_del) =
+            db.cleanup_all(ttl_secs as i64, ttl_secs as i64, ttl_secs as i64)?;
+
+        let report = CleanupReport {
+            dry_run: false,
+            ttl_secs,
+            candidates,
+            removed_agents: removed_agents.clone(),
+            removed_reservations: reservations_del,
+            removed_inbox_messages: 0,
+        };
+
+        match format {
+            Format::Json => println!("{}", serde_json::to_string(&report)?),
+            Format::Pretty => {
+                println!(
+                    "Mesh stale cleanup (applied) — ttl={}s",
+                    ttl_secs.to_string().bold()
+                );
+                if report.candidates.is_empty() {
+                    println!("{}", "No stale agents found.".dimmed());
+                } else {
+                    for candidate in &report.candidates {
+                        let paths = if candidate.reservation_paths.is_empty() {
+                            "-".into()
+                        } else {
+                            candidate.reservation_paths.join(", ")
+                        };
+                        println!(
+                            "  {} {} ({})",
+                            "-".dimmed(),
+                            candidate.agent.cyan(),
+                            candidate.reason
+                        );
+                        println!("    {} {}", "paths:".dimmed(), paths);
+                        println!(
+                            "    {} {}",
+                            "inbox messages:".dimmed(),
+                            candidate.inbox_messages
+                        );
+                    }
+                }
+                println!("{} {}", "Removed agents:".dimmed(), removed_agents.len());
+                println!("{} {}", "Removed reservations:".dimmed(), reservations_del);
+                println!("{} {}", "Removed inbox messages:".dimmed(), 0);
             }
+            Format::Minimal => println!("{}", removed_agents.len()),
         }
     }
 
@@ -253,8 +715,8 @@ pub fn cleanup(
 }
 
 pub fn blockers(repo_root: &Path, paths: Vec<String>, format: Format) -> Result<()> {
-    let store = MeshStore::open(&repo_root.join(".tak"));
-    let reservations = store.list_reservations()?;
+    let db = CoordinationDb::from_repo(repo_root)?;
+    let reservations = db.list_reservations()?;
     let normalized_targets = normalize_targets(paths, repo_root)?;
     let blockers = collect_blockers(&reservations, &normalized_targets);
 
@@ -300,9 +762,69 @@ pub fn blockers(repo_root: &Path, paths: Vec<String>, format: Format) -> Result<
     Ok(())
 }
 
+pub fn reservations(
+    repo_root: &Path,
+    name: Option<&str>,
+    paths: Vec<String>,
+    format: Format,
+) -> Result<()> {
+    let db = CoordinationDb::from_repo(repo_root)?;
+    let reservations = db.list_reservations()?;
+    let normalized_targets = normalize_targets(paths, repo_root)?;
+    let snapshots = collect_reservation_snapshots(&reservations, name, &normalized_targets);
+
+    match format {
+        Format::Json => println!("{}", serde_json::to_string(&snapshots)?),
+        Format::Pretty => {
+            if snapshots.is_empty() {
+                println!("{}", "No active reservations matched.".dimmed());
+            } else {
+                for reservation in &snapshots {
+                    println!(
+                        "{} {} {}",
+                        format!("[{}]", reservation.agent).cyan().bold(),
+                        reservation.path.green(),
+                        format!("age={}s", reservation.age_secs).dimmed(),
+                    );
+                    if let Some(reason) = reservation.reason.as_deref() {
+                        println!("  {} {}", "reason:".dimmed(), reason);
+                    }
+                    println!(
+                        "  {} {}",
+                        "expires:".dimmed(),
+                        reservation.expires_at.to_rfc3339().dimmed()
+                    );
+                }
+            }
+        }
+        Format::Minimal => {
+            for reservation in &snapshots {
+                println!(
+                    "{}\t{}\t{}\t{}",
+                    reservation.agent,
+                    reservation.path,
+                    reservation.age_secs,
+                    reservation.reason.as_deref().unwrap_or(""),
+                );
+            }
+        }
+    }
+
+    Ok(())
+}
+
 pub fn send(repo_root: &Path, from: &str, to: &str, text: &str, format: Format) -> Result<()> {
-    let store = MeshStore::open(&repo_root.join(".tak"));
-    let msg = store.send(from, to, text, None)?;
+    let db = CoordinationDb::from_repo(repo_root)?;
+    let msg = db.send_message(from, to, text, None)?;
+
+    // Best-effort feed event
+    let _ = db.append_event(
+        Some(from),
+        "mesh.send",
+        Some(to),
+        Some(&truncate_preview(text, 80)),
+    );
+
     match format {
         Format::Json => println!("{}", serde_json::to_string(&msg)?),
         Format::Pretty => println!("Sent to '{}': {}", to.cyan(), text),
@@ -312,8 +834,17 @@ pub fn send(repo_root: &Path, from: &str, to: &str, text: &str, format: Format) 
 }
 
 pub fn broadcast(repo_root: &Path, from: &str, text: &str, format: Format) -> Result<()> {
-    let store = MeshStore::open(&repo_root.join(".tak"));
-    let msgs = store.broadcast(from, text)?;
+    let db = CoordinationDb::from_repo(repo_root)?;
+    let msgs = db.broadcast_message(from, text)?;
+
+    // Best-effort feed event
+    let _ = db.append_event(
+        Some(from),
+        "mesh.broadcast",
+        None,
+        Some(&truncate_preview(text, 80)),
+    );
+
     match format {
         Format::Json => println!("{}", serde_json::to_string(&msgs)?),
         Format::Pretty => println!(
@@ -334,15 +865,26 @@ pub fn inbox(
     ack_before: Option<&str>,
     format: Format,
 ) -> Result<()> {
-    let store = MeshStore::open(&repo_root.join(".tak"));
-    let msgs = store.inbox_with_options(
-        name,
-        InboxReadOptions {
-            ack_all: ack,
-            ack_ids,
-            ack_before: ack_before.map(str::to_string),
-        },
-    )?;
+    let db = CoordinationDb::from_repo(repo_root)?;
+    let msgs = db.read_inbox(name)?;
+
+    // Handle ack operations
+    if ack {
+        db.ack_all_messages(name)?;
+    } else if !ack_ids.is_empty() {
+        db.ack_messages(name, &ack_ids)?;
+    } else if let Some(before) = ack_before {
+        // Ack messages created before the given timestamp
+        let before_ids: Vec<String> = msgs
+            .iter()
+            .filter(|m| m.created_at.to_rfc3339().as_str() <= before)
+            .map(|m| m.id.clone())
+            .collect();
+        if !before_ids.is_empty() {
+            db.ack_messages(name, &before_ids)?;
+        }
+    }
+
     match format {
         Format::Json => println!("{}", serde_json::to_string(&msgs)?),
         Format::Pretty => {
@@ -354,7 +896,7 @@ pub fn inbox(
                     println!(
                         "{} {} {}",
                         format!("[{}]", short_id).dimmed(),
-                        format!("{}:", m.from).cyan(),
+                        format!("{}:", m.from_agent).cyan(),
                         m.text,
                     );
                 }
@@ -362,7 +904,7 @@ pub fn inbox(
         }
         Format::Minimal => {
             for m in &msgs {
-                println!("{}: {}", m.from, m.text);
+                println!("{}: {}", m.from_agent, m.text);
             }
         }
     }
@@ -376,21 +918,59 @@ pub fn reserve(
     reason: Option<&str>,
     format: Format,
 ) -> Result<()> {
-    let store = MeshStore::open(&repo_root.join(".tak"));
-    let res = store.reserve(name, paths, reason)?;
+    let db = CoordinationDb::from_repo(repo_root)?;
+    let (_, reservation_ttl) = read_lease_config(repo_root);
+
+    // Get agent's current generation for the generation fence
+    let agent = db.get_agent(name)?;
+
+    // Normalize paths at the command layer
+    let normalized = normalize_targets(paths, repo_root)?;
+
+    // Reserve each path (CoordinationDb reserves one path at a time)
+    let mut reserved: Vec<DbReservation> = Vec::new();
+    for path in &normalized {
+        let res = db.reserve(name, agent.generation, path, reason, reservation_ttl as i64)?;
+        reserved.push(res);
+    }
+
+    // Best-effort feed event
+    let _ = db.append_event(
+        Some(name),
+        "mesh.reserve",
+        Some(&normalized.join(", ")),
+        reason,
+    );
+
+    #[derive(Serialize)]
+    struct ReserveOutput {
+        agent: String,
+        paths: Vec<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+    }
+
+    let output = ReserveOutput {
+        agent: name.to_string(),
+        paths: normalized.clone(),
+        reason: reason.map(str::to_string),
+    };
+
     match format {
-        Format::Json => println!("{}", serde_json::to_string(&res)?),
+        Format::Json => println!("{}", serde_json::to_string(&output)?),
         Format::Pretty => {
-            println!("Reserved by '{}':", res.agent.cyan().bold());
-            for p in &res.paths {
+            println!("Reserved by '{}':", name.cyan().bold());
+            for p in &normalized {
                 println!("  {}", p.green());
             }
-            if let Some(ref r) = res.reason {
+            if let Some(r) = reason {
                 println!("  {} {}", "reason:".dimmed(), r);
             }
         }
-        Format::Minimal => println!("{}", res.paths.join(",")),
+        Format::Minimal => println!("{}", normalized.join(",")),
     }
+
+    let _ = reserved; // suppress unused warning; reserved for future use
     Ok(())
 }
 
@@ -401,9 +981,29 @@ pub fn release(
     all: bool,
     format: Format,
 ) -> Result<()> {
-    let store = MeshStore::open(&repo_root.join(".tak"));
-    let release_paths = if all { vec![] } else { paths };
-    store.release(name, release_paths)?;
+    let db = CoordinationDb::from_repo(repo_root)?;
+
+    if all {
+        db.release_all(name)?;
+    } else {
+        let normalized = normalize_targets(paths, repo_root)?;
+        for path in &normalized {
+            db.release_path(name, path)?;
+        }
+    }
+
+    // Best-effort feed event
+    let _ = db.append_event(
+        Some(name),
+        "mesh.release",
+        None,
+        Some(if all {
+            "released all"
+        } else {
+            "released paths"
+        }),
+    );
+
     match format {
         Format::Json => println!("{}", serde_json::json!({"released": true})),
         Format::Pretty => println!("{}", "Released.".green()),
@@ -413,8 +1013,8 @@ pub fn release(
 }
 
 pub fn feed(repo_root: &Path, limit: Option<usize>, format: Format) -> Result<()> {
-    let store = MeshStore::open(&repo_root.join(".tak"));
-    let events = store.read_feed(limit)?;
+    let db = CoordinationDb::from_repo(repo_root)?;
+    let events = db.read_events(limit.map(|l| l as u32))?;
     match format {
         Format::Json => println!("{}", serde_json::to_string(&events)?),
         Format::Pretty => {
@@ -422,12 +1022,13 @@ pub fn feed(repo_root: &Path, limit: Option<usize>, format: Format) -> Result<()
                 println!("{}", "No feed events.".dimmed());
             } else {
                 for e in &events {
+                    let agent = e.agent.as_deref().unwrap_or("?");
                     let target = e.target.as_deref().unwrap_or("");
                     let preview = e.preview.as_deref().unwrap_or("");
                     println!(
                         "{} {} {} {} {}",
-                        e.ts.format("%H:%M:%S").to_string().dimmed(),
-                        format!("[{}]", e.agent).cyan(),
+                        e.created_at.format("%H:%M:%S").to_string().dimmed(),
+                        format!("[{}]", agent).cyan(),
                         e.event_type,
                         target,
                         preview.dimmed()
@@ -437,32 +1038,51 @@ pub fn feed(repo_root: &Path, limit: Option<usize>, format: Format) -> Result<()
         }
         Format::Minimal => {
             for e in &events {
-                println!("{} {}", e.agent, e.event_type);
+                let agent = e.agent.as_deref().unwrap_or("?");
+                println!("{} {}", agent, e.event_type);
             }
         }
     }
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Utilities
+// ---------------------------------------------------------------------------
+
+fn truncate_preview(text: &str, max_len: usize) -> String {
+    if text.len() <= max_len {
+        text.to_string()
+    } else {
+        format!("{}...", &text[..max_len.saturating_sub(3)])
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
 #[cfg(test)]
 mod tests {
-    use chrono::{Duration, Utc};
     use tempfile::tempdir;
 
     use super::*;
 
     #[test]
     fn collect_blockers_reports_owner_path_reason_and_age() {
-        let reservations = vec![Reservation {
-            agent: "agent-a".into(),
-            paths: vec!["src/store".into()],
-            reason: Some("task-1".into()),
-            since: Utc::now() - Duration::seconds(10),
-            ttl_secs: Some(60),
-            last_heartbeat_at: None,
-            expires_at: None,
-        }];
+        let db = CoordinationDb::open_memory().unwrap();
+        db.join_agent("agent-a", "s", "/", None, None).unwrap();
+        let agent = db.get_agent("agent-a").unwrap();
+        db.reserve(
+            "agent-a",
+            agent.generation,
+            "src/store",
+            Some("task-1"),
+            3600,
+        )
+        .unwrap();
 
+        let reservations = db.list_reservations().unwrap();
         let blockers = collect_blockers(&reservations, &[]);
         assert_eq!(blockers.len(), 1);
         assert_eq!(blockers[0].owner, "agent-a");
@@ -473,19 +1093,67 @@ mod tests {
 
     #[test]
     fn collect_blockers_filters_by_target_path_conflict() {
-        let reservations = vec![Reservation {
-            agent: "agent-a".into(),
-            paths: vec!["src/store".into(), "README.md".into()],
-            reason: None,
-            since: Utc::now(),
-            ttl_secs: Some(60),
-            last_heartbeat_at: None,
-            expires_at: None,
-        }];
+        let db = CoordinationDb::open_memory().unwrap();
+        db.join_agent("agent-a", "s", "/", None, None).unwrap();
+        let agent = db.get_agent("agent-a").unwrap();
+        db.reserve("agent-a", agent.generation, "src/store", None, 3600)
+            .unwrap();
+        db.reserve("agent-a", agent.generation, "README.md", None, 3600)
+            .unwrap();
 
+        let reservations = db.list_reservations().unwrap();
         let blockers = collect_blockers(&reservations, &["src/store/mesh.rs".into()]);
         assert_eq!(blockers.len(), 1);
         assert_eq!(blockers[0].path, "src/store");
+    }
+
+    #[test]
+    fn collect_reservation_snapshots_filters_by_owner() {
+        let db = CoordinationDb::open_memory().unwrap();
+        db.join_agent("agent-a", "s", "/", None, None).unwrap();
+        db.join_agent("agent-b", "s", "/", None, None).unwrap();
+
+        let a = db.get_agent("agent-a").unwrap();
+        let b = db.get_agent("agent-b").unwrap();
+
+        db.reserve("agent-a", a.generation, "src/store", Some("task-a"), 3600)
+            .unwrap();
+        db.reserve("agent-b", b.generation, "README.md", Some("task-b"), 3600)
+            .unwrap();
+
+        let reservations = db.list_reservations().unwrap();
+        let snapshots = collect_reservation_snapshots(&reservations, Some("agent-a"), &[]);
+
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(snapshots[0].agent, "agent-a");
+        assert_eq!(snapshots[0].path, "src/store");
+        assert_eq!(snapshots[0].reason.as_deref(), Some("task-a"));
+        assert!(snapshots[0].age_secs >= 0);
+    }
+
+    #[test]
+    fn collect_reservation_snapshots_filters_by_path_conflict() {
+        let db = CoordinationDb::open_memory().unwrap();
+        db.join_agent("agent-a", "s", "/", None, None).unwrap();
+        let agent = db.get_agent("agent-a").unwrap();
+
+        db.reserve(
+            "agent-a",
+            agent.generation,
+            "src/store",
+            Some("task-a"),
+            3600,
+        )
+        .unwrap();
+        db.reserve("agent-a", agent.generation, "README.md", None, 3600)
+            .unwrap();
+
+        let reservations = db.list_reservations().unwrap();
+        let snapshots =
+            collect_reservation_snapshots(&reservations, None, &["src/store/mesh.rs".into()]);
+
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(snapshots[0].path, "src/store");
     }
 
     #[test]

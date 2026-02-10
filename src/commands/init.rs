@@ -2,10 +2,9 @@ use std::fs;
 use std::path::Path;
 
 use crate::error::Result;
-use crate::store::blackboard::BlackboardStore;
+use crate::store::coordination_db::CoordinationDb;
 use crate::store::files::FileStore;
 use crate::store::index::Index;
-use crate::store::mesh::MeshStore;
 
 pub fn run(repo_root: &Path) -> Result<()> {
     let store = FileStore::init(repo_root)?;
@@ -21,9 +20,13 @@ pub fn run(repo_root: &Path) -> Result<()> {
     fs::create_dir_all(tak.join("therapist"))?;
     fs::write(tak.join("therapist").join("observations.jsonl"), "")?;
 
-    // Create coordination runtime directories
-    MeshStore::open(tak).ensure_dirs()?;
-    BlackboardStore::open(tak).ensure_dirs()?;
+    // Create coordination database (creates runtime/ dir and coordination.db)
+    let runtime_dir = tak.join("runtime");
+    fs::create_dir_all(&runtime_dir)?;
+    CoordinationDb::open(&runtime_dir.join("coordination.db"))?;
+
+    // Create work-loop state directory
+    fs::create_dir_all(runtime_dir.join("work").join("states"))?;
 
     // Write .gitignore for derived/ephemeral data
     fs::write(

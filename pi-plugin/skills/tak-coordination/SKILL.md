@@ -8,6 +8,17 @@ allowed-tools: "read bash tak_cli"
 
 Use tak as the source of truth for task state and multi-agent coordination.
 
+## Task ID input forms
+
+Wherever a task ID is expected, tak accepts:
+- full 16-char hex ID (canonical),
+- unique hex prefix (case-insensitive), or
+- legacy decimal ID.
+
+Resolution is exact-match first, then unique prefix; ambiguous prefixes error and should be lengthened.
+
+Examples: `tak show ef94`, `tak depend b48b --on ef94`.
+
 ## Core rules
 
 1. **Use tak commands for task state** (`create`, `list`, `show`, `claim`, `start`, `handoff`, `finish`, `cancel`, `reopen`).

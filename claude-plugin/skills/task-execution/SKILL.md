@@ -10,6 +10,17 @@ Systematic workflow for agents to find available work, claim it, execute it, and
 
 **Critical:** update task state via `tak` commands only (`claim`, `start`, `handoff`, `finish`, `cancel`, etc.). Never manually edit `.tak/*` data files.
 
+## Task ID input forms
+
+Wherever a command expects a task ID, you can pass:
+- canonical 16-char hex ID,
+- unique hex prefix (case-insensitive), or
+- legacy decimal ID.
+
+Resolution is exact-match first (canonical or legacy), then unique prefix; ambiguous prefixes return an error, so use a longer prefix.
+
+Examples: `tak show ef94`, `tak finish ef94`.
+
 ## Primary path: `tak work` (event-driven)
 
 `tak work` is a reconciliation engine. Each invocation checks durable state, reconciles against reality, and returns a single JSON response with an event telling you what happened.
@@ -37,7 +48,7 @@ Every `tak work` call returns:
   "ephemeral_identity": true,
   "loop": {
     "active": true,
-    "current_task_id": 12345,
+    "current_task_id": "ef9433bbf813d4de",
     "tag": "cli",
     "remaining": 2,
     "processed": 1,

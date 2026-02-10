@@ -13,8 +13,7 @@ use uuid::Uuid;
 
 use crate::error::{Result, TakError};
 use crate::output::Format;
-use crate::store::blackboard::{BlackboardNote, BlackboardStore};
-use crate::store::mesh::{FeedEvent, MeshStore};
+use crate::store::coordination_db::{CoordinationDb, DbEvent, DbNote};
 use crate::store::therapist::{TherapistMode, TherapistObservation, TherapistStore};
 
 const DEFAULT_RPC_PHASE_TIMEOUT_MS: u64 = 30_000;
@@ -28,12 +27,11 @@ pub fn offline(
     format: Format,
 ) -> Result<()> {
     let tak_root = repo_root.join(".tak");
-    let mesh = MeshStore::open(&tak_root);
-    let board = BlackboardStore::open(&tak_root);
+    let db = CoordinationDb::from_repo(repo_root)?;
 
     let scan_limit = limit.unwrap_or(200);
-    let feed = mesh.read_feed(Some(scan_limit))?;
-    let notes = board.list(None, None, None, Some(scan_limit))?;
+    let feed = db.read_events(Some(scan_limit as u32))?;
+    let notes = db.list_notes(None, None, None, Some(scan_limit as u32))?;
 
     let diagnosis = diagnose_offline(&feed, &notes);
 
@@ -172,7 +170,7 @@ struct OfflineDiagnosis {
     metrics: serde_json::Map<String, serde_json::Value>,
 }
 
-fn diagnose_offline(feed: &[FeedEvent], notes: &[BlackboardNote]) -> OfflineDiagnosis {
+fn diagnose_offline(feed: &[DbEvent], notes: &[DbNote]) -> OfflineDiagnosis {
     let send_events = feed.iter().filter(|e| e.event_type == "mesh.send").count();
     let reserve_events = feed
         .iter()
@@ -893,7 +891,7 @@ fn extract_recommendations(interview: &str) -> Vec<String> {
             .trim_start_matches(|c: char| {
                 c == '-'
                     || c == '*'
-                    || c == '•'
+                    || c == '\u{2022}'
                     || c == ' '
                     || c.is_ascii_digit()
                     || c == '.'
@@ -943,7 +941,7 @@ fn truncate(text: &str, max_len: usize) -> String {
         .chars()
         .take(max_len.saturating_sub(1))
         .collect::<String>();
-    truncated.push('…');
+    truncated.push('\u{2026}');
     truncated
 }
 
@@ -1005,25 +1003,25 @@ fn print_pretty_observation(observation: &TherapistObservation, log_path: Option
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::blackboard::BlackboardStatus;
-    use crate::store::coordination::CoordinationLinks;
 
-    fn feed_event(event_type: &str, preview: &str) -> FeedEvent {
-        FeedEvent {
-            ts: Utc::now(),
-            agent: "agent-a".into(),
+    fn db_event(event_type: &str, preview: &str) -> DbEvent {
+        DbEvent {
+            id: 0,
+            agent: Some("agent-a".into()),
             event_type: event_type.into(),
             target: None,
             preview: Some(preview.into()),
+            detail: None,
+            created_at: Utc::now(),
         }
     }
 
-    fn note(tags: &[&str], message: &str) -> BlackboardNote {
-        BlackboardNote {
+    fn db_note(tags: &[&str], message: &str) -> DbNote {
+        DbNote {
             id: 1,
-            author: "agent-a".into(),
+            from_agent: "agent-a".into(),
             message: message.into(),
-            status: BlackboardStatus::Open,
+            status: "open".into(),
             tags: tags.iter().map(|s| s.to_string()).collect(),
             task_ids: vec![],
             created_at: Utc::now(),
@@ -1031,21 +1029,20 @@ mod tests {
             closed_by: None,
             closed_reason: None,
             closed_at: None,
-            links: CoordinationLinks::default(),
         }
     }
 
     #[test]
     fn diagnose_offline_flags_contention() {
         let feed = vec![
-            feed_event("mesh.send", "blocked on reservation conflict"),
-            feed_event("mesh.reserve", "reserved src/store/files.rs"),
-            feed_event("mesh.release", "released all"),
-            feed_event("mesh.release", "released all"),
+            db_event("mesh.send", "blocked on reservation conflict"),
+            db_event("mesh.reserve", "reserved src/store/files.rs"),
+            db_event("mesh.release", "released all"),
+            db_event("mesh.release", "released all"),
         ];
         let notes = vec![
-            note(&["blocker"], "Task blocked waiting on release"),
-            note(&["coordination"], "handoff complete"),
+            db_note(&["blocker"], "Task blocked waiting on release"),
+            db_note(&["coordination"], "handoff complete"),
         ];
 
         let diagnosis = diagnose_offline(&feed, &notes);

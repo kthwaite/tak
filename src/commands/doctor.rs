@@ -86,6 +86,11 @@ pub fn run(fix: bool, format: Format) -> Result<()> {
         run_integrity_checks(&mut checks, tak);
     }
 
+    // Coordination checks (only if .tak/ exists)
+    if let Some(ref tak) = tak_dir {
+        run_coordination_checks(&mut checks, tak, fix);
+    }
+
     // Environment checks
     run_env_checks(&mut checks, tak_dir.as_deref());
 
@@ -426,6 +431,89 @@ fn run_integrity_checks(checks: &mut Vec<Check>, tak: &Path) {
         ));
     } else {
         checks.push(Check::ok("Data Integrity", "no parent cycles"));
+    }
+}
+
+fn run_coordination_checks(checks: &mut Vec<Check>, tak: &Path, fix: bool) {
+    let runtime_dir = tak.join("runtime");
+    let db_path = runtime_dir.join("coordination.db");
+
+    if db_path.exists() {
+        match crate::store::coordination_db::CoordinationDb::open(&db_path) {
+            Ok(_) => checks.push(Check::ok("Coordination", "coordination.db opens")),
+            Err(e) => {
+                if fix {
+                    // Remove and recreate
+                    let _ = fs::remove_file(&db_path);
+                    match crate::store::coordination_db::CoordinationDb::open(&db_path) {
+                        Ok(_) => checks.push(Check::ok(
+                            "Coordination",
+                            "coordination.db recreated after error",
+                        )),
+                        Err(e2) => checks.push(Check::error(
+                            "Coordination",
+                            format!("cannot recreate coordination.db: {e2}"),
+                        )),
+                    }
+                } else {
+                    checks.push(Check::error(
+                        "Coordination",
+                        format!("cannot open coordination.db: {e}"),
+                    ));
+                }
+            }
+        }
+    } else if fix {
+        let _ = fs::create_dir_all(&runtime_dir);
+        match crate::store::coordination_db::CoordinationDb::open(&db_path) {
+            Ok(_) => checks.push(Check::ok(
+                "Coordination",
+                "coordination.db created (was missing)",
+            )),
+            Err(e) => checks.push(Check::error(
+                "Coordination",
+                format!("cannot create coordination.db: {e}"),
+            )),
+        }
+    } else {
+        checks.push(Check::warn(
+            "Coordination",
+            "coordination.db missing (run tak doctor --fix or tak init)",
+        ));
+    }
+
+    // Detect stale file-based coordination dirs
+    let old_mesh_dir = runtime_dir.join("mesh");
+    let old_blackboard_dir = runtime_dir.join("blackboard");
+
+    if old_mesh_dir.exists() {
+        if fix {
+            let _ = fs::remove_dir_all(&old_mesh_dir);
+            checks.push(Check::ok(
+                "Coordination",
+                "removed stale runtime/mesh/ directory",
+            ));
+        } else {
+            checks.push(Check::warn(
+                "Coordination",
+                "stale runtime/mesh/ directory present (run tak doctor --fix to remove)",
+            ));
+        }
+    }
+
+    if old_blackboard_dir.exists() {
+        if fix {
+            let _ = fs::remove_dir_all(&old_blackboard_dir);
+            checks.push(Check::ok(
+                "Coordination",
+                "removed stale runtime/blackboard/ directory",
+            ));
+        } else {
+            checks.push(Check::warn(
+                "Coordination",
+                "stale runtime/blackboard/ directory present (run tak doctor --fix to remove)",
+            ));
+        }
     }
 }
 

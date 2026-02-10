@@ -2,8 +2,8 @@ use chrono::Utc;
 use tak::commands::work;
 use tak::model::{Contract, Kind, Planning, Status};
 use tak::output::Format;
+use tak::store::coordination_db::CoordinationDb;
 use tak::store::files::FileStore;
-use tak::store::mesh::MeshStore;
 use tak::store::repo::Repo;
 use tak::store::work::WorkStore;
 use tempfile::tempdir;
@@ -62,12 +62,16 @@ fn work_done_finishes_current_task_and_releases_reservations_integration() {
     state.current_task_id = Some(task_id);
     work_store.save(&state).unwrap();
 
-    let mesh = MeshStore::open(&dir.path().join(".tak"));
-    mesh.join(Some("agent-1"), Some("sid-1")).unwrap();
-    mesh.reserve(
+    let db = CoordinationDb::from_repo(dir.path()).unwrap();
+    let reg = db
+        .join_agent("agent-1", "sid-1", "/tmp", None, None)
+        .unwrap();
+    db.reserve(
         "agent-1",
-        vec!["src/commands/work.rs".into()],
+        reg.generation,
+        "src/commands/work.rs",
         Some("work-done-integration"),
+        3600,
     )
     .unwrap();
 
@@ -81,7 +85,8 @@ fn work_done_finishes_current_task_and_releases_reservations_integration() {
     assert!(state.active);
     assert!(state.current_task_id.is_none());
 
-    let reservations = mesh.list_reservations().unwrap();
+    let db2 = CoordinationDb::from_repo(dir.path()).unwrap();
+    let reservations = db2.list_reservations().unwrap();
     assert!(
         reservations
             .iter()
@@ -156,12 +161,16 @@ fn work_done_detaches_stale_current_pointer_and_releases_reservations_integratio
     state.current_task_id = Some(task_id);
     work_store.save(&state).unwrap();
 
-    let mesh = MeshStore::open(&dir.path().join(".tak"));
-    mesh.join(Some("agent-1"), Some("sid-1")).unwrap();
-    mesh.reserve(
+    let db = CoordinationDb::from_repo(dir.path()).unwrap();
+    let reg = db
+        .join_agent("agent-1", "sid-1", "/tmp", None, None)
+        .unwrap();
+    db.reserve(
         "agent-1",
-        vec!["src/commands/work.rs".into()],
+        reg.generation,
+        "src/commands/work.rs",
         Some("work-done-stale-pointer"),
+        3600,
     )
     .unwrap();
 
@@ -174,7 +183,8 @@ fn work_done_detaches_stale_current_pointer_and_releases_reservations_integratio
     let state = work_store.status("agent-1").unwrap();
     assert!(state.current_task_id.is_none());
 
-    let reservations = mesh.list_reservations().unwrap();
+    let db2 = CoordinationDb::from_repo(dir.path()).unwrap();
+    let reservations = db2.list_reservations().unwrap();
     assert!(
         reservations
             .iter()
