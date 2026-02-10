@@ -311,6 +311,19 @@ impl Index {
         Ok(ids)
     }
 
+    /// Return IDs of tasks matching a given status and assignee.
+    pub fn tasks_by_status_assignee(&self, status: &str, assignee: &str) -> Result<Vec<TaskId>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id FROM tasks
+             WHERE status = ?1 AND assignee = ?2
+             ORDER BY created_at, id",
+        )?;
+        let ids = stmt
+            .query_map(params![status, assignee], |row| row.get(0))?
+            .collect::<std::result::Result<Vec<TaskId>, _>>()?;
+        Ok(ids)
+    }
+
     pub fn children_of(&self, parent_id: impl Into<TaskId>) -> Result<Vec<TaskId>> {
         let parent_id = parent_id.into();
         let mut stmt = self

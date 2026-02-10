@@ -39,10 +39,18 @@ impl WorkEvent {
     }
 }
 
+fn is_false(v: &bool) -> bool {
+    !v
+}
+
 #[derive(Debug, Serialize)]
 struct WorkResponse {
     event: WorkEvent,
     agent: String,
+    /// True when the agent identity was auto-generated (no --assignee, no TAK_AGENT).
+    /// Loop state keyed to an ephemeral identity won't persist across invocations.
+    #[serde(default, skip_serializing_if = "is_false")]
+    ephemeral_identity: bool,
     #[serde(rename = "loop")]
     state: WorkState,
     current_task: Option<Task>,
@@ -78,29 +86,32 @@ pub fn start_or_resume_with_strategy(
     coordination_verbosity: Option<WorkCoordinationVerbosity>,
     format: Format,
 ) -> Result<()> {
-    let agent = resolve_agent_identity(assignee)?;
-    let response = reconcile_start_or_resume(
+    let resolved = resolve_agent_identity(assignee)?;
+    let mut response = reconcile_start_or_resume(
         repo_root,
-        agent,
+        resolved.name,
         tag,
         limit,
         verify_mode,
         claim_strategy,
         coordination_verbosity,
     )?;
+    response.ephemeral_identity = resolved.ephemeral;
     print_response(response, format)
 }
 
 pub fn status(repo_root: &Path, assignee: Option<String>, format: Format) -> Result<()> {
-    let agent = resolve_agent_identity(assignee)?;
-    let response = status_response(repo_root, agent)?;
+    let resolved = resolve_agent_identity(assignee)?;
+    let mut response = status_response(repo_root, resolved.name)?;
+    response.ephemeral_identity = resolved.ephemeral;
     print_response(response, format)
 }
 
 pub fn stop(repo_root: &Path, assignee: Option<String>, format: Format) -> Result<()> {
-    let agent = resolve_agent_identity(assignee)?;
-    let response = stop_response(repo_root, agent);
-    print_response(response?, format)
+    let resolved = resolve_agent_identity(assignee)?;
+    let mut response = stop_response(repo_root, resolved.name)?;
+    response.ephemeral_identity = resolved.ephemeral;
+    print_response(response, format)
 }
 
 fn reconcile_start_or_resume(
@@ -130,6 +141,7 @@ fn reconcile_start_or_resume(
         return Ok(WorkResponse {
             event: WorkEvent::Continued,
             agent,
+            ephemeral_identity: false,
             state,
             current_task: Some(task),
         });
@@ -148,6 +160,7 @@ fn reconcile_start_or_resume(
         return Ok(WorkResponse {
             event: WorkEvent::LimitReached,
             agent,
+            ephemeral_identity: false,
             state,
             current_task: None,
         });
@@ -160,6 +173,7 @@ fn reconcile_start_or_resume(
         return Ok(WorkResponse {
             event: WorkEvent::Attached,
             agent,
+            ephemeral_identity: false,
             state,
             current_task: Some(task),
         });
@@ -177,6 +191,7 @@ fn reconcile_start_or_resume(
         return Ok(WorkResponse {
             event: WorkEvent::Claimed,
             agent,
+            ephemeral_identity: false,
             state,
             current_task: Some(task),
         });
@@ -188,6 +203,7 @@ fn reconcile_start_or_resume(
     Ok(WorkResponse {
         event: WorkEvent::NoWork,
         agent,
+        ephemeral_identity: false,
         state,
         current_task: None,
     })
@@ -201,6 +217,7 @@ fn status_response(repo_root: &Path, agent: String) -> Result<WorkResponse> {
     Ok(WorkResponse {
         event: WorkEvent::Status,
         agent,
+        ephemeral_identity: false,
         state,
         current_task,
     })
@@ -214,6 +231,7 @@ fn stop_response(repo_root: &Path, agent: String) -> Result<WorkResponse> {
     Ok(WorkResponse {
         event: WorkEvent::Stopped,
         agent,
+        ephemeral_identity: false,
         state,
         current_task: None,
     })
@@ -242,17 +260,11 @@ fn load_current_owned_task(
 }
 
 fn find_owned_in_progress_task(repo: &Repo, agent: &str) -> Result<Option<Task>> {
-    let mut mine = repo
-        .store
-        .list_all()?
-        .into_iter()
-        .filter(|task| {
-            matches!(task.status, Status::InProgress) && task.assignee.as_deref() == Some(agent)
-        })
-        .collect::<Vec<_>>();
-
-    mine.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.id.cmp(&b.id)));
-    Ok(mine.into_iter().next())
+    let ids = repo.index.tasks_by_status_assignee("in_progress", agent)?;
+    match ids.first() {
+        Some(id) => Ok(Some(repo.store.read(u64::from(id))?)),
+        None => Ok(None),
+    }
 }
 
 fn mark_previous_unit_processed(state: &mut WorkState) {
@@ -288,16 +300,34 @@ fn release_reservations_best_effort(repo_root: &Path, agent: &str) {
     }
 }
 
-pub(crate) fn resolve_agent_identity(explicit_assignee: Option<String>) -> Result<String> {
+/// Resolved agent identity with provenance metadata.
+#[derive(Debug)]
+pub(crate) struct ResolvedAgent {
+    pub name: String,
+    /// True when the identity was generated on-the-fly (no `--assignee`, no `TAK_AGENT`).
+    /// Loop state keyed to an ephemeral identity won't survive across CLI invocations.
+    pub ephemeral: bool,
+}
+
+pub(crate) fn resolve_agent_identity(explicit_assignee: Option<String>) -> Result<ResolvedAgent> {
     if let Some(explicit) = explicit_assignee.and_then(normalize_identity) {
-        return validate_identity(explicit);
+        return Ok(ResolvedAgent {
+            name: validate_identity(explicit)?,
+            ephemeral: false,
+        });
     }
 
     if let Some(from_env) = std::env::var("TAK_AGENT").ok().and_then(normalize_identity) {
-        return validate_identity(from_env);
+        return Ok(ResolvedAgent {
+            name: validate_identity(from_env)?,
+            ephemeral: false,
+        });
     }
 
-    validate_identity(crate::agent::generated_fallback())
+    Ok(ResolvedAgent {
+        name: validate_identity(crate::agent::generated_fallback())?,
+        ephemeral: true,
+    })
 }
 
 fn normalize_identity(raw: String) -> Option<String> {
@@ -335,7 +365,7 @@ fn render_response(response: &WorkResponse, format: Format) -> Result<String> {
                 .map(|v| v.to_string())
                 .unwrap_or_else(|| "-".to_string());
 
-            format!(
+            let mut out = format!(
                 "{} {} ({})\n  {} {}\n  {} {}\n  {} {}\n  {} {}\n  {} {}\n  {} {}\n  {} {}\n  {} {}",
                 "work".cyan().bold(),
                 response.event.as_str().bold(),
@@ -356,7 +386,15 @@ fn render_response(response: &WorkResponse, format: Format) -> Result<String> {
                 response.state.claim_strategy,
                 "verbosity:".dimmed(),
                 response.state.coordination_verbosity
-            )
+            );
+            if response.ephemeral_identity {
+                out.push_str(&format!(
+                    "\n  {} {}",
+                    "warning:".yellow().bold(),
+                    "ephemeral identity; set TAK_AGENT or --assignee for durable loop state"
+                ));
+            }
+            out
         }
         Format::Minimal => {
             let state = if response.state.active {
@@ -441,7 +479,8 @@ mod tests {
         }
 
         let resolved = resolve_agent_identity(Some("explicit-agent".into())).unwrap();
-        assert_eq!(resolved, "explicit-agent");
+        assert_eq!(resolved.name, "explicit-agent");
+        assert!(!resolved.ephemeral);
 
         unsafe {
             std::env::remove_var("TAK_AGENT");
@@ -456,7 +495,8 @@ mod tests {
         }
 
         let resolved = resolve_agent_identity(None).unwrap();
-        assert_eq!(resolved, "env-agent");
+        assert_eq!(resolved.name, "env-agent");
+        assert!(!resolved.ephemeral);
 
         unsafe {
             std::env::remove_var("TAK_AGENT");
@@ -464,15 +504,16 @@ mod tests {
     }
 
     #[test]
-    fn resolve_agent_falls_back_to_generated_identity() {
+    fn resolve_agent_falls_back_to_generated_identity_and_marks_ephemeral() {
         let _guard = ENV_LOCK.lock().unwrap();
         unsafe {
             std::env::remove_var("TAK_AGENT");
         }
 
         let resolved = resolve_agent_identity(None).unwrap();
-        assert!(!resolved.is_empty());
-        assert_eq!(resolved.split('-').count(), 3);
+        assert!(!resolved.name.is_empty());
+        assert_eq!(resolved.name.split('-').count(), 3);
+        assert!(resolved.ephemeral);
     }
 
     #[test]
