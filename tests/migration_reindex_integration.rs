@@ -149,11 +149,12 @@ fn assert_graph_queries(repo: &Repo, ids: FixtureIds) {
         repo.index.learnings_for_task(ids.child).unwrap(),
         vec![ids.learning]
     );
-    assert!(repo
-        .index
-        .learnings_for_task(ids.dep_done)
-        .unwrap()
-        .is_empty());
+    assert!(
+        repo.index
+            .learnings_for_task(ids.dep_done)
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]
