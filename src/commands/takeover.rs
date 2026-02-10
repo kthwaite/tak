@@ -8,8 +8,8 @@ use crate::error::{Result, TakError};
 use crate::model::Status;
 use crate::output::Format;
 use crate::store::coordination::CoordinationLinks;
+use crate::store::coordination_db::CoordinationDb;
 use crate::store::lock;
-use crate::store::mesh::MeshStore;
 use crate::store::repo::Repo;
 use crate::store::sidecars::HistoryEvent;
 use crate::store::work::WorkStore;
@@ -102,9 +102,8 @@ fn takeover_response(
     };
 
     let threshold_secs = inactive_secs.unwrap_or_else(|| {
-        MeshStore::open(&repo_root.join(".tak"))
-            .lease_config()
-            .registration_ttl_secs
+        let (reg_ttl, _) = crate::commands::mesh::read_lease_config(repo_root);
+        reg_ttl
     });
 
     let activity = owner_activity(repo_root, &previous_owner)?;
@@ -190,16 +189,18 @@ fn takeover_response(
 }
 
 fn owner_activity(repo_root: &Path, owner: &str) -> Result<OwnerActivity> {
-    let mesh = MeshStore::open(&repo_root.join(".tak"));
-    if !mesh.exists() {
-        return Ok(OwnerActivity::MeshUnavailable);
-    }
+    let db = match CoordinationDb::from_repo(repo_root) {
+        Ok(db) => db,
+        Err(_) => return Ok(OwnerActivity::MeshUnavailable),
+    };
 
-    let agents = mesh.list_agents()?;
+    let agents = db.list_agents()?;
     let now = Utc::now();
     if let Some(reg) = agents.into_iter().find(|reg| reg.name == owner) {
-        let last_seen = reg.last_seen_at.unwrap_or(reg.updated_at);
-        let inactive = now.signed_duration_since(last_seen).num_seconds().max(0);
+        let inactive = now
+            .signed_duration_since(reg.updated_at)
+            .num_seconds()
+            .max(0);
         Ok(OwnerActivity::InactiveFor(inactive))
     } else {
         Ok(OwnerActivity::OwnerNotRegistered)
@@ -263,10 +264,9 @@ fn print_response(response: &TakeoverResponse, format: Format) -> Result<()> {
 mod tests {
     use super::*;
     use crate::model::{Contract, Kind, Planning};
+    use crate::store::coordination_db::CoordinationDb;
     use crate::store::files::FileStore;
-    use crate::store::mesh::Registration;
     use chrono::Duration;
-    use std::fs;
     use tempfile::tempdir;
 
     fn setup_repo() -> tempfile::TempDir {
@@ -299,18 +299,17 @@ mod tests {
     }
 
     fn set_registration_last_seen(repo_root: &Path, owner: &str, secs_ago: i64) {
-        let path = repo_root
+        let db_path = repo_root
             .join(".tak")
             .join("runtime")
-            .join("mesh")
-            .join("registry")
-            .join(format!("{owner}.json"));
-        let mut reg: Registration =
-            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
-        let ts = Utc::now() - Duration::seconds(secs_ago);
-        reg.updated_at = ts;
-        reg.last_seen_at = Some(ts);
-        fs::write(path, serde_json::to_string_pretty(&reg).unwrap()).unwrap();
+            .join("coordination.db");
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        let ts = (Utc::now() - Duration::seconds(secs_ago)).to_rfc3339();
+        conn.execute(
+            "UPDATE agents SET updated_at = ?1 WHERE name = ?2",
+            rusqlite::params![ts, owner],
+        )
+        .unwrap();
     }
 
     #[test]
@@ -318,8 +317,9 @@ mod tests {
         let dir = setup_repo();
         let task_id = create_in_progress_task(dir.path(), "takeover-active-owner", "owner-1");
 
-        let mesh = MeshStore::open(&dir.path().join(".tak"));
-        mesh.join(Some("owner-1"), Some("sid-owner")).unwrap();
+        let db = CoordinationDb::from_repo(dir.path()).unwrap();
+        db.join_agent("owner-1", "sid-owner", "/tmp", None, None)
+            .unwrap();
 
         let err =
             takeover_response(dir.path(), task_id, "agent-2".into(), Some(600), false).unwrap_err();
@@ -339,8 +339,9 @@ mod tests {
         let dir = setup_repo();
         let task_id = create_in_progress_task(dir.path(), "takeover-inactive-owner", "owner-1");
 
-        let mesh = MeshStore::open(&dir.path().join(".tak"));
-        mesh.join(Some("owner-1"), Some("sid-owner")).unwrap();
+        let db = CoordinationDb::from_repo(dir.path()).unwrap();
+        db.join_agent("owner-1", "sid-owner", "/tmp", None, None)
+            .unwrap();
         set_registration_last_seen(dir.path(), "owner-1", 3600);
 
         let response =
@@ -360,8 +361,9 @@ mod tests {
         let dir = setup_repo();
         let task_id = create_in_progress_task(dir.path(), "takeover-force", "owner-1");
 
-        let mesh = MeshStore::open(&dir.path().join(".tak"));
-        mesh.join(Some("owner-1"), Some("sid-owner")).unwrap();
+        let db = CoordinationDb::from_repo(dir.path()).unwrap();
+        db.join_agent("owner-1", "sid-owner", "/tmp", None, None)
+            .unwrap();
 
         let response =
             takeover_response(dir.path(), task_id, "agent-2".into(), Some(600), true).unwrap();
@@ -377,8 +379,9 @@ mod tests {
         let task_id =
             create_in_progress_task(dir.path(), "takeover-owner-not-registered", "owner-1");
 
-        let mesh = MeshStore::open(&dir.path().join(".tak"));
-        mesh.join(Some("someone-else"), Some("sid-other")).unwrap();
+        let db = CoordinationDb::from_repo(dir.path()).unwrap();
+        db.join_agent("someone-else", "sid-other", "/tmp", None, None)
+            .unwrap();
 
         let response =
             takeover_response(dir.path(), task_id, "agent-2".into(), Some(600), false).unwrap();

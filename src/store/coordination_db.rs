@@ -2,12 +2,35 @@ use std::fs;
 use std::path::Path;
 
 use chrono::{DateTime, Utc};
+use clap::ValueEnum;
 use rusqlite::{Connection, params};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::error::{Result, TakError};
 use crate::store::paths::normalized_paths_conflict;
+
+// ---------------------------------------------------------------------------
+// Shared enums (moved from store::blackboard on CoordinationDb migration)
+// ---------------------------------------------------------------------------
+
+/// Lifecycle state of a blackboard note.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
+#[serde(rename_all = "snake_case")]
+#[clap(rename_all = "snake_case")]
+pub enum BlackboardStatus {
+    Open,
+    Closed,
+}
+
+impl std::fmt::Display for BlackboardStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Open => write!(f, "open"),
+            Self::Closed => write!(f, "closed"),
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Data model
