@@ -7,9 +7,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 cargo build                    # Build debug
 cargo build --release          # Build release
-cargo test                     # Run all 144 tests (86 unit + 58 integration)
+cargo test                     # Run all ~410 tests (unit + integration)
 cargo test model::tests        # Run unit tests in a specific module
-cargo test integration         # Run only integration tests (tests/integration.rs)
+cargo test --test integration  # Run the main integration test binary
+cargo test --test work_done_integration  # Run a specific integration test binary
 cargo test test_name           # Run a single test by name
 cargo clippy                   # Lint
 cargo fmt --check              # Check formatting
@@ -51,19 +52,34 @@ Tasks are JSON files in `.tak/tasks/` (the git-committed source of truth). A git
 - **`src/git.rs`** — `current_head_info()` returns branch + SHA; `commits_since()` returns one-line summaries between two SHAs via git2 revwalk
 - **`src/error.rs`** — `TakError` enum via thiserror; `Result<T>` alias used everywhere
 - **`src/output.rs`** — `Format` enum (Json/Pretty/Minimal); `print_task(s)` functions
+- **`src/metrics/model.rs`** — metrics query/filter domain model (`MetricsBucket`, `MetricsQuery`, `CompletionMetric`) and report payload schemas (`BurndownReport`, `CompletionTimeReport`)
+- **`src/metrics/derive.rs`** — normalized lifecycle timeline derivation from task history sidecars, including completion episodes and data-quality accounting
+- **`src/metrics/burndown.rs`** — burndown aggregation logic (remaining series, ideal line, scope added/removed overlays)
+- **`src/metrics/aggregate.rs`** — completion-time aggregation (lead/cycle samples, bucket rollups, avg/p50/p90 summary)
+- **`src/metrics/tui.rs`** — terminal dashboard runtime (`tak metrics tui`) with refresh loop, key controls, and panel rendering helpers
+- **`src/agent.rs`** — `resolve_agent()` reads `TAK_AGENT` env var; auto-generated adjective-animal names when identity is unset
+- **`src/build_info.rs`** — build-time git SHA stamp via `TAK_BUILD_GIT_SHA` (set by `build.rs`)
+- **`src/json_ids.rs`** — canonical task-ID rendering/normalization helpers for JSON output (format, parse, rewrite)
 - **`src/task_id.rs`** — `TaskId` wrapper (canonical 16-hex IDs), CSPRNG generation API (`TaskId::generate`) with deterministic test hook (`generate_with`), CLI parsing for canonical/prefix/legacy numeric input, serde + rusqlite compatibility helpers
+- **`src/store/lock.rs`** — fs2-based exclusive file locking with exponential backoff (1ms→512ms); used by claim, task-ID allocation, learning counter
 - **`src/store/files.rs`** — `FileStore`: CRUD on `.tak/tasks/*.json`; allocates random task IDs via CSPRNG with bounded collision retry under `task-id.lock`; writes canonical hash-style filenames while reading legacy numeric filenames for compatibility
 - **`src/store/index.rs`** — `Index`: SQLite with WAL mode, FK-enabled. Cycle detection via recursive CTEs. Two-pass rebuild to handle forward references. FTS5 full-text search for learnings.
 - **`src/store/learnings.rs`** — `LearningStore`: CRUD on `.tak/learnings/*.json`, atomic ID allocation via counter.json + fs2 lock; separate from task ID sequence
 - **`src/store/sidecars.rs`** — `SidecarStore`: manages per-task context notes (`.tak/context/{task_id}.md`), structured history logs (`.tak/history/{task_id}.jsonl`), verification results (`.tak/verification_results/{task_id}.json`), and artifact directories (`.tak/artifacts/{task_id}/`); supports legacy numeric path migration; defines `HistoryEvent` (timestamp/event/agent/detail), `VerificationResult` (timestamp/results/passed), `CommandResult` (command/exit_code/stdout/stderr/passed)
-- **`src/store/mesh.rs`** — `MeshStore`: manages `.tak/runtime/mesh/` — agent registry (join/leave/list), messaging (send/broadcast/inbox), file reservations (reserve/release), activity feed (append/read). Per-domain file locks via `lock.rs`. Auto-generates agent names when omitted.
-- **`src/store/blackboard.rs`** — `BlackboardStore`: shared coordination notes under `.tak/runtime/blackboard/` (`post/list/show/close/reopen`) with tags, task links, and close metadata.
+- **`src/store/coordination_db.rs`** — `CoordinationDb`: SQLite runtime backing mesh + blackboard state under `.tak/runtime/coordination.db` (agents, messages, reservations, notes, feed events) with WAL + FK enforcement.
+- **`src/store/coordination.rs`** — `CoordinationLinks` struct for cross-channel linkage (mesh message IDs, blackboard note refs, history event IDs); `derive_links_from_text()` extracts references from free-form text.
+- **`src/store/migration.rs`** — atomic task-file rewriting for ID migration: reads tasks, remaps IDs, writes to staging dir, then swaps via rename (with rollback on failure).
+- **`src/store/paths.rs`** — path normalization (relative to repo root), traversal-escape validation, and prefix-based conflict detection for reservations.
 - **`src/store/therapist.rs`** — `TherapistStore`: append-only workflow observations under `.tak/therapist/observations.jsonl` (`offline`/`online` diagnosis artifacts).
 - **`src/store/work.rs`** — `WorkStore`: per-agent CLI work-loop state under `.tak/runtime/work/` with lock-safe activate/status/deactivate/save flows plus strategy/verbosity metadata.
 - **`src/store/repo.rs`** — `Repo`: wraps FileStore + Index + SidecarStore + LearningStore. Walks up from CWD to find `.tak/`. Auto-rebuilds index on open if missing or stale (file fingerprint mismatch). Also auto-rebuilds learnings index via separate fingerprint.
 - **`src/commands/`** — One file per command group. Most take `&Path` (repo root) and return `Result<()>`. `doctor` doesn't require a repo; `setup` supports global mode anywhere but project-scoped setup requires a git repo root.
 - **`src/commands/work.rs`** — CLI-native work-loop handlers (`start/resume`, `status`, `done`, `stop`) with reconciliation events (`continued`/`attached`/`claimed`/`done`/`no_work`/`limit_reached`) and format-specific output rendering.
-- **`src/commands/mesh.rs`** — 9 mesh subcommand handlers: join, leave, list, send, broadcast, inbox, reserve, release, feed
+- **`src/commands/takeover.rs`** — stale-owner reassignment command with inactivity/force guardrails, structured decision output, and lifecycle history logging.
+- **`src/commands/import.rs`** — YAML/JSON task-plan import pipeline (`tak import`) with dry-run previews, alias/reference resolution, graph validation, and deterministic create ordering.
+- **`src/commands/wait.rs`** — deterministic wait helpers (`tak wait`) for reservation-path and dependency-unblock readiness with timeout diagnostics.
+- **`src/commands/metrics.rs`** — metrics handlers for `burndown`, `completion-time`, and `tui` including shared query validation and format-specific renderers.
+- **`src/commands/mesh.rs`** — 13 mesh subcommand handlers: join, leave, list, send, broadcast, inbox, heartbeat, cleanup, blockers, reservations, reserve, release, feed
 - **`src/commands/blackboard.rs`** — 5 blackboard subcommand handlers: post, list, show, close, reopen
 - **`src/commands/therapist.rs`** — therapist handlers: offline diagnosis, online RPC interview, and observation log listing
 - **`src/commands/migrate_ids.rs`** — task ID migration workflow: preflight, apply rewrite, optional `--rekey-random` remapping to fresh random IDs, config-version bump, and audit-map generation
@@ -77,8 +93,9 @@ For task-taking commands, `TASK_ID` accepts canonical 16-hex IDs, unique hex pre
 
 | Command | Purpose |
 |---------|---------|
-| `init` | Initialize `.tak/` directory (including `context/`, `history/`, `artifacts/`, `verification_results/`, `learnings/` dirs + `.gitignore`) |
+| `init` | Initialize `.tak/` directory (`tasks/`, sidecars, `learnings/`, `therapist/`, runtime `coordination.db`, work-state dirs, `.gitignore`) |
 | `create TITLE` | Create task (`--kind`, `--parent`, `--depends-on`, `-d`, `--tag`, `--objective`, `--verify`, `--constraint`, `--criterion`, `--priority`, `--estimate`, `--skill`, `--risk`) |
+| `import SOURCE` | Import YAML/JSON task plans (`--dry-run` validates/prints plan without writing) |
 | `delete TASK_ID` | Delete a task (`--force` to cascade: orphans children, removes deps); also cleans up sidecar files |
 | `show TASK_ID` | Display a single task |
 | `list` | Query tasks (`--status`, `--kind`, `--tag`, `--assignee`, `--available`, `--blocked`, `--children-of`, `--priority`) |
@@ -88,18 +105,21 @@ For task-taking commands, `TASK_ID` accepts canonical 16-hex IDs, unique hex pre
 | `cancel TASK_ID` | Pending/in_progress -> cancelled (`--reason`); appends history log |
 | `handoff TASK_ID` | In_progress -> pending, record summary (`--summary`, required); appends history log |
 | `claim` | Atomic next+start with file lock (`--assignee`, `--tag`); appends history log |
+| `takeover TASK_ID` | Reassign stale in-progress ownership with guardrails (`--assignee`, `--inactive-secs`, `--force`); appends history log |
 | `work [start\|status\|done\|stop]` | CLI-native work-loop controller (`start/resume`, `status`, `done`, `stop`) with persisted per-agent loop state |
 | `reopen TASK_ID` | Done/cancelled -> pending (clears assignee); appends history log |
 | `unassign TASK_ID` | Clear assignee without changing status; appends history log |
-| `depend TASK_ID --on TASK_IDS` | Add dependency edges (`--dep-type hard\|soft`, `--reason`) |
-| `undepend TASK_ID --on TASK_IDS` | Remove dependency edges |
-| `reparent TASK_ID --to TASK_ID` | Change parent |
-| `orphan TASK_ID` | Remove parent |
-| `tree [TASK_ID]` | Display parent-child hierarchy |
+| `depend TASK_IDS --on TASK_IDS` | Add dependency edges in bulk (`--dep-type hard\|soft`, `--reason`, `--quiet`) |
+| `undepend TASK_IDS --on TASK_IDS` | Remove dependency edges in bulk (`--quiet`) |
+| `reparent TASK_ID --to TASK_ID` | Change parent (`--quiet`) |
+| `orphan TASK_ID` | Remove parent (`--quiet`) |
+| `tree [TASK_ID]` | Display parent-child hierarchy (`--pending`, `--sort id\|created\|priority\|estimate`) |
 | `next` | Show next available task (`--assignee`) |
+| `wait` | Block until a path reservation clears or a task unblocks (`--path`/`--on-task`, `--timeout`) |
 | `context TASK_ID` | Read/write context notes (`--set TEXT`, `--clear`) |
 | `log TASK_ID` | Display structured JSONL task history log |
 | `verify TASK_ID` | Run contract verification commands; stores result; exits 1 if any fail |
+| `metrics <burndown\|completion-time\|tui>` | Metrics trends + TUI dashboard (`--from`, `--to`, `--bucket day\|week`, filters; completion-time `--metric lead\|cycle`; `--include-cancelled` for burndown/TUI) |
 | `learn add TITLE` | Record a learning (`--category`, `-d`, `--tag`, `--task`) |
 | `learn list` | List learnings (`--category`, `--tag`, `--task`) |
 | `learn show ID` | Display a single learning |
@@ -111,11 +131,15 @@ For task-taking commands, `TASK_ID` accepts canonical 16-hex IDs, unique hex pre
 | `mesh list` | List registered mesh agents |
 | `mesh send` | Send direct message (`--from`, `--to`, `--message`) |
 | `mesh broadcast` | Broadcast message to all agents (`--from`, `--message`) |
-| `mesh inbox` | Read inbox messages (`--name`, `--ack`) |
+| `mesh inbox` | Read inbox messages (`--name`, `--ack`, `--ack-id`, `--ack-before`) |
+| `mesh heartbeat` | Refresh registration/reservation lease liveness (`--name`, `--session-id`) |
+| `mesh cleanup` | Remove stale mesh registrations/reservations (`--stale`, `--dry-run`, `--ttl-seconds`) |
+| `mesh blockers` | Diagnose reservation blockers (`--path` repeatable) |
+| `mesh reservations` | List active reservation snapshots (`--name`, `--path`) |
 | `mesh reserve` | Reserve file paths (`--name`, `--path`, `--reason`) |
 | `mesh release` | Release reservations (`--name`, `--path`/`--all`) |
 | `mesh feed` | Show activity feed (`--limit`) |
-| `blackboard post` | Post a shared coordination note (`--from`, `--message`, `--tag`, `--task`) |
+| `blackboard post` | Post a shared coordination note (`--from`, `--message`, `--template`, `--since-note`, `--no-change-since`, `--tag`, `--task`) |
 | `blackboard list` | List notes (`--status`, `--tag`, `--task`, `--limit`) |
 | `blackboard show` | Show one note by ID |
 | `blackboard close` | Close note (`--by`, `--reason`) |
@@ -170,6 +194,7 @@ Errors are structured JSON on stderr when `--format json`: `{"error":"<code>","m
 - `context` command reads/writes free-form context notes; `--set` overwrites, `--clear` deletes
 - `log` command displays history log; JSON mode returns array of lines, pretty mode prints raw
 - `verify` command runs `contract.verification` commands via `sh -c` from repo root; reports pass/fail per command; exits 1 if any fail
+- Metrics queries default to a 30-day window (`--to` defaults today, `--from` defaults 30 days prior), reject inverted windows, and currently reject `metrics completion-time --include-cancelled`.
 - `delete` cleans up all sidecar files (context + history + verification results + artifacts) after removing the task file and index entry
 - `Learning` struct: id/title/description/category/tags/task_ids/timestamps; stored as `.tak/learnings/{id}.json` with separate counter.json ID sequence
 - `LearningCategory` enum: insight/pitfall/pattern/tool/process (default: insight)
@@ -179,14 +204,12 @@ Errors are structured JSON on stderr when `--format json`: `{"error":"<code>","m
 - `suggest_learnings` sanitizes task title to alphanumeric tokens, joins with OR for FTS5 MATCH; returns results by rank
 - Learning index has separate fingerprint (`learning_fingerprint` in metadata table); auto-rebuilt by `Repo::open()` when stale
 - `learn remove` unlinks learning from all referenced tasks before deleting
-- `MeshStore`: manages `.tak/runtime/mesh/` — agent registry, messaging, reservations, activity feed
-- Mesh uses per-domain file locks (registry, inbox, reservations, feed) via existing `lock.rs`
-- Registration stores session metadata (`session_id`, `cwd`, timestamps); names are auto-generated when omitted
-- Reservation conflict is prefix-based: `src/store/` conflicts with `src/store/mesh.rs`
-- Feed events are best-effort: failures never break primary operations
-- All mesh runtime state is gitignored (ephemeral per-session data)
-- `BlackboardStore` persists shared notes in `.tak/runtime/blackboard/notes.json` with lock-protected ID allocation and lifecycle transitions (`open`/`closed`)
-- `TherapistStore` appends JSONL observations to `.tak/therapist/observations.jsonl`; `offline` analyzes mesh+blackboard signals, `online` resumes pi RPC sessions for interviews
+- Coordination runtime state is centralized in `.tak/runtime/coordination.db` (`CoordinationDb`, WAL-backed) for mesh + blackboard domains.
+- Mesh registrations carry lease metadata (`session_id`, `cwd`, timestamps); `mesh heartbeat` refreshes liveness and `mesh cleanup --stale` prunes expired rows.
+- Reservation conflict is prefix-based on normalized paths: `src/store/` conflicts with `src/store/coordination_db.rs`.
+- `mesh blockers` and `mesh reservations` expose blocker/snapshot diagnostics; feed append failures are best-effort (never break primary operations).
+- Blackboard notes (status, tags, task links, open/closed lifecycle) are stored in coordination DB tables; runtime state remains gitignored.
+- `TherapistStore` appends JSONL observations to `.tak/therapist/observations.jsonl`; `offline` analyzes mesh/blackboard signals, `online` resumes pi RPC sessions for interviews.
 
 ### On-Disk Layout
 
@@ -206,18 +229,12 @@ Errors are structured JSON on stderr when `--format json`: `{"error":"<code>","m
   learning_counter.lock          # Persistent lock file for learning ID allocation (gitignored)
   migrations/
     task-id-map-*.json           # Audit map written by migrate-ids --apply
-  runtime/mesh/                  # Coordination runtime (gitignored)
-    registry/*.json              # Per-agent presence records
-    inbox/<agent>/*.json         # Queued messages per agent
-    reservations.json            # File path reservations
-    feed.jsonl                   # Append-only activity timeline
-    locks/                       # Per-domain lock files
-  runtime/blackboard/            # Shared coordination board (gitignored)
-    notes.json                   # Open/closed note records
-    counter.json                 # Blackboard note IDs
-    locks/                       # Blackboard lock files
+  runtime/coordination.db        # Mesh + blackboard runtime DB (gitignored)
+  runtime/coordination.db-wal    # SQLite WAL sidecar (gitignored)
+  runtime/coordination.db-shm    # SQLite shared-memory sidecar (gitignored)
+  runtime/work/states/*.json     # Per-agent work-loop state (gitignored)
   therapist/                     # Workflow therapist observations (committed)
-    log.jsonl                    # Append-only JSONL observations
+    observations.jsonl           # Append-only JSONL observations
   index.db                       # SQLite index (gitignored, rebuilt on demand)
 ```
 
