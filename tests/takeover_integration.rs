@@ -5,8 +5,8 @@ use tak::commands::takeover;
 use tak::error::TakError;
 use tak::model::{Contract, Kind, Planning, Status};
 use tak::output::Format;
+use tak::store::coordination_db::CoordinationDb;
 use tak::store::files::FileStore;
-use tak::store::mesh::{MeshStore, Registration};
 use tak::store::repo::Repo;
 use tempfile::tempdir;
 
@@ -34,18 +34,17 @@ fn create_in_progress_task(repo_root: &std::path::Path, title: &str, assignee: &
 }
 
 fn set_registration_last_seen(repo_root: &std::path::Path, owner: &str, secs_ago: i64) {
-    let path = repo_root
+    let db_path = repo_root
         .join(".tak")
         .join("runtime")
-        .join("mesh")
-        .join("registry")
-        .join(format!("{owner}.json"));
-    let mut reg: Registration =
-        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-    let ts = Utc::now() - Duration::seconds(secs_ago);
-    reg.updated_at = ts;
-    reg.last_seen_at = Some(ts);
-    std::fs::write(path, serde_json::to_string_pretty(&reg).unwrap()).unwrap();
+        .join("coordination.db");
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    let ts = (Utc::now() - Duration::seconds(secs_ago)).to_rfc3339();
+    conn.execute(
+        "UPDATE agents SET updated_at = ?1 WHERE name = ?2",
+        rusqlite::params![ts, owner],
+    )
+    .unwrap();
 }
 
 #[test]
@@ -55,8 +54,8 @@ fn takeover_succeeds_for_stale_owner_integration() {
 
     let task_id = create_in_progress_task(dir.path(), "takeover-stale-owner", "owner-1");
 
-    let mesh = MeshStore::open(&dir.path().join(".tak"));
-    mesh.join(Some("owner-1"), Some("sid-owner")).unwrap();
+    let db = CoordinationDb::from_repo(dir.path()).unwrap();
+    db.join_agent("owner-1", "sid-owner", "/tmp", None, None).unwrap();
     set_registration_last_seen(dir.path(), "owner-1", 3600);
 
     takeover::run(
@@ -85,8 +84,8 @@ fn takeover_rejects_active_owner_integration() {
 
     let task_id = create_in_progress_task(dir.path(), "takeover-active-owner", "owner-1");
 
-    let mesh = MeshStore::open(&dir.path().join(".tak"));
-    mesh.join(Some("owner-1"), Some("sid-owner")).unwrap();
+    let db = CoordinationDb::from_repo(dir.path()).unwrap();
+    db.join_agent("owner-1", "sid-owner", "/tmp", None, None).unwrap();
 
     let err = takeover::run(
         dir.path(),
@@ -115,10 +114,10 @@ fn takeover_concurrent_attempts_allow_single_winner_integration() {
 
     let task_id = create_in_progress_task(dir.path(), "takeover-race", "owner-1");
 
-    let mesh = MeshStore::open(&dir.path().join(".tak"));
-    mesh.join(Some("owner-1"), Some("sid-owner")).unwrap();
-    mesh.join(Some("agent-a"), Some("sid-a")).unwrap();
-    mesh.join(Some("agent-b"), Some("sid-b")).unwrap();
+    let db = CoordinationDb::from_repo(dir.path()).unwrap();
+    db.join_agent("owner-1", "sid-owner", "/tmp", None, None).unwrap();
+    db.join_agent("agent-a", "sid-a", "/tmp", None, None).unwrap();
+    db.join_agent("agent-b", "sid-b", "/tmp", None, None).unwrap();
     set_registration_last_seen(dir.path(), "owner-1", 3600);
 
     let repo_root = Arc::new(dir.path().to_path_buf());
