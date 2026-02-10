@@ -32,3 +32,4 @@ Each page should include:
 - [`task-lifecycle.md`](./task-lifecycle.md) — lifecycle state machine and command side effects
 - [`coordination-verbosity.md`](./coordination-verbosity.md) — low/medium/high coordination trigger matrix and concrete message examples
 - [`channel-contract.md`](./channel-contract.md) — normative channel-role contract for mesh/blackboard/context/history with concrete usage examples
+- [`isolated-verification.md`](./isolated-verification.md) — when and how to use temporary git worktrees for targeted verification in noisy multi-agent lanes

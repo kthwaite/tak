@@ -39,6 +39,20 @@ tak reindex
 
 > If the user asks for `/tak work` behavior, use the **tak-task-execution** skill flow.
 
+## Isolated verification fallback (use sparingly)
+
+Default is to verify in the shared working tree.
+
+Use a temporary detached `git worktree` only when shared-tree verification is failing for unrelated in-progress edits and you need targeted evidence for your lane.
+
+Required steps:
+1. Post/update blackboard note with reason and planned verification command(s).
+2. Run targeted tests in isolated worktree.
+3. Report that evidence source explicitly in task notes/handoff.
+4. Remove the temporary worktree after verification.
+
+Reference: `docs/how/isolated-verification.md`.
+
 ## Quick reference
 
 All commands output JSON by default. Add `--pretty` for readable output.
