@@ -4,6 +4,7 @@ use colored::Colorize;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Result, TakError};
+use crate::json_ids::{rewrite_task_id_array, rewrite_task_id_value, rewrite_task_json_value};
 use crate::model::{Status, Task};
 use crate::output::Format;
 use crate::store::coordination_db::CoordinationDb;
@@ -780,9 +781,51 @@ fn validate_identity(agent: String) -> Result<String> {
     Ok(agent)
 }
 
+fn rewrite_work_response_json_task_ids(value: &mut serde_json::Value) {
+    let Some(obj) = value.as_object_mut() else {
+        return;
+    };
+
+    if let Some(loop_state) = obj.get_mut("loop").and_then(|v| v.as_object_mut()) {
+        if let Some(current_task_id) = loop_state.get_mut("current_task_id") {
+            rewrite_task_id_value(current_task_id);
+        }
+
+        if let Some(resume_gate) = loop_state
+            .get_mut(RESUME_GATE_EXTENSION_KEY)
+            .and_then(|v| v.as_object_mut())
+        {
+            if let Some(task_id) = resume_gate.get_mut("task_id") {
+                rewrite_task_id_value(task_id);
+            }
+
+            if let Some(blocked_dep_ids) = resume_gate
+                .get_mut("blocked_dep_ids")
+                .and_then(|v| v.as_array_mut())
+            {
+                rewrite_task_id_array(blocked_dep_ids);
+            }
+        }
+    }
+
+    if let Some(current_task) = obj.get_mut("current_task") {
+        rewrite_task_json_value(current_task);
+    }
+
+    if let Some(done) = obj.get_mut("done").and_then(|v| v.as_object_mut())
+        && let Some(finished_task_id) = done.get_mut("finished_task_id")
+    {
+        rewrite_task_id_value(finished_task_id);
+    }
+}
+
 fn render_response(response: &WorkResponse, format: Format) -> Result<String> {
     let rendered = match format {
-        Format::Json => serde_json::to_string(response)?,
+        Format::Json => {
+            let mut value = serde_json::to_value(response)?;
+            rewrite_work_response_json_task_ids(&mut value);
+            serde_json::to_string(&value)?
+        }
         Format::Pretty => {
             let active = if response.state.active {
                 "active".green().to_string()
@@ -1631,9 +1674,10 @@ mod tests {
             loop_state.get("active").and_then(|v| v.as_bool()),
             Some(true)
         );
+        let expected_task_id = TaskId::from(task_id).to_string();
         assert_eq!(
-            loop_state.get("current_task_id").and_then(|v| v.as_u64()),
-            Some(task_id)
+            loop_state.get("current_task_id").and_then(|v| v.as_str()),
+            Some(expected_task_id.as_str())
         );
 
         let current_task = value
@@ -1641,8 +1685,8 @@ mod tests {
             .and_then(|v| v.as_object())
             .unwrap();
         assert_eq!(
-            current_task.get("id").and_then(|v| v.as_u64()),
-            Some(task_id)
+            current_task.get("id").and_then(|v| v.as_str()),
+            Some(expected_task_id.as_str())
         );
 
         assert!(
@@ -1693,8 +1737,8 @@ mod tests {
             Some("finished")
         );
         assert_eq!(
-            done.get("finished_task_id").and_then(|v| v.as_u64()),
-            Some(42)
+            done.get("finished_task_id").and_then(|v| v.as_str()),
+            Some("000000000000002a")
         );
         assert_eq!(done.get("paused").and_then(|v| v.as_bool()), Some(false));
         assert_eq!(

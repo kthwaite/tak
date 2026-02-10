@@ -4,7 +4,7 @@ use tak::commands::blackboard::BlackboardTemplate;
 use tak::metrics::{CompletionMetric, MetricsBucket};
 use tak::model::{DepType, Estimate, Kind, LearningCategory, Priority, Risk, Status};
 use tak::output::Format;
-use tak::store::blackboard::BlackboardStatus;
+use tak::store::coordination_db::BlackboardStatus;
 use tak::store::work::{WorkClaimStrategy, WorkCoordinationVerbosity, WorkStore, WorkVerifyMode};
 
 #[derive(Parser)]

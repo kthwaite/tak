@@ -4,6 +4,7 @@ use chrono::Utc;
 use colored::Colorize;
 
 use crate::error::Result;
+use crate::json_ids::{format_task_id, learning_to_json_value};
 use crate::model::{Learning, LearningCategory};
 use crate::output::Format;
 use crate::store::repo::Repo;
@@ -224,7 +225,10 @@ pub fn suggest(repo_root: &Path, task_id: u64, format: Format) -> Result<()> {
 
 pub fn print_learning(learning: &Learning, format: Format) -> Result<()> {
     match format {
-        Format::Json => println!("{}", serde_json::to_string(learning)?),
+        Format::Json => println!(
+            "{}",
+            serde_json::to_string(&learning_to_json_value(learning)?)?
+        ),
         Format::Pretty => {
             println!(
                 "{} {} ({})",
@@ -241,7 +245,11 @@ pub fn print_learning(learning: &Learning, format: Format) -> Result<()> {
                 println!("  {} {}", "tags:".dimmed(), colored_tags.join(", "));
             }
             if !learning.task_ids.is_empty() {
-                let ids: Vec<String> = learning.task_ids.iter().map(|id| id.to_string()).collect();
+                let ids: Vec<String> = learning
+                    .task_ids
+                    .iter()
+                    .map(|id| format_task_id(*id))
+                    .collect();
                 println!("  {} {}", "tasks:".dimmed(), ids.join(", "));
             }
         }
@@ -255,7 +263,13 @@ pub fn print_learning(learning: &Learning, format: Format) -> Result<()> {
 
 fn print_learnings(learnings: &[Learning], format: Format) -> Result<()> {
     match format {
-        Format::Json => println!("{}", serde_json::to_string(learnings)?),
+        Format::Json => {
+            let values: Vec<serde_json::Value> = learnings
+                .iter()
+                .map(learning_to_json_value)
+                .collect::<Result<_>>()?;
+            println!("{}", serde_json::to_string(&values)?);
+        }
         Format::Pretty => {
             for learning in learnings {
                 print_learning(learning, Format::Pretty)?;

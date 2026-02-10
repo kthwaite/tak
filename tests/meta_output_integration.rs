@@ -125,10 +125,7 @@ fn meta_tasks_render_across_create_show_list_and_tree_formats() {
     assert!(listed_array.iter().all(|task| task["kind"] == "meta"));
     assert!(listed_array.iter().any(|task| task["title"] == "Meta Root"));
 
-    let list_pretty = run_tak(
-        repo_root,
-        &["--format", "pretty", "list", "--kind", "meta"],
-    );
+    let list_pretty = run_tak(repo_root, &["--format", "pretty", "list", "--kind", "meta"]);
     assert!(list_pretty.contains("Meta Root"));
     assert!(list_pretty.contains("Meta Pretty"));
     assert!(list_pretty.contains("meta"));

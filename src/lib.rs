@@ -3,6 +3,7 @@ pub mod build_info;
 pub mod commands;
 pub mod error;
 pub mod git;
+pub(crate) mod json_ids;
 pub mod metrics;
 pub mod model;
 pub mod output;

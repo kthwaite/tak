@@ -1,6 +1,7 @@
 use colored::Colorize;
 
 use crate::error::Result;
+use crate::json_ids::{format_task_id, task_to_json_value};
 use crate::model::{Kind, Priority, Risk, Status, Task};
 use crate::task_id::TaskId;
 use clap::ValueEnum;
@@ -50,10 +51,6 @@ pub fn style_risk(r: &Risk) -> String {
     }
 }
 
-fn format_task_id(id: u64) -> String {
-    TaskId::from(id).to_string()
-}
-
 fn format_dependency(dep: &crate::model::Dependency) -> String {
     let id = format_task_id(dep.id);
     match (&dep.dep_type, &dep.reason) {
@@ -66,7 +63,7 @@ fn format_dependency(dep: &crate::model::Dependency) -> String {
 
 pub fn print_task(task: &Task, format: Format) -> Result<()> {
     match format {
-        Format::Json => println!("{}", serde_json::to_string(&task)?),
+        Format::Json => println!("{}", serde_json::to_string(&task_to_json_value(task)?)?),
         Format::Pretty => print_task_pretty_table(task),
         Format::Minimal => {
             let assignee = task.assignee.as_deref().unwrap_or("-");
@@ -555,7 +552,13 @@ fn print_tasks_pretty_table(tasks: &[Task]) {
 
 pub fn print_tasks(tasks: &[Task], format: Format) -> Result<()> {
     match format {
-        Format::Json => println!("{}", serde_json::to_string(tasks)?),
+        Format::Json => {
+            let values: Vec<serde_json::Value> = tasks
+                .iter()
+                .map(task_to_json_value)
+                .collect::<Result<_>>()?;
+            println!("{}", serde_json::to_string(&values)?);
+        }
         Format::Pretty => print_tasks_pretty_table(tasks),
         Format::Minimal => {
             const ASSIGNEE_HEADER: &str = "ASSIGNEE";
@@ -632,11 +635,6 @@ mod tests {
             updated_at: now,
             extensions: serde_json::Map::new(),
         }
-    }
-
-    #[test]
-    fn format_task_id_uses_fixed_width_lower_hex() {
-        assert_eq!(format_task_id(42), "000000000000002a");
     }
 
     #[test]
