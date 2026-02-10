@@ -112,12 +112,20 @@ Every `tak work` call returns:
      tak cancel <id> --reason "<why>"
      ```
 
-5. **Release reservations**:
+5. **Run learnings closeout and commit it in-cycle**:
+   ```bash
+   tak learn add "<title>" --category <insight|pitfall|pattern|tool|process> -d "<what changed + why>" --task <id>
+   # or update an existing learning link
+   tak learn edit <learning-id> --add-task <id>
+   ```
+   Ensure `.tak/learnings/*.json` (plus linked task updates) is committed in this same implementation cycle.
+
+6. **Release reservations**:
    ```bash
    tak mesh release --name <agent> --all
    ```
 
-6. **Iterate**: call `tak work` again. It will detect the previous task is done, increment `processed`, decrement `remaining`, and claim the next task (or stop if limit reached / no work).
+7. **Iterate**: call `tak work` again. It will detect the previous task is done, increment `processed`, decrement `remaining`, and claim the next task (or stop if limit reached / no work).
 
 ### Blocker cooperation
 
@@ -261,5 +269,6 @@ done/cancelled ──→ pending (reopen)
 
 - Keep one active task at a time unless explicitly parallelizing.
 - Use handoff summaries that are actionable for the next agent.
+- Always run a learnings closeout before ending a cycle, and commit `.tak/learnings/*.json` updates in that same cycle.
 - Keep reservation scope narrow (file/dir level, not repo-wide).
 - Keep blackboard notes concise: blocker owner/path, requested action, and next check time.

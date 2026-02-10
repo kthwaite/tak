@@ -26,6 +26,14 @@ When unrelated in-progress edits make shared-tree verification noisy, use a temp
 
 See `docs/how/isolated-verification.md` for the playbook and guardrails.
 
+## Implementation-cycle learnings closeout (required)
+
+Before ending a cycle (`finish`, `handoff`, or `cancel`), perform learnings closeout:
+
+1. Capture reusable insight with `tak learn add ... --task <task-id>` (or update an existing learning with `tak learn edit ... --add-task <task-id>`).
+2. Commit `.tak/learnings/*.json` changes (plus any linked task-file updates) in the same implementation cycle.
+3. Do not defer learning commits to a later unrelated commit.
+
 ## Architecture
 
 ### Hybrid Storage Model
@@ -206,6 +214,7 @@ Errors are structured JSON on stderr when `--format json`: `{"error":"<code>","m
 - `suggest_learnings` sanitizes task title to alphanumeric tokens, joins with OR for FTS5 MATCH; returns results by rank
 - Learning index has separate fingerprint (`learning_fingerprint` in metadata table); auto-rebuilt by `Repo::open()` when stale
 - `learn remove` unlinks learning from all referenced tasks before deleting
+- Workflow expectation: each implementation cycle closes with a learnings pass, and any `.tak/learnings/*.json` updates are committed in that same cycle.
 - Coordination runtime state is centralized in `.tak/runtime/coordination.db` (`CoordinationDb`, WAL-backed) for mesh + blackboard domains.
 - Mesh registrations carry lease metadata (`session_id`, `cwd`, timestamps); `mesh heartbeat` refreshes liveness and `mesh cleanup --stale` prunes expired rows.
 - Reservation conflict is prefix-based on normalized paths: `src/store/` conflicts with `src/store/coordination_db.rs`.

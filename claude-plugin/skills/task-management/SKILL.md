@@ -50,6 +50,14 @@ tak reindex
 
 > If the user asks for `/tak work` behavior, use the **tak-task-execution** skill flow.
 
+## Required cycle closeout: learnings must be committed
+
+Before ending a task cycle (`finish`, `handoff`, or `cancel`):
+
+1. Capture reusable insight/pitfall/pattern with `tak learn add ... --task <id>` or update an existing learning via `tak learn edit ... --add-task <id>`.
+2. Ensure `.tak/learnings/*.json` (and any task-link updates) are committed in the same implementation cycle.
+3. Do not defer learning commits to a later unrelated change.
+
 ## Isolated verification fallback (use sparingly)
 
 Default is to verify in the shared working tree.
@@ -220,5 +228,6 @@ Blocked state is derived from dependencies (not persisted as status).
 3. `tak show <id>` + `tak context <id>`
 4. Reserve touched paths before major edits
 5. Execute + verify (`tak verify <id>` when contract has verification)
-6. `tak finish <id>` (or `tak handoff` / `tak cancel` with reasons)
-7. Re-check unblocked work: `tak list --available`
+6. Close lifecycle (`tak finish <id>` or `tak handoff` / `tak cancel` with reasons)
+7. Run learnings closeout and commit `.tak/learnings/*.json` updates from this cycle
+8. Re-check unblocked work: `tak list --available`

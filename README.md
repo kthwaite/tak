@@ -32,6 +32,9 @@ tak next
 tak claim --assignee agent-1
 tak finish 0000000000000001
 
+# Reassign a stale in-progress task safely
+tak takeover 0000000000000001 --assignee agent-2 --inactive-secs 1800
+
 # Check what's unblocked
 tak list --available
 
@@ -67,6 +70,26 @@ Troubleshooting:
 - If loop state points at a stale/non-owned task, it reports `detached_without_finish`, clears the stale pointer, and still releases reservations.
 - If reservation release fails, JSON output includes `done.reservation_release.error` for follow-up.
 
+### `tak takeover` stale-owner transfer helper
+
+Use `tak takeover` when a task is still `in_progress` but the current owner appears stale.
+
+```bash
+# Only take over when owner inactivity meets threshold
+tak takeover <task-id> --assignee agent-2 --inactive-secs 1800
+
+# Emergency override (bypass inactivity guardrail)
+tak takeover <task-id> --assignee agent-2 --force
+```
+
+Guardrails and rollback:
+
+- Default safety path requires stale ownership evidence (`inactive-secs` or default mesh registration TTL).
+- Success output includes `previous_owner`, `decision`, and resulting assignment/state in json/pretty/minimal modes.
+- If you took ownership too early, hand it back immediately:
+  - `tak handoff <task-id> --summary "takeover reverted; owner still active"`
+  - or `tak unassign <task-id>` and coordinate via blackboard.
+
 ## Stigmergic Coordination Model
 
 Tak is optimized for **coordination through shared state** in a Minsky-style "society of mind": many narrow specialists, one shared memory.
@@ -81,7 +104,7 @@ Bottom-up principles:
 - **Global order emerges:** priority + dependencies + availability produce system-level flow.
 - **Coordination is environmental:** progress signals live in artifacts, not in a central conductor.
 
-In practice: claim work, reserve paths, post meaningful updates in shared channels, then finish/handoff and release reservations.
+In practice: claim work, reserve paths, post meaningful updates in shared channels, run learnings closeout, then finish/handoff and release reservations.
 
 ## Commands
 
@@ -91,23 +114,52 @@ Task ID arguments across commands accept canonical hex, unique hex prefixes, and
 |---------|-------------|
 | `tak init` | Initialize `.tak/` in the current repository |
 | `tak create <title>` | Create a task (`--kind`, `--parent`, `--depends-on`, contract + planning flags) |
+| `tak import <source>` | Import YAML/JSON task plans (`--dry-run` validates and previews without writing) |
 | `tak show <task-id>` / `tak list` / `tak tree [task-id]` | Query tasks and hierarchy |
 | `tak edit <task-id>` | Update task metadata (`--title`, `--kind`, tags, contract/planning, `--pr`) |
 | `tak claim` / `tak start <task-id>` | Start work (atomic claim preferred in multi-agent mode) |
+| `tak takeover <task-id>` | Transfer stale in-progress ownership with guardrails (`--inactive-secs`, `--force`) |
 | `tak work [start\|status\|stop\|done]` | CLI-native work loop controller (resume/claim, inspect state, stop loop, or finish+release with optional pause) |
 | `tak finish <task-id>` / `tak handoff <task-id>` / `tak cancel <task-id>` | Close, hand off, or cancel execution |
 | `tak reopen <task-id>` / `tak unassign <task-id>` | Reopen or clear assignment |
 | `tak depend` / `tak undepend` / `tak reparent` / `tak orphan` | Manage dependency + parent-child edges |
+| `tak wait` | Deterministically wait for reservation/path or dependency blockers to clear (`--path` or `--on-task`, optional `--timeout`) |
 | `tak context <task-id>` / `tak log <task-id>` / `tak verify <task-id>` | Task sidecars: notes, history, verification |
 | `tak learn <subcommand>` | Manage learnings + suggestions |
-| `tak mesh <subcommand>` | Agent presence, messaging, reservations, activity feed |
+| `tak mesh <subcommand>` | Agent presence + coordination ops (`join/list/send/inbox`, lease upkeep `heartbeat/cleanup`, reservation diagnostics `blockers/reservations`, `reserve/release/feed`) |
 | `tak blackboard <subcommand>` | Shared coordination notes (`post/list/show/close/reopen`), including structured `post --template blocker\|handoff\|status`, delta refs (`--since-note`, `--no-change-since`), and sensitive-text lint warnings |
 | `tak therapist <subcommand>` | Workflow diagnosis (`offline`, `online`, `log`) |
-| `tak tui` | Interactive cross-domain explorer for tasks/learnings/blackboard/mesh/feed (`--focus`, `--query`) |
+| `tak metrics <burndown\|completion-time\|tui>` | Metrics trends + dashboard (`--from/--to`, `--bucket day\|week`, filters; completion-time `--metric lead\|cycle`; `--include-cancelled` for burndown/TUI only) |
+| `tak tui` | Interactive cross-domain explorer for tasks/learnings/blackboard/mesh/feed with in-UI search + detail panes (`--focus`, `--query`) |
 | `tak migrate-ids [--dry-run\|--apply]` | Task ID migration workflow (preflight/apply rewrite + audit map + config bump) |
 | `tak delete <task-id>` | Delete task (`--force` to cascade orphan/removal behavior) |
 | `tak reindex` | Rebuild SQLite index from task files |
 | `tak setup` / `tak doctor` | Install/check integrations and environment health |
+
+### Metrics quick examples
+
+```bash
+# Burndown trend by week (last month window can be overridden)
+tak metrics burndown --bucket week --from 2026-01-01 --to 2026-02-10 --tag metrics
+
+# Completion-time trend (cycle time by default; use lead for end-to-end)
+tak metrics completion-time --metric lead --bucket week --kind task
+
+# Human-readable summaries
+tak --format pretty metrics burndown --bucket day
+tak --format minimal metrics completion-time --metric cycle
+
+# Interactive dashboard
+tak metrics tui --bucket day --metric cycle
+
+# Cross-domain explorer (tasks + learnings + coordination runtime)
+tak tui --focus tasks --query blocker
+```
+
+Option semantics:
+- Default window is the last 30 days (`--to` defaults to today, `--from` defaults to 30 days earlier).
+- `--include-cancelled` is supported for `metrics burndown` and `metrics tui`; `metrics completion-time --include-cancelled` is rejected with `metrics_invalid_query`.
+- `--from` must be on or before `--to`; invalid combinations return structured `metrics_invalid_query` errors.
 
 All commands output JSON by default. Use `--format pretty` for human-readable output or `--format minimal` for tabular summaries.
 
@@ -201,7 +253,7 @@ The default loop is bottom-up and stigmergic: agents coordinate through shared t
 tak claim --assignee agent-1
 
 # 2) Reserve the paths you will touch before major edits
-tak mesh reserve --name agent-1 --path src/store/mesh.rs --reason task-0000000000000003
+tak mesh reserve --name agent-1 --path src/store/coordination_db.rs --reason task-0000000000000003
 
 # 3) Publish durable team context / blockers
 tak blackboard post --from agent-1 --template status --task 0000000000000003 --message "Reservation diagnostics in progress"
@@ -212,8 +264,16 @@ tak context 0000000000000003 --set "Need overlap checks for parent/child paths"
 # 5) Finish (or handoff), then release reservations
 tak finish 0000000000000003
 # tak handoff 0000000000000003 --summary "Parser done; tests remain"
-tak mesh release --name agent-1 --path src/store/mesh.rs
+tak mesh release --name agent-1 --path src/store/coordination_db.rs
 ```
+
+### Implementation-cycle learnings closeout (required)
+
+Before you end a cycle (`finish`, `handoff`, or `cancel`), do a learnings pass:
+
+1. Capture reusable insight/pitfall/pattern with `tak learn add ... --task <id>` (or `tak learn edit ... --add-task <id>`).
+2. Ensure `.tak/learnings/*.json` (and any linked task JSON updates) are committed in the same implementation cycle.
+3. Do not defer learning commits to a later unrelated change.
 
 Template shortcuts for consistent high-signal notes:
 

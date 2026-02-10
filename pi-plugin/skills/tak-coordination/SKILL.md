@@ -30,6 +30,7 @@ Examples: `tak show ef94`, `tak depend b48b --on ef94`.
    - reserve paths (`mesh reserve`) before major edits,
    - release reservations when done (`mesh release`).
 5. **Use blackboard** for shared context, blockers, and handoffs (`blackboard post/list/close`).
+6. **Close each implementation cycle with learnings**: capture reusable insights via `tak learn add/edit --task <id>` and commit `.tak/learnings/*.json` updates in the same cycle.
 
 ## Recommended flow
 
@@ -38,7 +39,8 @@ Examples: `tak show ef94`, `tak depend b48b --on ef94`.
 3. Claim/start (`tak claim` or `tak start <id> --assignee <agent>`)
 4. Reserve touched files (`tak mesh reserve --name <agent> --path <path> --reason task-<id>`)
 5. Execute work and keep blackboard updated for cross-agent visibility
-6. Finish/handoff and release reservations
+6. Run learnings closeout (`tak learn add/edit --task <id>`) and commit `.tak/learnings/*.json` updates for this cycle
+7. Finish/handoff and release reservations
 
 > Note: In Claude Code (without the pi extension runtime), use the same `/tak work` phrasing to trigger the analogous conversational loop in the `tak-task-execution` skill.
 
