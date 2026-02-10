@@ -19,11 +19,17 @@ type TaskSource = "ready" | "all" | "blocked" | "in_progress" | "mine" | "blackb
 type Priority = "critical" | "high" | "medium" | "low";
 type TaskStatus = "pending" | "in_progress" | "done" | "cancelled";
 type VerifyMode = "isolated" | "local";
+type WorkClaimStrategy = "priority_then_age" | "epic_closeout";
 type WorkCueMode = "editor" | "auto";
 type WorkAction = "start" | "stop" | "status";
+type LifecycleAction = "start" | "finish" | "handoff" | "cancel" | "reopen" | "unassign";
+type GraphAction = "depend" | "undepend" | "reparent" | "orphan";
 type TherapistAction = "offline" | "online" | "log";
+type MeshAction = "summary" | "send" | "broadcast" | "reserve" | "release" | "feed" | "blockers";
+type BlackboardAction = "post" | "show" | "close" | "reopen";
+type BlackboardTemplate = "blocker" | "handoff" | "status";
 
-type CommandMode = "pick" | "claim" | "mesh" | "show" | "help" | "work" | "therapist";
+type CommandMode = "pick" | "claim" | "mesh" | "blackboard" | "wait" | "lifecycle" | "graph" | "show" | "help" | "work" | "therapist";
 
 interface TakTask {
 	id: string;
@@ -106,6 +112,7 @@ interface TakFilters {
 	taskId?: string;
 	ackInbox?: boolean;
 	verifyMode?: VerifyMode;
+	workStrategy?: WorkClaimStrategy;
 	workCueMode?: WorkCueMode;
 }
 
@@ -114,6 +121,34 @@ interface ParsedTakCommand {
 	filters: TakFilters;
 	taskId?: string;
 	workAction?: WorkAction;
+	meshAction?: MeshAction;
+	meshTo?: string;
+	meshMessage?: string;
+	meshPaths?: string[];
+	meshReason?: string;
+	meshAll?: boolean;
+	blackboardAction?: BlackboardAction;
+	blackboardId?: number;
+	blackboardMessage?: string;
+	blackboardTemplate?: BlackboardTemplate;
+	blackboardSinceNote?: number;
+	blackboardNoChangeSince?: boolean;
+	blackboardBy?: string;
+	blackboardReason?: string;
+	blackboardTags?: string[];
+	blackboardTaskIds?: string[];
+	waitPath?: string;
+	waitOnTask?: string;
+	waitTimeout?: number;
+	lifecycleAction?: LifecycleAction;
+	lifecycleTaskId?: string;
+	lifecycleSummary?: string;
+	lifecycleReason?: string;
+	lifecycleAssignee?: string;
+	graphAction?: GraphAction;
+	graphTaskId?: string;
+	graphOnTaskIds?: string[];
+	graphToTaskId?: string;
 	therapistAction?: TherapistAction;
 	therapistSession?: string;
 	therapistBy?: string;
@@ -124,10 +159,28 @@ interface WorkLoopState {
 	tag?: string;
 	remaining?: number;
 	verifyMode: VerifyMode;
+	claimStrategy: WorkClaimStrategy;
 	cueMode: WorkCueMode;
 	strictReservations: boolean;
 	currentTaskId?: string;
 	processed: number;
+}
+
+interface TakWorkLoopPayload {
+	active: boolean;
+	tag?: string;
+	remaining?: number;
+	verifyMode: VerifyMode;
+	claimStrategy: WorkClaimStrategy;
+	currentTaskId?: string;
+	processed: number;
+}
+
+interface TakWorkResponsePayload {
+	event: string;
+	agent: string;
+	loop: TakWorkLoopPayload;
+	currentTask?: TakTask;
 }
 
 interface TakStatusSnapshot {
@@ -171,7 +224,16 @@ const TAK_HELP = `
 /tak work [tag:<tag>] [limit:<n>] [verify:isolated|local] [auto|cue:auto|cue:editor]
                                    Start/resume autonomous work loop
 /tak work status|stop              Inspect or stop work loop
-/tak mesh                          Insert a mesh + blackboard summary in the editor
+/tak mesh [summary|send|broadcast|reserve|release|feed|blockers]
+                                   Mesh action parity: summary + coordination subcommands
+/tak blackboard [post|show|close|reopen]
+                                   Blackboard action parity for note lifecycle operations
+/tak wait path:<path>|on-task:<id> [timeout:<sec>]
+                                   Deterministic wait for reservation/task unblock conditions
+/tak start|finish|handoff|cancel|reopen|unassign <task-id> [...options]
+                                   Lifecycle shortcuts for core task transitions
+/tak depend|undepend|reparent|orphan <task-id> [...options]
+                                   Dependency/structure shortcuts for task graph edits
 /tak therapist [offline|online|log]
                                    Run workflow diagnosis/interview and append observations
 /tak <task-id>                     Open a specific task
@@ -195,10 +257,24 @@ Filters (space-separated):
 - task:<id>         (for blackboard source)
 - ack               (for inbox source)
 - verify:<mode>     (for /tak work; mode = isolated | local)
+- strategy:<value>  (for /tak work; value = priority_then_age | epic_closeout)
 - cue:<mode>        (for /tak work; mode = auto | editor)
 - auto              (shorthand for cue:auto)
-- session:<id|path> (for /tak therapist online)
-- by:<name>         (for /tak therapist offline|online)
+- session:<id|path>     (for /tak therapist online)
+- by:<name>             (for /tak therapist offline|online and blackboard close/reopen)
+- to:<agent>            (for /tak mesh send)
+- message:<text>        (for /tak mesh send|broadcast and blackboard post; free text also supported)
+- path:<path>           (for /tak mesh reserve|release|blockers and /tak wait path target; repeatable)
+- on-task:<id>          (for /tak wait task unblock target)
+- timeout:<sec>         (for /tak wait timeout)
+- on:<id[,id]>          (for /tak depend and /tak undepend dependency targets)
+- to:<id>               (for /tak reparent destination)
+- summary:<text>        (for /tak handoff summary)
+- reason:<text>         (for /tak mesh reserve, /tak cancel, and blackboard close)
+- all                   (for /tak mesh release --all)
+- template:<kind>       (for /tak blackboard post; blocker|handoff|status)
+- since-note:<id>       (for /tak blackboard post delta context)
+- no-change-since       (for /tak blackboard post with since-note)
 
 Work mode notes:
 - Automatically claims the next available task for you.
@@ -226,6 +302,30 @@ const COMPLETIONS = [
 	"work status",
 	"work stop",
 	"mesh",
+	"mesh summary",
+	"mesh send",
+	"mesh broadcast",
+	"mesh reserve",
+	"mesh release",
+	"mesh feed",
+	"mesh blockers",
+	"blackboard post",
+	"blackboard show",
+	"blackboard close",
+	"blackboard reopen",
+	"wait",
+	"wait path:",
+	"wait on-task:",
+	"start",
+	"finish",
+	"handoff",
+	"cancel",
+	"reopen",
+	"unassign",
+	"depend",
+	"undepend",
+	"reparent",
+	"orphan",
 	"therapist",
 	"therapist offline",
 	"therapist online",
@@ -249,12 +349,28 @@ const COMPLETIONS = [
 	"task:",
 	"session:",
 	"by:",
+	"to:",
+	"message:",
+	"path:",
+	"on:",
+	"on-task:",
+	"timeout:",
+	"summary:",
+	"reason:",
+	"template:blocker",
+	"template:handoff",
+	"template:status",
+	"since-note:",
+	"no-change-since",
+	"all",
 	"ack",
 	"auto",
 	"cue:auto",
 	"cue:editor",
 	"verify:isolated",
 	"verify:local",
+	"strategy:priority_then_age",
+	"strategy:epic_closeout",
 ] as const;
 
 const SOURCE_SET: Set<string> = new Set([
@@ -414,6 +530,54 @@ function coerceTakTaskArray(value: unknown): TakTask[] {
 	return value.map(coerceTakTask).filter((task): task is TakTask => task !== null);
 }
 
+function coerceNonNegativeInteger(value: unknown): number | undefined {
+	if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
+		return Math.trunc(value);
+	}
+	if (typeof value === "string" && /^\d+$/.test(value)) {
+		const parsed = Number.parseInt(value, 10);
+		if (Number.isFinite(parsed) && parsed >= 0) return parsed;
+	}
+	return undefined;
+}
+
+function coerceTakWorkLoopPayload(value: unknown): TakWorkLoopPayload | null {
+	if (!isRecord(value)) return null;
+	if (typeof value.active !== "boolean") return null;
+
+	const verifyMode = value.verify_mode === "local" ? "local" : "isolated";
+	const claimStrategy = value.claim_strategy === "epic_closeout" ? "epic_closeout" : "priority_then_age";
+	const processed = coerceNonNegativeInteger(value.processed) ?? 0;
+	const remainingRaw = coerceNonNegativeInteger(value.remaining);
+	const tag = typeof value.tag === "string" && value.tag.trim() ? value.tag.trim() : undefined;
+
+	return {
+		active: value.active,
+		tag,
+		remaining: remainingRaw,
+		verifyMode,
+		claimStrategy,
+		currentTaskId: canonicalTaskId(value.current_task_id),
+		processed,
+	};
+}
+
+function coerceTakWorkResponse(value: unknown): TakWorkResponsePayload | null {
+	if (!isRecord(value)) return null;
+	const event = typeof value.event === "string" ? value.event : undefined;
+	const loop = coerceTakWorkLoopPayload(value.loop);
+	if (!event || !loop) return null;
+
+	const currentTask = value.current_task === null ? undefined : coerceTakTask(value.current_task);
+
+	return {
+		event,
+		agent: typeof value.agent === "string" ? value.agent : "",
+		loop,
+		currentTask: currentTask ?? undefined,
+	};
+}
+
 function coerceBlackboardNote(value: unknown): BlackboardNote | null {
 	if (!isRecord(value)) return null;
 	const rawId = value.id;
@@ -558,7 +722,183 @@ function parseTakCommandInput(rawArgs: string): ParsedTakCommand {
 	}
 
 	if (first === "mesh") {
-		return { mode: "mesh", filters };
+		let meshAction: MeshAction = "summary";
+		let tokenStart = 1;
+		const second = tokens[1]?.toLowerCase();
+		if (
+			second === "summary" ||
+			second === "send" ||
+			second === "broadcast" ||
+			second === "reserve" ||
+			second === "release" ||
+			second === "feed" ||
+			second === "blockers"
+		) {
+			meshAction = second;
+			tokenStart = 2;
+		}
+
+		let meshTo: string | undefined;
+		let meshReason: string | undefined;
+		let meshAll = false;
+		const meshPaths: string[] = [];
+		const messageParts: string[] = [];
+
+		for (const token of tokens.slice(tokenStart)) {
+			const [rawKey, ...rawValueParts] = token.split(":");
+			if (rawKey && rawValueParts.length > 0) {
+				const key = rawKey.toLowerCase();
+				const value = rawValueParts.join(":").trim();
+
+				if ((key === "to" || key === "agent") && value) {
+					meshTo = value;
+					continue;
+				}
+				if ((key === "message" || key === "msg" || key === "text") && value) {
+					messageParts.push(value);
+					continue;
+				}
+				if (key === "path" && value) {
+					meshPaths.push(value);
+					continue;
+				}
+				if (key === "reason" && value) {
+					meshReason = value;
+					continue;
+				}
+
+				applyFilterToken(token, filters);
+				continue;
+			}
+
+			if (token.toLowerCase() === "all") {
+				meshAll = true;
+				continue;
+			}
+
+			if (meshAction === "reserve" || meshAction === "release" || meshAction === "blockers") {
+				meshPaths.push(token);
+			} else {
+				messageParts.push(token);
+			}
+		}
+
+		const meshMessage = messageParts.join(" ").trim() || undefined;
+		const uniqueMeshPaths = Array.from(new Set(meshPaths.map((p) => p.trim()).filter(Boolean)));
+
+		return {
+			mode: "mesh",
+			filters,
+			meshAction,
+			meshTo,
+			meshMessage,
+			meshPaths: uniqueMeshPaths,
+			meshReason,
+			meshAll,
+		};
+	}
+
+	if (first === "blackboard") {
+		const second = tokens[1]?.toLowerCase();
+		if (second === "post" || second === "show" || second === "close" || second === "reopen") {
+			const blackboardAction: BlackboardAction = second;
+			let blackboardId: number | undefined;
+			let blackboardTemplate: BlackboardTemplate | undefined;
+			let blackboardSinceNote: number | undefined;
+			let blackboardNoChangeSince = false;
+			let blackboardBy: string | undefined;
+			let blackboardReason: string | undefined;
+			const blackboardTags: string[] = [];
+			const blackboardTaskIds: string[] = [];
+			const messageParts: string[] = [];
+
+			for (const token of tokens.slice(2)) {
+				const lower = token.toLowerCase();
+				if (lower === "no-change-since") {
+					blackboardNoChangeSince = true;
+					continue;
+				}
+
+				const [rawKey, ...rawValueParts] = token.split(":");
+				if (rawKey && rawValueParts.length > 0) {
+					const key = rawKey.toLowerCase();
+					const value = rawValueParts.join(":").trim();
+					if (!value) continue;
+
+					if ((key === "by" || key === "from") && value) {
+						blackboardBy = value;
+						continue;
+					}
+					if ((key === "message" || key === "msg" || key === "text") && value) {
+						messageParts.push(value);
+						continue;
+					}
+					if (key === "template") {
+						const normalized = value.toLowerCase();
+						if (normalized === "blocker" || normalized === "handoff" || normalized === "status") {
+							blackboardTemplate = normalized;
+						}
+						continue;
+					}
+					if (key === "since-note" || key === "since_note" || key === "since") {
+						if (/^\d+$/.test(value)) {
+							blackboardSinceNote = Number.parseInt(value, 10);
+						}
+						continue;
+					}
+					if (key === "reason") {
+						blackboardReason = value;
+						continue;
+					}
+					if (key === "tag") {
+						blackboardTags.push(value);
+						continue;
+					}
+					if (key === "task") {
+						const taskId = normalizeTaskIdInput(value);
+						if (taskId) {
+							blackboardTaskIds.push(taskId);
+						}
+						continue;
+					}
+					if ((key === "id" || key === "note") && /^\d+$/.test(value)) {
+						blackboardId = Number.parseInt(value, 10);
+						continue;
+					}
+
+					applyFilterToken(token, filters);
+					continue;
+				}
+
+				if ((blackboardAction === "show" || blackboardAction === "close" || blackboardAction === "reopen") && /^\d+$/.test(token)) {
+					blackboardId = Number.parseInt(token, 10);
+					continue;
+				}
+
+				if (blackboardAction === "post") {
+					messageParts.push(token);
+				}
+			}
+
+			const dedupedTags = Array.from(new Set(blackboardTags.map((tag) => tag.trim()).filter(Boolean)));
+			const dedupedTaskIds = Array.from(new Set(blackboardTaskIds.map((taskId) => taskId.trim()).filter(Boolean)));
+			const blackboardMessage = messageParts.join(" ").trim() || undefined;
+
+			return {
+				mode: "blackboard",
+				filters,
+				blackboardAction,
+				blackboardId,
+				blackboardMessage,
+				blackboardTemplate,
+				blackboardSinceNote,
+				blackboardNoChangeSince,
+				blackboardBy,
+				blackboardReason,
+				blackboardTags: dedupedTags,
+				blackboardTaskIds: dedupedTaskIds,
+			};
+		}
 	}
 
 	if (first === "therapist") {
@@ -614,6 +954,183 @@ function parseTakCommandInput(rawArgs: string): ParsedTakCommand {
 		}
 		for (const token of tokens.slice(filterStart)) applyFilterToken(token, filters);
 		return { mode: "work", filters, workAction };
+	}
+
+	if (first === "wait") {
+		let waitPath: string | undefined;
+		let waitOnTask: string | undefined;
+		let waitTimeout: number | undefined;
+
+		for (const token of tokens.slice(1)) {
+			const [rawKey, ...rawValueParts] = token.split(":");
+			if (rawKey && rawValueParts.length > 0) {
+				const key = rawKey.toLowerCase();
+				const value = rawValueParts.join(":").trim();
+				if (!value) continue;
+
+				if (key === "path") {
+					waitPath = value;
+					continue;
+				}
+				if (key === "on-task" || key === "on_task" || key === "task") {
+					const parsed = normalizeTaskIdInput(value);
+					if (parsed) waitOnTask = parsed;
+					continue;
+				}
+				if (key === "timeout") {
+					const parsed = Number.parseInt(value, 10);
+					if (Number.isFinite(parsed) && parsed > 0) waitTimeout = parsed;
+					continue;
+				}
+			}
+
+			if (!waitPath && !waitOnTask) {
+				const maybeTask = normalizeTaskIdInput(token);
+				if (maybeTask) {
+					waitOnTask = maybeTask;
+					continue;
+				}
+				waitPath = token;
+			}
+		}
+
+		return { mode: "wait", filters, waitPath, waitOnTask, waitTimeout };
+	}
+
+	if (
+		first === "start" ||
+		first === "finish" ||
+		first === "handoff" ||
+		first === "cancel" ||
+		first === "reopen" ||
+		first === "unassign"
+	) {
+		const lifecycleAction: LifecycleAction = first;
+		let lifecycleTaskId: string | undefined;
+		let lifecycleAssignee: string | undefined;
+		const summaryParts: string[] = [];
+		const reasonParts: string[] = [];
+
+		for (const token of tokens.slice(1)) {
+			const [rawKey, ...rawValueParts] = token.split(":");
+			if (rawKey && rawValueParts.length > 0) {
+				const key = rawKey.toLowerCase();
+				const value = rawValueParts.join(":").trim();
+				if (!value) continue;
+
+				if (key === "task" || key === "id") {
+					const parsed = normalizeTaskIdInput(value);
+					if (parsed) lifecycleTaskId = parsed;
+					continue;
+				}
+				if (key === "assignee" || key === "by" || key === "from") {
+					lifecycleAssignee = value;
+					continue;
+				}
+				if (key === "summary") {
+					summaryParts.push(value);
+					continue;
+				}
+				if (key === "reason") {
+					reasonParts.push(value);
+					continue;
+				}
+
+				applyFilterToken(token, filters);
+				continue;
+			}
+
+			const maybeTask = normalizeTaskIdInput(token);
+			if (!lifecycleTaskId && maybeTask) {
+				lifecycleTaskId = maybeTask;
+				continue;
+			}
+
+			if (lifecycleAction === "handoff") {
+				summaryParts.push(token);
+			} else if (lifecycleAction === "cancel") {
+				reasonParts.push(token);
+			}
+		}
+
+		const lifecycleSummary = summaryParts.join(" ").trim() || undefined;
+		const lifecycleReason = reasonParts.join(" ").trim() || undefined;
+
+		return {
+			mode: "lifecycle",
+			filters,
+			lifecycleAction,
+			lifecycleTaskId,
+			lifecycleSummary,
+			lifecycleReason,
+			lifecycleAssignee,
+		};
+	}
+
+	if (first === "depend" || first === "undepend" || first === "reparent" || first === "orphan") {
+		const graphAction: GraphAction = first;
+		let graphTaskId: string | undefined;
+		let graphToTaskId: string | undefined;
+		const graphOnTaskIds: string[] = [];
+
+		const pushGraphTargets = (raw: string) => {
+			for (const piece of raw.split(",")) {
+				const parsed = normalizeTaskIdInput(piece.trim());
+				if (parsed) graphOnTaskIds.push(parsed);
+			}
+		};
+
+		for (const token of tokens.slice(1)) {
+			const [rawKey, ...rawValueParts] = token.split(":");
+			if (rawKey && rawValueParts.length > 0) {
+				const key = rawKey.toLowerCase();
+				const value = rawValueParts.join(":").trim();
+				if (!value) continue;
+
+				if (key === "task" || key === "id") {
+					const parsed = normalizeTaskIdInput(value);
+					if (parsed) graphTaskId = parsed;
+					continue;
+				}
+				if (key === "to") {
+					const parsed = normalizeTaskIdInput(value);
+					if (parsed) graphToTaskId = parsed;
+					continue;
+				}
+				if (key === "on") {
+					pushGraphTargets(value);
+					continue;
+				}
+
+				applyFilterToken(token, filters);
+				continue;
+			}
+
+			const maybeTask = normalizeTaskIdInput(token);
+			if (!graphTaskId && maybeTask) {
+				graphTaskId = maybeTask;
+				continue;
+			}
+
+			if (graphAction === "reparent" && !graphToTaskId && maybeTask) {
+				graphToTaskId = maybeTask;
+				continue;
+			}
+
+			if (graphAction === "depend" || graphAction === "undepend") {
+				pushGraphTargets(token);
+			}
+		}
+
+		const uniqueOnTaskIds = Array.from(new Set(graphOnTaskIds));
+		return {
+			mode: "graph",
+			filters,
+			graphAction,
+			graphTaskId,
+			graphOnTaskIds: uniqueOnTaskIds,
+			graphToTaskId,
+		};
 	}
 
 	const directSource = parseSource(first);
@@ -692,6 +1209,11 @@ function applyFilterToken(token: string, filters: TakFilters): void {
 		case "verify":
 			if (value.toLowerCase() === "isolated" || value.toLowerCase() === "local") {
 				filters.verifyMode = value.toLowerCase() as VerifyMode;
+			}
+			break;
+		case "strategy":
+			if (value.toLowerCase() === "priority_then_age" || value.toLowerCase() === "epic_closeout") {
+				filters.workStrategy = value.toLowerCase() as WorkClaimStrategy;
 			}
 			break;
 		case "cue":
@@ -1197,6 +1719,7 @@ function formatWorkLoopStatus(workLoop: WorkLoopState): string {
 	if (workLoop.tag) parts.push(`tag=${workLoop.tag}`);
 	if (workLoop.remaining !== undefined) parts.push(`remaining=${workLoop.remaining}`);
 	parts.push(`verify=${workLoop.verifyMode}`);
+	parts.push(`strategy=${workLoop.claimStrategy}`);
 	parts.push(`cue=${workLoop.cueMode}`);
 	parts.push(`processed=${workLoop.processed}`);
 	return parts.join(" | ");
@@ -1363,7 +1886,7 @@ function buildTaskEditorText(
 	if (workLoop?.active) {
 		lines.push(
 			"",
-			`Work loop active (verify=${workLoop.verifyMode}, cue=${workLoop.cueMode}).`,
+			`Work loop active (verify=${workLoop.verifyMode}, strategy=${workLoop.claimStrategy}, cue=${workLoop.cueMode}).`,
 			"- Finish with: tak finish <task-id>",
 			"- Blocked/unable: tak handoff <task-id> --summary \"...\" (or tak cancel --reason)",
 			"- Next task auto-claims on the next turn once this task is no longer in progress.",
@@ -1403,6 +1926,7 @@ export default function takPiExtension(pi: ExtensionAPI) {
 	let workLoop: WorkLoopState = {
 		active: false,
 		verifyMode: "isolated",
+		claimStrategy: "priority_then_age",
 		cueMode: "editor",
 		strictReservations: true,
 		processed: 0,
@@ -1421,16 +1945,12 @@ export default function takPiExtension(pi: ExtensionAPI) {
 		workLoop = {
 			active: false,
 			verifyMode: "isolated",
+			claimStrategy: "priority_then_age",
 			cueMode: "editor",
 			strictReservations: true,
 			processed: 0,
 			...overrides,
 		};
-	}
-
-	async function releaseOwnReservations(): Promise<void> {
-		if (!agentName) return;
-		await runTak(pi, ["mesh", "release", "--name", agentName, "--all"]);
 	}
 
 	async function maybeHeartbeat(ctx: ExtensionContext): Promise<void> {
@@ -1474,92 +1994,110 @@ export default function takPiExtension(pi: ExtensionAPI) {
 		ctx.ui.setEditorText(cueText);
 	}
 
-	async function claimNextWorkTask(ctx: ExtensionContext): Promise<boolean> {
+	function applyWorkLoopFromRuntime(
+		runtime: TakWorkLoopPayload,
+		overrides?: { cueMode?: WorkCueMode; strictReservations?: boolean },
+	): void {
+		workLoop = {
+			...workLoop,
+			active: runtime.active,
+			tag: runtime.tag,
+			remaining: runtime.remaining,
+			verifyMode: runtime.verifyMode,
+			claimStrategy: runtime.claimStrategy,
+			currentTaskId: runtime.currentTaskId,
+			processed: runtime.processed,
+			cueMode: overrides?.cueMode ?? workLoop.cueMode,
+			strictReservations: overrides?.strictReservations ?? workLoop.strictReservations,
+		};
+	}
+
+	async function fetchOpenTaskNotes(taskId: string): Promise<BlackboardNote[]> {
+		const notesResult = await runTak(pi, ["blackboard", "list", "--status", "open", "--task", taskId]);
+		return coerceBlackboardNoteArray(notesResult.parsed);
+	}
+
+	async function runTakWorkAction(
+		ctx: ExtensionContext,
+		action: WorkAction,
+		options?: { tag?: string; limit?: number; verifyMode?: VerifyMode; strategy?: WorkClaimStrategy },
+	): Promise<TakWorkResponsePayload | null> {
 		if (!agentName) {
 			ctx.ui.notify("/tak work requires mesh agent identity", "warning");
-			return false;
+			return null;
 		}
 
-		const claimArgs = ["claim", "--assignee", agentName];
-		if (workLoop.tag) {
-			claimArgs.push("--tag", workLoop.tag);
+		const workArgs = ["work"];
+		if (action !== "start") workArgs.push(action);
+		workArgs.push("--assignee", agentName);
+
+		if (action === "start") {
+			if (options?.tag) workArgs.push("--tag", options.tag);
+			if (options?.limit !== undefined) workArgs.push("--limit", String(options.limit));
+			if (options?.verifyMode) workArgs.push("--verify", options.verifyMode);
+			if (options?.strategy) workArgs.push("--strategy", options.strategy);
 		}
 
-		const claimResult = await runTak(pi, claimArgs);
-		if (!claimResult.ok) {
-			return false;
+		const result = await runTak(pi, workArgs);
+		if (!result.ok) {
+			ctx.ui.notify(result.errorMessage ?? `tak work ${action} failed`, "warning");
+			return null;
 		}
 
-		const task = coerceTakTask(claimResult.parsed);
-		if (!task) return false;
-		workLoop.currentTaskId = task.id;
+		const response = coerceTakWorkResponse(result.parsed);
+		if (!response) {
+			ctx.ui.notify(`tak work ${action} returned an unexpected payload`, "warning");
+			return null;
+		}
 
-		const notesResult = await runTak(pi, ["blackboard", "list", "--status", "open", "--task", task.id]);
-		const notes = coerceBlackboardNoteArray(notesResult.parsed);
-		cueTaskForWorkLoop(ctx, task, notes);
-		ctx.ui.notify(`Work loop claimed task #${task.id}: ${task.title}`, "info");
-		return true;
+		return response;
+	}
+
+	async function handleTakWorkResponse(
+		ctx: ExtensionContext,
+		response: TakWorkResponsePayload,
+		options?: { cueMode?: WorkCueMode; notifyTransitions?: boolean },
+	): Promise<void> {
+		const previousTaskId = workLoop.currentTaskId;
+		applyWorkLoopFromRuntime(response.loop, {
+			cueMode: options?.cueMode,
+			strictReservations: true,
+		});
+
+		const task = response.currentTask;
+		const shouldCueTask =
+			Boolean(task) &&
+			(response.event === "claimed" ||
+				response.event === "attached" ||
+				(response.event === "continued" && task?.id !== previousTaskId));
+		if (task && shouldCueTask) {
+			const notes = await fetchOpenTaskNotes(task.id);
+			cueTaskForWorkLoop(ctx, task, notes);
+		}
+
+		if (!options?.notifyTransitions) return;
+
+		switch (response.event) {
+			case "claimed":
+				if (task) ctx.ui.notify(`Work loop claimed task #${task.id}: ${task.title}`, "info");
+				break;
+			case "attached":
+				if (task) ctx.ui.notify(`Work loop attached to in-progress task #${task.id}: ${task.title}`, "info");
+				break;
+			case "limit_reached":
+				ctx.ui.notify("Work loop finished requested task limit.", "info");
+				break;
+			case "no_work":
+				ctx.ui.notify("Work loop stopped: no claimable task available.", "info");
+				break;
+		}
 	}
 
 	async function syncWorkLoop(ctx: ExtensionContext): Promise<void> {
 		if (!integrationEnabled() || !workLoop.active || !agentName) return;
-
-		if (workLoop.currentTaskId !== undefined) {
-			const showResult = await runTak(pi, ["show", workLoop.currentTaskId]);
-			const task = showResult.ok ? coerceTakTask(showResult.parsed) : null;
-			if (!task) {
-				ctx.ui.notify(
-					showResult.errorMessage ?? `Could not refresh work-loop task #${workLoop.currentTaskId}`,
-					"warning",
-				);
-				workLoop.currentTaskId = undefined;
-			} else {
-				const stillMine = task.status === "in_progress" && task.assignee === agentName;
-				if (stillMine) {
-					return;
-				}
-
-				workLoop.currentTaskId = undefined;
-				workLoop.processed += 1;
-				if (workLoop.remaining !== undefined && workLoop.remaining > 0) {
-					workLoop.remaining -= 1;
-				}
-				await releaseOwnReservations();
-			}
-		}
-
-		if (workLoop.remaining !== undefined && workLoop.remaining <= 0) {
-			ctx.ui.notify("Work loop finished requested task limit.", "info");
-			resetWorkLoop();
-			return;
-		}
-
-		if (workLoop.currentTaskId === undefined) {
-			const inProgressResult = await runTak(pi, ["list", "--status", "in_progress", "--assignee", agentName]);
-			const mine = sortTasksUrgentThenOldest(coerceTakTaskArray(inProgressResult.parsed));
-			if (mine.length > 0) {
-				const existing = mine[0]!;
-				workLoop.currentTaskId = existing.id;
-				const notesResult = await runTak(pi, [
-					"blackboard",
-					"list",
-					"--status",
-					"open",
-					"--task",
-					existing.id,
-				]);
-				const notes = coerceBlackboardNoteArray(notesResult.parsed);
-				cueTaskForWorkLoop(ctx, existing, notes);
-				ctx.ui.notify(`Work loop attached to in-progress task #${existing.id}: ${existing.title}`, "info");
-				return;
-			}
-		}
-
-		const claimed = await claimNextWorkTask(ctx);
-		if (!claimed) {
-			ctx.ui.notify("Work loop stopped: no claimable task available.", "info");
-			resetWorkLoop();
-		}
+		const response = await runTakWorkAction(ctx, "start");
+		if (!response) return;
+		await handleTakWorkResponse(ctx, response, { notifyTransitions: true });
 	}
 
 	async function refreshStatus(ctx: ExtensionContext): Promise<void> {
@@ -1716,7 +2254,17 @@ export default function takPiExtension(pi: ExtensionAPI) {
 
 				const action = parsed.workAction ?? "start";
 				if (action === "status") {
-					ctx.ui.setEditorText(formatWorkLoopStatus(workLoop));
+					const response = await runTakWorkAction(ctx, "status");
+					if (!response) {
+						await refreshStatus(ctx);
+						return;
+					}
+					await handleTakWorkResponse(ctx, response);
+					const lines = [formatWorkLoopStatus(workLoop)];
+					if (response.currentTask) {
+						lines.push(`current: #${response.currentTask.id} ${response.currentTask.title}`);
+					}
+					ctx.ui.setEditorText(lines.join("\n"));
 					ctx.ui.notify("Inserted /tak work status", "info");
 					await refreshStatus(ctx);
 					return;
@@ -1724,24 +2272,230 @@ export default function takPiExtension(pi: ExtensionAPI) {
 
 				if (action === "stop") {
 					const hadBeenActive = workLoop.active;
-					resetWorkLoop();
-					await releaseOwnReservations();
+					const response = await runTakWorkAction(ctx, "stop");
+					if (response) {
+						await handleTakWorkResponse(ctx, response);
+					} else {
+						resetWorkLoop();
+					}
 					ctx.ui.notify(hadBeenActive ? "Stopped /tak work loop" : "Work loop already inactive", "info");
 					await refreshStatus(ctx);
 					return;
 				}
 
-				resetWorkLoop({
-					active: true,
+				const cueMode = parsed.filters.workCueMode ?? workLoop.cueMode ?? "editor";
+				const response = await runTakWorkAction(ctx, "start", {
 					tag: parsed.filters.tag,
-					remaining: parsed.filters.limit,
-					verifyMode: parsed.filters.verifyMode ?? "isolated",
-					cueMode: parsed.filters.workCueMode ?? "editor",
-					strictReservations: true,
-					processed: 0,
+					limit: parsed.filters.limit,
+					verifyMode: parsed.filters.verifyMode,
+					strategy: parsed.filters.workStrategy,
 				});
-				ctx.ui.notify(`Started /tak work loop (${formatWorkLoopStatus(workLoop)})`, "info");
-				await syncWorkLoop(ctx);
+				if (!response) {
+					await refreshStatus(ctx);
+					return;
+				}
+
+				await handleTakWorkResponse(ctx, response, {
+					cueMode,
+					notifyTransitions: true,
+				});
+				if (workLoop.active) {
+					ctx.ui.notify(`Started /tak work loop (${formatWorkLoopStatus(workLoop)})`, "info");
+				}
+				await refreshStatus(ctx);
+				return;
+			}
+
+			if (parsed.mode === "wait") {
+				const waitArgs = ["wait"];
+				if (parsed.waitPath) {
+					waitArgs.push("--path", parsed.waitPath);
+				} else if (parsed.waitOnTask) {
+					waitArgs.push("--on-task", parsed.waitOnTask);
+				} else {
+					ctx.ui.notify("Usage: /tak wait path:<path> | on-task:<id> [timeout:<sec>]", "warning");
+					return;
+				}
+
+				if (parsed.waitTimeout !== undefined) {
+					waitArgs.push("--timeout", String(parsed.waitTimeout));
+				}
+
+				const effectiveTimeoutSecs = parsed.waitTimeout ?? 120;
+				const waitResult = await runTak(pi, waitArgs, {
+					timeoutMs: Math.max(15000, (effectiveTimeoutSecs + 2) * 1000),
+				});
+
+				if (!waitResult.ok) {
+					const target = parsed.waitPath ? `path:${parsed.waitPath}` : `on-task:${parsed.waitOnTask ?? "?"}`;
+					ctx.ui.setEditorText(
+						[
+							"# tak wait",
+							`target: ${target}`,
+							`result: timeout_or_error`,
+							"",
+							waitResult.errorMessage ?? "tak wait failed",
+							"",
+							"Tips:",
+							parsed.waitPath
+								? `- Diagnose blockers: /tak mesh blockers path:${parsed.waitPath}`
+								: `- Inspect task + deps: /tak ${parsed.waitOnTask ?? "<task-id>"}`,
+							"- Retry with a larger timeout:<sec> if needed.",
+						].join("\n"),
+					);
+					ctx.ui.notify(waitResult.errorMessage ?? "tak wait failed", "warning");
+					await refreshStatus(ctx);
+					return;
+				}
+
+				let mode = parsed.waitPath ? "path" : "task";
+				let target = parsed.waitPath ?? parsed.waitOnTask ?? "-";
+				let waitedMs: number | undefined;
+				if (isRecord(waitResult.parsed)) {
+					if (typeof waitResult.parsed.mode === "string") {
+						mode = waitResult.parsed.mode;
+					}
+					if (mode === "path" && typeof waitResult.parsed.path === "string") {
+						target = waitResult.parsed.path;
+					}
+					if (mode === "task") {
+						const taskTarget = canonicalTaskId(waitResult.parsed.task_id) ??
+							(typeof waitResult.parsed.task_id === "string" ? waitResult.parsed.task_id : undefined);
+						if (taskTarget) target = taskTarget;
+					}
+					waitedMs = coerceNonNegativeInteger(waitResult.parsed.waited_ms);
+				}
+
+				const lines = [
+					"# tak wait",
+					`mode: ${mode}`,
+					`target: ${target}`,
+					`status: ready`,
+					`waited_ms: ${waitedMs ?? "unknown"}`,
+					"",
+					"Next:",
+					mode === "path"
+						? "- Retry the previously blocked action now that the reservation conflict cleared."
+						: "- Continue with /tak work or reload the task to proceed.",
+				];
+				ctx.ui.setEditorText(lines.join("\n"));
+				ctx.ui.notify("Wait condition satisfied", "info");
+				await refreshStatus(ctx);
+				return;
+			}
+
+			if (parsed.mode === "lifecycle") {
+				const action = parsed.lifecycleAction;
+				if (!action) {
+					ctx.ui.notify("Invalid lifecycle action", "warning");
+					return;
+				}
+
+				let taskId = parsed.lifecycleTaskId;
+				if (!taskId && agentName && (action === "finish" || action === "handoff" || action === "cancel" || action === "unassign")) {
+					const mineResult = await runTak(pi, ["list", "--status", "in_progress", "--assignee", agentName]);
+					const mine = sortTasksUrgentThenOldest(coerceTakTaskArray(mineResult.parsed));
+					if (mine.length === 1) {
+						taskId = mine[0]!.id;
+					} else if (mine.length > 1) {
+						ctx.ui.notify("Multiple in-progress tasks found; specify task id explicitly.", "warning");
+						return;
+					}
+				}
+
+				if (!taskId) {
+					ctx.ui.notify(`Usage: /tak ${action} <task-id>`, "warning");
+					return;
+				}
+
+				const lifecycleArgs = [action, taskId];
+				if (action === "start") {
+					const assignee = parsed.lifecycleAssignee ?? agentName;
+					if (assignee) {
+						lifecycleArgs.push("--assignee", assignee);
+					}
+				} else if (action === "handoff") {
+					const summary = parsed.lifecycleSummary?.trim();
+					if (!summary) {
+						ctx.ui.notify("Usage: /tak handoff <task-id> summary:<text>", "warning");
+						return;
+					}
+					lifecycleArgs.push("--summary", summary);
+				} else if (action === "cancel") {
+					const reason = parsed.lifecycleReason?.trim();
+					if (reason) {
+						lifecycleArgs.push("--reason", reason);
+					}
+				}
+
+				const lifecycleResult = await runTak(pi, lifecycleArgs);
+				if (!lifecycleResult.ok) {
+					ctx.ui.notify(lifecycleResult.errorMessage ?? `tak ${action} failed`, "error");
+					return;
+				}
+
+				const task = coerceTakTask(lifecycleResult.parsed);
+				if (task) {
+					const notesResult = await runTak(pi, ["blackboard", "list", "--status", "open", "--task", task.id]);
+					const notes = coerceBlackboardNoteArray(notesResult.parsed);
+					ctx.ui.setEditorText(buildTaskEditorText(task, agentName, notes, { workLoop }));
+					ctx.ui.notify(`${action} applied to #${task.id}`, "info");
+				} else {
+					ctx.ui.setEditorText(`tak ${action} ${taskId}: ok`);
+					ctx.ui.notify(`${action} applied to #${taskId}`, "info");
+				}
+				await refreshStatus(ctx);
+				return;
+			}
+
+			if (parsed.mode === "graph") {
+				const action = parsed.graphAction;
+				if (!action) {
+					ctx.ui.notify("Invalid graph action", "warning");
+					return;
+				}
+
+				const taskId = parsed.graphTaskId;
+				if (!taskId) {
+					ctx.ui.notify(`Usage: /tak ${action} <task-id>`, "warning");
+					return;
+				}
+
+				let graphArgs: string[];
+				if (action === "depend" || action === "undepend") {
+					const onIds = parsed.graphOnTaskIds ?? [];
+					if (onIds.length === 0) {
+						ctx.ui.notify(`Usage: /tak ${action} <task-id> on:<dep-id[,dep-id]>`, "warning");
+						return;
+					}
+					graphArgs = [action, taskId, "--on", onIds.join(",")];
+				} else if (action === "reparent") {
+					const toId = parsed.graphToTaskId;
+					if (!toId) {
+						ctx.ui.notify("Usage: /tak reparent <task-id> to:<parent-id>", "warning");
+						return;
+					}
+					graphArgs = ["reparent", taskId, "--to", toId];
+				} else {
+					graphArgs = ["orphan", taskId];
+				}
+
+				const graphResult = await runTak(pi, graphArgs);
+				if (!graphResult.ok) {
+					ctx.ui.notify(graphResult.errorMessage ?? `tak ${action} failed`, "error");
+					return;
+				}
+
+				const task = coerceTakTask(graphResult.parsed);
+				if (task) {
+					const notesResult = await runTak(pi, ["blackboard", "list", "--status", "open", "--task", task.id]);
+					const notes = coerceBlackboardNoteArray(notesResult.parsed);
+					ctx.ui.setEditorText(buildTaskEditorText(task, agentName, notes, { workLoop }));
+					ctx.ui.notify(`${action} applied to #${task.id}`, "info");
+				} else {
+					ctx.ui.setEditorText(`tak ${action} ${taskId}: ok`);
+					ctx.ui.notify(`${action} applied to #${taskId}`, "info");
+				}
 				await refreshStatus(ctx);
 				return;
 			}
@@ -1782,6 +2536,140 @@ export default function takPiExtension(pi: ExtensionAPI) {
 				ctx.ui.notify(`tak therapist ${action} completed`, "info");
 				await refreshStatus(ctx);
 				return;
+			}
+
+			if (parsed.mode === "blackboard") {
+				const action = parsed.blackboardAction;
+				if (!action) {
+					ctx.ui.notify("Invalid /tak blackboard action", "warning");
+					return;
+				}
+
+				if (action === "post") {
+					const author = parsed.blackboardBy ?? agentName;
+					if (!author) {
+						ctx.ui.notify("/tak blackboard post requires an author (set mesh identity or by:<name>)", "warning");
+						return;
+					}
+
+					const message = parsed.blackboardMessage;
+					if (!message) {
+						ctx.ui.notify("Usage: /tak blackboard post message:<text>", "warning");
+						return;
+					}
+
+					const postArgs = ["blackboard", "post", "--from", author, "--message", message];
+					if (parsed.blackboardTemplate) {
+						postArgs.push("--template", parsed.blackboardTemplate);
+					}
+					if (parsed.blackboardSinceNote !== undefined) {
+						postArgs.push("--since-note", String(parsed.blackboardSinceNote));
+					}
+					if (parsed.blackboardNoChangeSince) {
+						postArgs.push("--no-change-since");
+					}
+					for (const tag of parsed.blackboardTags ?? []) {
+						postArgs.push("--tag", tag);
+					}
+					for (const taskId of parsed.blackboardTaskIds ?? []) {
+						postArgs.push("--task", taskId);
+					}
+
+					const postResult = await runTak(pi, postArgs);
+					if (!postResult.ok) {
+						ctx.ui.notify(postResult.errorMessage ?? "tak blackboard post failed", "error");
+						return;
+					}
+
+					const note = coerceBlackboardNote(postResult.parsed);
+					if (note) {
+						ctx.ui.setEditorText(`[B${note.id}] ${note.message}`);
+						ctx.ui.notify(`Posted blackboard note B${note.id}`, "info");
+					} else {
+						ctx.ui.notify("Posted blackboard note", "info");
+					}
+					await refreshStatus(ctx);
+					return;
+				}
+
+				if (action === "show") {
+					if (parsed.blackboardId === undefined) {
+						ctx.ui.notify("Usage: /tak blackboard show <note-id>", "warning");
+						return;
+					}
+
+					const showResult = await runTak(pi, ["blackboard", "show", String(parsed.blackboardId)]);
+					if (!showResult.ok) {
+						ctx.ui.notify(showResult.errorMessage ?? "tak blackboard show failed", "error");
+						return;
+					}
+
+					const note = coerceBlackboardNote(showResult.parsed);
+					if (!note) {
+						ctx.ui.notify("Unexpected blackboard note payload", "warning");
+						return;
+					}
+
+					ctx.ui.setEditorText(`[B${note.id}] (${note.status}) ${note.author}\n\n${note.message}`);
+					ctx.ui.notify(`Loaded blackboard note B${note.id}`, "info");
+					await refreshStatus(ctx);
+					return;
+				}
+
+				if (action === "close") {
+					if (parsed.blackboardId === undefined) {
+						ctx.ui.notify("Usage: /tak blackboard close <note-id>", "warning");
+						return;
+					}
+					const by = parsed.blackboardBy ?? agentName;
+					if (!by) {
+						ctx.ui.notify("/tak blackboard close requires by:<name> or mesh identity", "warning");
+						return;
+					}
+
+					const closeArgs = ["blackboard", "close", String(parsed.blackboardId), "--by", by];
+					if (parsed.blackboardReason) {
+						closeArgs.push("--reason", parsed.blackboardReason);
+					}
+
+					const closeResult = await runTak(pi, closeArgs);
+					if (!closeResult.ok) {
+						ctx.ui.notify(closeResult.errorMessage ?? "tak blackboard close failed", "error");
+						return;
+					}
+
+					ctx.ui.notify(`Closed blackboard note B${parsed.blackboardId}`, "info");
+					await refreshStatus(ctx);
+					return;
+				}
+
+				if (action === "reopen") {
+					if (parsed.blackboardId === undefined) {
+						ctx.ui.notify("Usage: /tak blackboard reopen <note-id>", "warning");
+						return;
+					}
+					const by = parsed.blackboardBy ?? agentName;
+					if (!by) {
+						ctx.ui.notify("/tak blackboard reopen requires by:<name> or mesh identity", "warning");
+						return;
+					}
+
+					const reopenResult = await runTak(pi, [
+						"blackboard",
+						"reopen",
+						String(parsed.blackboardId),
+						"--by",
+						by,
+					]);
+					if (!reopenResult.ok) {
+						ctx.ui.notify(reopenResult.errorMessage ?? "tak blackboard reopen failed", "error");
+						return;
+					}
+
+					ctx.ui.notify(`Reopened blackboard note B${parsed.blackboardId}`, "info");
+					await refreshStatus(ctx);
+					return;
+				}
 			}
 
 			if (parsed.mode === "show") {
@@ -1832,6 +2720,197 @@ export default function takPiExtension(pi: ExtensionAPI) {
 			}
 
 			if (parsed.mode === "mesh") {
+				const action = parsed.meshAction ?? "summary";
+				const meshPaths = parsed.meshPaths ?? [];
+
+				if (action === "send") {
+					if (!agentName) {
+						ctx.ui.notify("/tak mesh send requires an agent identity", "warning");
+						return;
+					}
+					if (!parsed.meshTo || !parsed.meshMessage) {
+						ctx.ui.notify("Usage: /tak mesh send to:<agent> message:<text>", "warning");
+						return;
+					}
+
+					const sendResult = await runTak(pi, [
+						"mesh",
+						"send",
+						"--from",
+						agentName,
+						"--to",
+						parsed.meshTo,
+						"--message",
+						parsed.meshMessage,
+					]);
+					if (!sendResult.ok) {
+						ctx.ui.notify(sendResult.errorMessage ?? "tak mesh send failed", "error");
+						return;
+					}
+
+					ctx.ui.notify(`Sent mesh message to ${parsed.meshTo}`, "info");
+					await refreshStatus(ctx);
+					return;
+				}
+
+				if (action === "broadcast") {
+					if (!agentName) {
+						ctx.ui.notify("/tak mesh broadcast requires an agent identity", "warning");
+						return;
+					}
+					if (!parsed.meshMessage) {
+						ctx.ui.notify("Usage: /tak mesh broadcast message:<text>", "warning");
+						return;
+					}
+
+					const broadcastResult = await runTak(pi, [
+						"mesh",
+						"broadcast",
+						"--from",
+						agentName,
+						"--message",
+						parsed.meshMessage,
+					]);
+					if (!broadcastResult.ok) {
+						ctx.ui.notify(broadcastResult.errorMessage ?? "tak mesh broadcast failed", "error");
+						return;
+					}
+
+					const recipients = Array.isArray(broadcastResult.parsed)
+						? (broadcastResult.parsed as unknown[]).length
+						: 0;
+					ctx.ui.notify(`Broadcast sent to ${recipients} agent(s)`, "info");
+					await refreshStatus(ctx);
+					return;
+				}
+
+				if (action === "reserve") {
+					if (!agentName) {
+						ctx.ui.notify("/tak mesh reserve requires an agent identity", "warning");
+						return;
+					}
+					if (meshPaths.length === 0) {
+						ctx.ui.notify("Usage: /tak mesh reserve path:<path> [path:<path>] [reason:<text>]", "warning");
+						return;
+					}
+
+					const reserveArgs = ["mesh", "reserve", "--name", agentName];
+					for (const path of meshPaths) {
+						reserveArgs.push("--path", path);
+					}
+					if (parsed.meshReason) {
+						reserveArgs.push("--reason", parsed.meshReason);
+					}
+
+					const reserveResult = await runTak(pi, reserveArgs);
+					if (!reserveResult.ok) {
+						ctx.ui.notify(reserveResult.errorMessage ?? "tak mesh reserve failed", "error");
+						return;
+					}
+
+					ctx.ui.notify(`Reserved ${meshPaths.length} path(s)`, "info");
+					await refreshStatus(ctx);
+					return;
+				}
+
+				if (action === "release") {
+					if (!agentName) {
+						ctx.ui.notify("/tak mesh release requires an agent identity", "warning");
+						return;
+					}
+
+					const releaseArgs = ["mesh", "release", "--name", agentName];
+					if (parsed.meshAll || meshPaths.length === 0) {
+						releaseArgs.push("--all");
+					} else {
+						for (const path of meshPaths) {
+							releaseArgs.push("--path", path);
+						}
+					}
+
+					const releaseResult = await runTak(pi, releaseArgs);
+					if (!releaseResult.ok) {
+						ctx.ui.notify(releaseResult.errorMessage ?? "tak mesh release failed", "error");
+						return;
+					}
+
+					ctx.ui.notify(parsed.meshAll || meshPaths.length === 0 ? "Released all reservations" : `Released ${meshPaths.length} path(s)`, "info");
+					await refreshStatus(ctx);
+					return;
+				}
+
+				if (action === "feed") {
+					const feedArgs = ["mesh", "feed"];
+					if (parsed.filters.limit) {
+						feedArgs.push("--limit", String(parsed.filters.limit));
+					}
+
+					const feedResult = await runTak(pi, feedArgs);
+					if (!feedResult.ok) {
+						ctx.ui.notify(feedResult.errorMessage ?? "tak mesh feed failed", "error");
+						return;
+					}
+
+					const lines: string[] = ["# tak mesh feed"];
+					const events = Array.isArray(feedResult.parsed) ? (feedResult.parsed as unknown[]) : [];
+					if (events.length === 0) {
+						lines.push("(empty)");
+					} else {
+						for (const rawEvent of events) {
+							if (!isRecord(rawEvent)) continue;
+							const ts = typeof rawEvent.ts === "string" ? rawEvent.ts : "?";
+							const agent = typeof rawEvent.agent === "string" ? rawEvent.agent : "unknown";
+							const type = typeof rawEvent.type === "string" ? rawEvent.type : "event";
+							const target = typeof rawEvent.target === "string" ? ` -> ${rawEvent.target}` : "";
+							const preview = typeof rawEvent.preview === "string" ? ` :: ${rawEvent.preview}` : "";
+							lines.push(`- ${ts} ${agent} ${type}${target}${preview}`);
+						}
+					}
+
+					ctx.ui.setEditorText(lines.join("\n"));
+					ctx.ui.notify("Inserted /tak mesh feed", "info");
+					await refreshStatus(ctx);
+					return;
+				}
+
+				if (action === "blockers") {
+					const blockersArgs = ["mesh", "blockers"];
+					for (const path of meshPaths) {
+						blockersArgs.push("--path", path);
+					}
+
+					const blockersResult = await runTak(pi, blockersArgs);
+					if (!blockersResult.ok) {
+						ctx.ui.notify(blockersResult.errorMessage ?? "tak mesh blockers failed", "error");
+						return;
+					}
+
+					const lines: string[] = ["# tak mesh blockers"];
+					if (meshPaths.length > 0) {
+						lines.push(`paths: ${meshPaths.join(", ")}`);
+						lines.push("");
+					}
+
+					const blockers = Array.isArray(blockersResult.parsed) ? (blockersResult.parsed as unknown[]) : [];
+					if (blockers.length === 0) {
+						lines.push("No active blockers.");
+					} else {
+						for (const rawBlocker of blockers) {
+							if (!isRecord(rawBlocker)) continue;
+							const owner = typeof rawBlocker.owner === "string" ? rawBlocker.owner : "unknown";
+							const path = typeof rawBlocker.path === "string" ? rawBlocker.path : "?";
+							const age = rawBlocker.age_secs !== undefined ? String(rawBlocker.age_secs) : "?";
+							const reason = typeof rawBlocker.reason === "string" && rawBlocker.reason ? rawBlocker.reason : "-";
+							lines.push(`- ${owner} blocks ${path} (age=${age}s, reason=${reason})`);
+						}
+					}
+
+					ctx.ui.setEditorText(lines.join("\n"));
+					ctx.ui.notify("Inserted /tak mesh blockers", "info");
+					await refreshStatus(ctx);
+					return;
+				}
+
 				const lines: string[] = [];
 				lines.push("# tak mesh summary");
 				lines.push(`agent: ${agentName ?? "(not joined)"}`);
@@ -2068,6 +3147,11 @@ export default function takPiExtension(pi: ExtensionAPI) {
 			if (agentName) {
 				lastHeartbeatAt = Date.now();
 				ctx.ui.notify(`tak mesh joined as ${agentName}`, "info");
+
+				const runtimeStatus = await runTakWorkAction(ctx, "status");
+				if (runtimeStatus) {
+					await handleTakWorkResponse(ctx, runtimeStatus);
+				}
 			}
 		}
 
