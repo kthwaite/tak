@@ -256,7 +256,11 @@ fn segment_eq(a: &str, b: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use tempfile::tempdir;
+
+    #[cfg(unix)]
+    use std::os::unix::fs::symlink;
 
     #[test]
     fn normalize_relative_paths() {
@@ -337,5 +341,60 @@ mod tests {
         } else {
             assert!(!normalized_paths_conflict("SRC/Store", "src/store/mesh.rs"));
         }
+    }
+
+    #[test]
+    fn reservation_matching_normalizes_dot_segments_before_conflict_checks() {
+        let repo = tempdir().unwrap();
+
+        let held = normalize_reservation_path("src/store/./mesh/..", repo.path()).unwrap();
+        let requested =
+            normalize_reservation_path("./src/store/../store/mesh.rs", repo.path()).unwrap();
+        let unrelated = normalize_reservation_path("src/storehouse/file.rs", repo.path()).unwrap();
+
+        assert_eq!(held, "src/store");
+        assert_eq!(requested, "src/store/mesh.rs");
+        assert!(normalized_paths_conflict(&held, &requested));
+        assert!(!normalized_paths_conflict(&held, &unrelated));
+    }
+
+    #[test]
+    fn reservation_matching_case_behavior_after_normalization() {
+        let repo = tempdir().unwrap();
+
+        let held = normalize_reservation_path("SRC/Store", repo.path()).unwrap();
+        let requested = normalize_reservation_path("src/store/mesh.rs", repo.path()).unwrap();
+
+        if cfg!(windows) {
+            assert!(normalized_paths_conflict(&held, &requested));
+        } else {
+            assert!(!normalized_paths_conflict(&held, &requested));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reservation_matching_is_lexical_for_symlink_paths() {
+        let repo = tempdir().unwrap();
+        let real_dir = repo.path().join("real");
+        let real_file = real_dir.join("mesh.rs");
+        let link_dir = repo.path().join("link");
+        let link_file = link_dir.join("mesh.rs");
+
+        fs::create_dir_all(&real_dir).unwrap();
+        fs::write(&real_file, "// real\n").unwrap();
+        symlink(&real_dir, &link_dir).unwrap();
+
+        let normalized_link =
+            normalize_reservation_path(&link_file.to_string_lossy(), repo.path()).unwrap();
+        let normalized_real =
+            normalize_reservation_path(&real_file.to_string_lossy(), repo.path()).unwrap();
+
+        assert_eq!(normalized_link, "link/mesh.rs");
+        assert_eq!(normalized_real, "real/mesh.rs");
+        assert!(!normalized_paths_conflict(
+            &normalized_link,
+            &normalized_real
+        ));
     }
 }
