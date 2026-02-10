@@ -94,6 +94,33 @@ Troubleshooting:
 - If loop state points to a stale/non-owned task, `lifecycle_transition = detached_without_finish` and the stale pointer is cleared.
 - If reservation release partially fails, inspect `done.reservation_release.error` in JSON output and retry `tak mesh release --name <agent> --all`.
 
+### `takeover TASK_ID [--assignee ...] [--inactive-secs ...] [--force]`
+
+- Reassigns a task that is already `in_progress` from a stale owner to a new assignee.
+- Default assignee resolution follows CLI conventions (`--assignee` > `TAK_AGENT` > generated fallback).
+- Guardrails:
+  - task must be `in_progress` and currently assigned,
+  - without `--force`, owner must satisfy inactivity threshold evidence (`--inactive-secs` or mesh registration TTL),
+  - lock-protected execution via `.tak/takeover.lock` avoids concurrent dual-winner races.
+- On success, appends history event `takeover` with structured details (`previous_owner`, `new_owner`, `decision`, `forced`, threshold/inactivity metadata).
+- Output contract (json/pretty/minimal) includes previous owner, decision path, and resulting assignment/state.
+
+Decision paths:
+
+- `owner_inactive`
+- `owner_not_registered`
+- `mesh_unavailable`
+- `forced`
+- `already_owner` (idempotent no-op)
+
+Rollback guidance:
+
+- If takeover happened too early, immediately hand back with context:
+  - `tak handoff TASK_ID --summary "takeover reverted; owner still active"`
+- If ownership should be cleared first:
+  - `tak unassign TASK_ID`
+  - then coordinate explicitly through blackboard/mesh before restarting.
+
 ### `cancel TASK_ID [--reason ...]`
 
 - Validates `pending/in_progress -> cancelled`.
@@ -176,3 +203,16 @@ In `src/commands/work.rs` unit tests:
 - `done_finishes_current_task_releases_reservations_and_reports_subactions`
 - `done_reports_detached_transition_when_current_task_is_not_owned_in_progress`
 - `render_json_done_output_includes_subaction_report`
+
+In `tests/takeover_integration.rs`:
+
+- `takeover_succeeds_for_stale_owner_integration`
+- `takeover_rejects_active_owner_integration`
+- `takeover_concurrent_attempts_allow_single_winner_integration`
+
+In `src/commands/takeover.rs` unit tests:
+
+- `takeover_rejects_active_owner_without_force`
+- `takeover_allows_inactive_owner_when_threshold_met`
+- `render_json_includes_previous_owner_and_decision`
+- `render_pretty_and_minimal_include_decision_and_owners`

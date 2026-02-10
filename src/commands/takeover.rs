@@ -8,6 +8,7 @@ use crate::error::{Result, TakError};
 use crate::model::Status;
 use crate::output::Format;
 use crate::store::coordination::CoordinationLinks;
+use crate::store::lock;
 use crate::store::mesh::MeshStore;
 use crate::store::repo::Repo;
 use crate::store::sidecars::HistoryEvent;
@@ -65,7 +66,12 @@ pub fn run(
     force: bool,
     format: Format,
 ) -> Result<()> {
-    let response = takeover_response(repo_root, task_id, assignee, inactive_secs, force)?;
+    let lock_path = repo_root.join(".tak").join("takeover.lock");
+    let lock_file = lock::acquire_lock(&lock_path)?;
+    let result = takeover_response(repo_root, task_id, assignee, inactive_secs, force);
+    lock::release_lock(lock_file)?;
+
+    let response = result?;
     print_response(&response, format)
 }
 
@@ -200,16 +206,16 @@ fn owner_activity(repo_root: &Path, owner: &str) -> Result<OwnerActivity> {
     }
 }
 
-fn print_response(response: &TakeoverResponse, format: Format) -> Result<()> {
-    match format {
-        Format::Json => println!("{}", serde_json::to_string(response)?),
+fn render_response(response: &TakeoverResponse, format: Format) -> Result<String> {
+    let rendered = match format {
+        Format::Json => serde_json::to_string(response)?,
         Format::Pretty => {
             let task_id = TaskId::from(response.task_id);
             let inactivity = response
                 .owner_inactive_secs
                 .map(|secs| format!("{secs}s"))
                 .unwrap_or_else(|| "-".to_string());
-            println!(
+            format!(
                 "{} {}\n  {} {}\n  {} {} -> {}\n  {} {}\n  {} {}\n  {} {}\n  {} {}\n  {} {}",
                 "takeover".cyan().bold(),
                 task_id,
@@ -232,20 +238,24 @@ fn print_response(response: &TakeoverResponse, format: Format) -> Result<()> {
                     response.resulting_status,
                     response.resulting_assignee.as_deref().unwrap_or("-")
                 )
-            );
+            )
         }
-        Format::Minimal => {
-            println!(
-                "{}\t{}\t{}\t{}\t{}\t{}",
-                response.event,
-                TaskId::from(response.task_id),
-                response.previous_owner,
-                response.new_owner,
-                response.decision.as_str(),
-                response.resulting_status
-            );
-        }
-    }
+        Format::Minimal => format!(
+            "{}\t{}\t{}\t{}\t{}\t{}",
+            response.event,
+            TaskId::from(response.task_id),
+            response.previous_owner,
+            response.new_owner,
+            response.decision.as_str(),
+            response.resulting_status
+        ),
+    };
+
+    Ok(rendered)
+}
+
+fn print_response(response: &TakeoverResponse, format: Format) -> Result<()> {
+    println!("{}", render_response(response, format)?);
     Ok(())
 }
 
@@ -387,5 +397,93 @@ mod tests {
 
         assert_eq!(response.decision, DecisionPath::AlreadyOwner);
         assert_eq!(response.resulting_assignee.as_deref(), Some("agent-1"));
+    }
+
+    fn strip_ansi(input: &str) -> String {
+        let mut out = String::with_capacity(input.len());
+        let mut chars = input.chars().peekable();
+
+        while let Some(ch) = chars.next() {
+            if ch == '\u{1b}'
+                && let Some('[') = chars.peek()
+            {
+                chars.next();
+                for code in chars.by_ref() {
+                    if code.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+                continue;
+            }
+
+            out.push(ch);
+        }
+
+        out
+    }
+
+    #[test]
+    fn render_json_includes_previous_owner_and_decision() {
+        let response = TakeoverResponse {
+            event: "takeover",
+            task_id: 42,
+            previous_owner: "owner-1".into(),
+            new_owner: "agent-2".into(),
+            decision: DecisionPath::OwnerInactive,
+            forced: false,
+            threshold_secs: 600,
+            owner_inactive_secs: Some(3600),
+            resulting_status: Status::InProgress,
+            resulting_assignee: Some("agent-2".into()),
+        };
+
+        let rendered = render_response(&response, Format::Json).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+
+        assert_eq!(
+            value.get("event").and_then(|v| v.as_str()),
+            Some("takeover")
+        );
+        assert_eq!(
+            value.get("previous_owner").and_then(|v| v.as_str()),
+            Some("owner-1")
+        );
+        assert_eq!(
+            value.get("decision").and_then(|v| v.as_str()),
+            Some("owner_inactive")
+        );
+        assert_eq!(
+            value.get("resulting_assignee").and_then(|v| v.as_str()),
+            Some("agent-2")
+        );
+    }
+
+    #[test]
+    fn render_pretty_and_minimal_include_decision_and_owners() {
+        let response = TakeoverResponse {
+            event: "takeover",
+            task_id: 42,
+            previous_owner: "owner-1".into(),
+            new_owner: "agent-2".into(),
+            decision: DecisionPath::Forced,
+            forced: true,
+            threshold_secs: 600,
+            owner_inactive_secs: Some(1),
+            resulting_status: Status::InProgress,
+            resulting_assignee: Some("agent-2".into()),
+        };
+
+        let pretty = render_response(&response, Format::Pretty).unwrap();
+        let plain = strip_ansi(&pretty);
+        assert!(plain.contains("owners: owner-1 -> agent-2"));
+        assert!(plain.contains("decision: forced"));
+
+        let minimal = render_response(&response, Format::Minimal).unwrap();
+        let parts = minimal.split('\t').collect::<Vec<_>>();
+        assert_eq!(parts[0], "takeover");
+        assert_eq!(parts[2], "owner-1");
+        assert_eq!(parts[3], "agent-2");
+        assert_eq!(parts[4], "forced");
+        assert_eq!(parts[5], "in_progress");
     }
 }
