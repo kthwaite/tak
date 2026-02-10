@@ -10,14 +10,12 @@ Systematic workflow for agents to find available work, claim it, execute it, and
 
 **Critical:** update task state via `tak` commands only (`claim`, `start`, `handoff`, `finish`, `cancel`, etc.). Never manually edit `.tak/*` data files.
 
-## Claude `/tak work` loop (CLI-parity mode)
+## Primary path: `tak work` (event-driven)
 
-Claude Code does not provide the same extension runtime hooks/guards as pi. Keep parity by driving blocker cooperation through explicit `tak` CLI commands and durable coordination notes.
-
-Primary path: invoke CLI-native work-loop commands directly.
+`tak work` is a reconciliation engine. Each invocation checks durable state, reconciles against reality, and returns a single JSON response with an event telling you what happened.
 
 ```bash
-tak work [--assignee <agent>] [--tag <tag>] [--limit <n>] [--verify isolated|local]
+tak work [--assignee <agent>] [--tag <tag>] [--limit <n>] [--verify isolated|local] [--strategy priority_then_age|epic_closeout] [--verbosity low|medium|high]
 tak work status [--assignee <agent>]
 tak work stop [--assignee <agent>]
 ```
@@ -25,80 +23,70 @@ tak work stop [--assignee <agent>]
 When the user requests `/tak work`, interpret it as:
 
 ```text
-/tak work [tag:<tag>] [limit:<n>] [verify:isolated|local]
+/tak work [tag:<tag>] [limit:<n>] [verify:isolated|local] [strategy:<strategy>]
 ```
 
-Support these control variants:
+### JSON output contract
 
-```text
-/tak work status
-/tak work stop
+Every `tak work` call returns:
+
+```json
+{
+  "event": "<event>",
+  "agent": "<agent-name>",
+  "ephemeral_identity": true,
+  "loop": {
+    "active": true,
+    "current_task_id": 12345,
+    "tag": "cli",
+    "remaining": 2,
+    "processed": 1,
+    "verify_mode": "isolated",
+    "claim_strategy": "priority_then_age",
+    "coordination_verbosity": "medium",
+    "started_at": "...",
+    "updated_at": "..."
+  },
+  "current_task": { /* full task object or null */ }
+}
 ```
 
-### Loop algorithm
+`ephemeral_identity` appears only when `true` — it means no `--assignee` or `TAK_AGENT` was set, so a random name was generated. Loop state won't persist across invocations. Fix by setting `TAK_AGENT` or passing `--assignee`.
 
-1. **Ensure agent identity**
-   - If needed, join mesh and capture identity:
-     ```bash
-     tak mesh join --format minimal
-     ```
-   - Reuse that name for `claim`, `start`, reservation, and coordination commands.
+### Event interpretation
 
-2. **Attach or claim**
-   - First check if you already own in-progress work:
-     ```bash
-     tak list --status in_progress --assignee <agent>
-     ```
-   - If none, claim atomically:
-     ```bash
-     tak claim --assignee <agent>
-     tak claim --assignee <agent> --tag <tag>   # when tag filter requested
-     ```
+| Event | Meaning | Your action |
+|-------|---------|-------------|
+| `continued` | Stored current task is still in_progress and owned by you | Resume working on `current_task` |
+| `attached` | Found an existing in_progress task you own (not in loop state) | Resume working on `current_task` |
+| `claimed` | Atomically claimed and started a new task for you | Read `current_task` and begin work |
+| `no_work` | No available tasks matching your filters | Stop loop; loop is auto-deactivated |
+| `limit_reached` | Processed count hit the `--limit` ceiling | Stop loop; loop is auto-deactivated |
 
-3. **Load execution context**
+### What `tak work` handles automatically
+
+- Agent identity resolution (`--assignee` > `TAK_AGENT` env > generated fallback)
+- Detecting and resuming your current in-progress task
+- Atomic claiming of next available task
+- Limit tracking and auto-deactivation
+- Reservation cleanup on task transitions and stop
+
+### What you still do manually after `tak work` returns a task
+
+1. **Load additional execution context** (the `current_task` payload has the task, but not sidecar data):
    ```bash
-   tak show <id>
    tak context <id>
    tak blackboard list --status open --task <id>
    ```
 
-4. **Coordinate before major edits**
+2. **Coordinate before major edits**:
    ```bash
    tak mesh reserve --name <agent> --path <path> --reason task-<id>
    ```
 
-5. **Run the task to completion, wait, or handoff**
-   - Optional progress signal:
-     ```bash
-     tak blackboard post --from <agent> --template status --task <id> --message "<delta + next step>"
-     ```
-   - Blocked on reservation overlap (CLI parity flow):
-     ```bash
-     # 1) Diagnose owner/path/reason/age
-     tak mesh blockers --path <path-you-need>
+3. **Execute the task** — do the actual work.
 
-     # 2) Immediate operational ask (mesh)
-     tak mesh send --from <agent> --to <owner> --message "Task #<id> blocked on <path>; request release or handoff."
-
-     # 3) Durable blocker record (blackboard)
-     tak blackboard post --from <agent> --template blocker --verbosity high --task <id> \
-       --message "Blocked by <owner> on <path> (reason=<reason>, age=<age>s); requested <exact action>; next check in 120s."
-
-     # 4) Deterministic wait window
-     tak wait --path <blocking-path> --timeout 120
-     ```
-   - Blocked on unfinished dependency:
-     ```bash
-     tak blackboard post --from <agent> --template blocker --verbosity high --task <id> \
-       --message "Blocked on dependency <task-id>; requested owner update; next check in 120s."
-     tak wait --on-task <blocking-task-id> --timeout 120
-     ```
-   - If a wait timeout expires, post a delta follow-up (avoid repeating unchanged context):
-     ```bash
-     tak blackboard post --from <agent> --template status --task <id> \
-       --since-note <note-id> --no-change-since \
-       --message "Still blocked after 120s; re-pinged owner and retrying wait window."
-     ```
+4. **Signal completion or transition**:
    - Done:
      ```bash
      tak finish <id>
@@ -108,123 +96,141 @@ Support these control variants:
      tak handoff <id> --summary "<what is done, what is blocked, and exact next step>"
      tak blackboard post --from <agent> --template handoff --task <id> --message "<handoff target + first action>"
      ```
-   - Abandon/cancel:
+   - Abandon:
      ```bash
      tak cancel <id> --reason "<why>"
      ```
 
-6. **Release reservations when leaving the task**
+5. **Release reservations**:
    ```bash
    tak mesh release --name <agent> --all
    ```
 
-7. **Continue loop until stop/limit/no work**
-   - If a `limit:<n>` was requested, stop after `n` completed/handed-off/cancelled tasks.
-   - Otherwise auto-claim next available task and repeat.
+6. **Iterate**: call `tak work` again. It will detect the previous task is done, increment `processed`, decrement `remaining`, and claim the next task (or stop if limit reached / no work).
+
+### Blocker cooperation
+
+When blocked on a reservation overlap:
+
+```bash
+# 1) Diagnose owner/path/reason/age
+tak mesh blockers --path <path-you-need>
+
+# 2) Immediate operational ask (mesh)
+tak mesh send --from <agent> --to <owner> --message "Task #<id> blocked on <path>; request release or handoff."
+
+# 3) Durable blocker record (blackboard)
+tak blackboard post --from <agent> --template blocker --verbosity high --task <id> \
+  --message "Blocked by <owner> on <path> (reason=<reason>, age=<age>s); requested <exact action>; next check in 120s."
+
+# 4) Deterministic wait window
+tak wait --path <blocking-path> --timeout 120
+```
+
+When blocked on an unfinished dependency:
+
+```bash
+tak blackboard post --from <agent> --template blocker --verbosity high --task <id> \
+  --message "Blocked on dependency <dep-id>; requested owner update; next check in 120s."
+tak wait --on-task <blocking-task-id> --timeout 120
+```
+
+If a wait timeout expires, post a delta follow-up (avoid repeating unchanged context):
+
+```bash
+tak blackboard post --from <agent> --template status --task <id> \
+  --since-note <note-id> --no-change-since \
+  --message "Still blocked after 120s; re-pinged owner and retrying wait window."
+```
 
 ### `/tak work status`
 
-Report:
+```bash
+tak work status [--assignee <agent>]
+```
+
+Returns a `"status"` event with the current loop state and task. Supplement with:
 
 ```bash
 tak list --available
 tak list --blocked
-tak list --status in_progress --assignee <agent>
 tak blackboard list --status open --limit 10
 tak mesh blockers
 ```
 
-Include whether a loop is active, current task (if any), and remaining limit (if set).
-
 ### `/tak work stop`
 
-Stop the loop intent and clean up:
-
 ```bash
-tak mesh release --name <agent> --all
+tak work stop [--assignee <agent>]
 ```
 
-If there is an in-progress task, leave it in a truthful lifecycle state (`in_progress` if still active, or handoff/cancel if stepping away). Prefer a `--template handoff` blackboard note when pausing blocked work.
+Deactivates the loop and releases reservations. If there is an in-progress task, leave it in a truthful lifecycle state (`in_progress` if still active, or handoff/cancel if stepping away). Prefer a `--template handoff` blackboard note when pausing blocked work.
 
 ## Verify mode semantics
 
-When `/tak work verify:isolated` (default), use **path-scoped** gating (not mesh-global):
+When `--verify isolated` (default), use **path-scoped** gating:
 
 1. Derive verify scope (`V`) from your owned reservations.
 2. Collect foreign reservations (`F`) from other active agents.
 3. Decision model:
-   - `V` empty + `F` empty → allow.
-   - `V` empty + `F` non-empty → block with guidance to reserve scope or switch to local mode.
-   - overlap(`V`,`F`) → block.
-   - no-overlap(`V`,`F`) → allow.
+   - `V` empty + `F` empty: allow.
+   - `V` empty + `F` non-empty: block with guidance to reserve scope or switch to local mode.
+   - overlap(`V`,`F`): block.
+   - no-overlap(`V`,`F`): allow.
 
 If blocked:
 
-1. Capture diagnostics (owner/path/reason/age):
+```bash
+tak mesh blockers --path <scope-or-blocking-path>
+tak mesh send --from <agent> --to <owner> --message "Verify blocked for task #<id> on <path>; request release/window or handoff."
+tak blackboard post --from <agent> --template blocker --verbosity high --task <id> \
+  --message "Blocked verify in isolated mode by <owner>/<path> (reason=<reason>, age=<age>s); requested <action>; waiting 120s."
+tak wait --path <blocking-path> --timeout 120
+```
+
+When `--verify local`: run normal local verification (no reservation-based blocking).
+
+## Fallback: manual orchestration
+
+When `tak work` is not available or doesn't fit, drive the loop manually:
+
+1. **Ensure agent identity**:
    ```bash
-   tak mesh blockers --path <scope-or-blocking-path>
-   ```
-2. Ask the blocker owner directly in mesh:
-   ```bash
-   tak mesh send --from <agent> --to <owner> --message "Verify blocked for task #<id> on <path>; request release/window or handoff."
-   ```
-3. Post a durable blocker note (high-signal template):
-   ```bash
-   tak blackboard post --from <agent> --template blocker --verbosity high --task <id> \
-     --message "Blocked verify in isolated mode by <owner>/<path> (reason=<reason>, age=<age>s); requested <action>; waiting 120s."
-   ```
-4. Offer an explicit wait window:
-   ```bash
-   tak wait --path <blocking-path> --timeout 120
-   # or
-   tak wait --on-task <blocking-task-id> --timeout 120
-   ```
-5. On timeout, post a compact delta update:
-   ```bash
-   tak blackboard post --from <agent> --template status --task <id> \
-     --since-note <note-id> --no-change-since \
-     --message "Verify still blocked after timeout; re-pinged owner and retrying wait."
+   tak mesh join --format minimal
    ```
 
-When `/tak work verify:local`:
+2. **Attach or claim**:
+   ```bash
+   tak list --status in_progress --assignee <agent>
+   # If none:
+   tak claim --assignee <agent> [--tag <tag>]
+   ```
 
-- Run normal local verification for the task (no reservation-based blocking).
+3. **Load context, coordinate, execute, finish/handoff** — same as steps 1-5 above.
+
+4. **Release reservations**:
+   ```bash
+   tak mesh release --name <agent> --all
+   ```
+
+5. **Repeat** until no work or limit reached.
 
 ## Standard (non-loop) workflow
 
-1. Claim available work:
-   ```bash
-   tak claim --assignee <your-name>
-   ```
-2. Understand the task:
-   ```bash
-   tak show <id>
-   ```
+1. Claim: `tak claim --assignee <your-name>`
+2. Understand: `tak show <id>`
 3. Execute.
-4. Capture discovered follow-up work immediately:
-   ```bash
-   tak create "<title>" --kind task -d "<context>"
-   tak depend <current-id> --on <new-id>   # when scheduling dependency exists
-   ```
-5. Finish or hand off:
-   ```bash
-   tak finish <id>
-   # or
-   tak handoff <id> --summary "..."
-   tak blackboard post --from <agent> --template handoff --task <id> --message "..."
-   ```
+4. Capture follow-up work: `tak create "<title>" --kind task -d "<context>"`
+5. Finish or hand off: `tak finish <id>` / `tak handoff <id> --summary "..."`
 
 ## Multi-agent requirements
 
 - Prefer `tak claim` over `tak next` + `tak start` to avoid TOCTOU races.
-- Reindex after pull/merge/branch switch:
-  ```bash
-  tak reindex
-  ```
+- Reindex after pull/merge/branch switch: `tak reindex`
 - Do not silently take over tasks assigned to another agent.
 - Use mesh + blackboard when blocked on reservations or cross-agent dependencies.
 - Run `tak mesh blockers` before posting blocker notes so owner/path/reason/age are concrete.
-- Use deterministic waits (`tak wait --path ...` / `tak wait --on-task ...`) instead of manual ping loops.
+- Use deterministic waits (`tak wait --path ...` / `tak wait --on-task ...`) instead of manual polling.
 - Prefer structured templates (`blocker`, `handoff`, `status`) plus delta follow-ups (`--since-note`, `--no-change-since`) for durable coordination notes.
 
 ## Status transitions
