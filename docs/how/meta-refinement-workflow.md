@@ -4,7 +4,7 @@ This page documents practical, current-state guidance for using `kind=meta` task
 
 Related design/policy references:
 - [`docs/rfcs/0003-idea-kind-and-pupal-phase.md`](../rfcs/0003-idea-kind-and-pupal-phase.md)
-- Feature [#81] Define pupal-phase policy and operator guidance
+- [`pupal-phase-policy.md`](./pupal-phase-policy.md)
 
 ## What this workflow does
 
@@ -24,16 +24,16 @@ Typical outcomes of a meta loop:
 - Coordination channels (mesh/blackboard) are communication layers; final planning state must be persisted in task files.
 - Claim/next behavior is unchanged: if a `meta` task is pending + unblocked, it can be claimed like other work.
 
-## Scope boundary with RFC-0003 and #81 policy work
+## Scope boundary with idea-policy guidance
 
-This page is **implementation guidance** for `kind=meta` operations (task #36 scope). It intentionally does **not** define final intake/promotion policy for idea-first workflows.
+This page is **implementation guidance** for `kind=meta` operations (task #36 scope).
 
-Policy decisions such as:
+Idea-first policy decisions such as:
 - when concepts must start as `kind=idea`,
 - required promotion gates,
 - defer/reject governance,
 
-belong to RFC-0003 policy finalization under task #81.
+are defined in [`pupal-phase-policy.md`](./pupal-phase-policy.md), with design rationale in RFC-0003.
 
 ## When to choose `meta` vs implementation kinds
 

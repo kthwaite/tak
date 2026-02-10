@@ -8,6 +8,7 @@
 - **Related docs:**
   - [`docs/rfcs/0002-verbose-team-communication.md`](./0002-verbose-team-communication.md)
   - [`docs/how/meta-refinement-workflow.md`](../how/meta-refinement-workflow.md)
+  - [`docs/how/pupal-phase-policy.md`](../how/pupal-phase-policy.md)
 
 ---
 
@@ -56,9 +57,9 @@ Today, early concepts and implementation-ready work can be mixed together in the
 To avoid doc drift and duplicate guidance:
 
 - **#36 scope (implementation guidance):** `kind=meta` behavior and practical refinement operations (lifecycle/claim/dependency parity, operator examples). See [`docs/how/meta-refinement-workflow.md`](../how/meta-refinement-workflow.md).
-- **#81 scope (policy):** pupal-phase intake/promotion/defer/reject policy rules, including operator expectations for when idea-first flow is required.
+- **#81 scope (policy):** pupal-phase intake/promotion/defer/reject policy rules, including operator expectations for when idea-first flow is required. See [`docs/how/pupal-phase-policy.md`](../how/pupal-phase-policy.md).
 
-This RFC defines the target model and policy direction; the how-doc covers current `meta` operations, and #81 carries policy-finalization work.
+This RFC provides design rationale and rollout framing; the how-docs capture current operational guidance.
 
 ---
 
@@ -131,7 +132,7 @@ Implementation options (phased):
 
 To avoid accidental execution of raw ideas:
 
-- `tak next` and `tak claim` should exclude `kind=idea` by default.
+- `tak next` and `tak claim` exclude `kind=idea` by default via index availability filtering.
 - Ideas remain visible through explicit filters (`tak list --kind idea`).
 - Meta tasks remain claimable because they are active refinement work.
 
