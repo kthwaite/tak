@@ -199,6 +199,20 @@ mod tests {
     }
 
     #[test]
+    fn resolves_unique_hex_prefix_case_insensitively() {
+        let existing = ids(&["deadbeef00000001", "cafebabe00000002"]);
+        let resolved = resolve_task_id_input("DEAD", &existing).unwrap();
+        assert_eq!(resolved.as_str(), "deadbeef00000001");
+    }
+
+    #[test]
+    fn resolves_digits_as_prefix_when_exact_legacy_missing() {
+        let existing = ids(&["1234abcd00000001"]);
+        let resolved = resolve_task_id_input("1234", &existing).unwrap();
+        assert_eq!(resolved.as_str(), "1234abcd00000001");
+    }
+
+    #[test]
     fn exact_match_wins_over_prefix_path() {
         let mut existing = ids(&["1000000000000000"]);
         existing.push(TaskId::from(1_u64));
@@ -221,6 +235,24 @@ mod tests {
     }
 
     #[test]
+    fn ambiguous_prefix_lists_unique_sorted_matches() {
+        let existing = vec![
+            "abcf000000000002".parse::<TaskId>().unwrap(),
+            "abc0000000000001".parse::<TaskId>().unwrap(),
+            "abc0000000000001".parse::<TaskId>().unwrap(),
+        ];
+
+        let err = resolve_task_id_input("abc", &existing).unwrap_err();
+        match err {
+            TakError::TaskIdAmbiguous(prefix, matches) => {
+                assert_eq!(prefix, "abc");
+                assert_eq!(matches, "abc0000000000001, abcf000000000002");
+            }
+            other => panic!("expected TaskIdAmbiguous error, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn reports_not_found_for_missing_id_or_prefix() {
         let existing = ids(&["deadbeef00000001"]);
         let err = resolve_task_id_input("beef", &existing).unwrap_err();
@@ -232,6 +264,14 @@ mod tests {
     fn rejects_invalid_non_hex_prefix_input() {
         let existing = ids(&["deadbeef00000001"]);
         let err = resolve_task_id_input("bad-prefix", &existing).unwrap_err();
+
+        assert!(matches!(err, TakError::InvalidTaskId(_, _)));
+    }
+
+    #[test]
+    fn rejects_overlength_hex_input() {
+        let existing = ids(&["deadbeef00000001"]);
+        let err = resolve_task_id_input("deadbeef000000011", &existing).unwrap_err();
 
         assert!(matches!(err, TakError::InvalidTaskId(_, _)));
     }

@@ -353,6 +353,42 @@ mod tests {
     }
 
     #[test]
+    fn parse_cli_accepts_uppercase_hex_and_trims_whitespace() {
+        let id = TaskId::parse_cli("  DEADBEEFCAFEBABE  ").unwrap();
+        assert_eq!(id.as_str(), "deadbeefcafebabe");
+    }
+
+    #[test]
+    fn parse_cli_rejects_empty_input() {
+        let err = TaskId::parse_cli("   ").unwrap_err();
+        assert_eq!(err, TaskIdParseError::Empty);
+    }
+
+    #[test]
+    fn parse_cli_accepts_max_legacy_decimal() {
+        let id = TaskId::parse_cli("18446744073709551615").unwrap();
+        assert_eq!(id, TaskId::from(u64::MAX));
+    }
+
+    #[test]
+    fn from_u64_generation_is_unique_for_sample_range() {
+        use std::collections::HashSet;
+
+        let mut seen = HashSet::new();
+        for value in 0_u64..1024 {
+            let id = TaskId::from(value);
+            assert_eq!(id.as_str().len(), TaskId::HEX_LEN);
+            assert!(
+                seen.insert(id.clone()),
+                "duplicate TaskId generated for source value {value}"
+            );
+            assert_eq!(id.as_u64(), value);
+        }
+
+        assert_eq!(seen.len(), 1024);
+    }
+
+    #[test]
     fn rusqlite_round_trips_text_task_id() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         conn.execute_batch("CREATE TABLE t (id TEXT NOT NULL);")

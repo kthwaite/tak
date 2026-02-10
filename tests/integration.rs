@@ -9,6 +9,15 @@ use tak::output::Format;
 use tak::store::files::FileStore;
 use tak::store::index::Index;
 use tak::store::repo::Repo;
+use tak::task_id::TaskId;
+
+fn task_id_hex(id: u64) -> String {
+    format!("{id:016x}")
+}
+
+fn tid(id: u64) -> TaskId {
+    TaskId::from(id)
+}
 
 #[test]
 fn test_full_workflow() {
@@ -78,10 +87,10 @@ fn test_full_workflow() {
     // Check available: tasks 1 and 2 have no unfinished deps
     // Task 3 is blocked by 2, task 4 is blocked by 3
     let avail = idx.available(None).unwrap();
-    assert!(avail.contains(&1));
-    assert!(avail.contains(&2));
-    assert!(!avail.contains(&3));
-    assert!(!avail.contains(&4));
+    assert!(avail.contains(&tid(1)));
+    assert!(avail.contains(&tid(2)));
+    assert!(!avail.contains(&tid(3)));
+    assert!(!avail.contains(&tid(4)));
 
     // Start and finish task 2
     let mut t2 = store.read(2).unwrap();
@@ -97,8 +106,8 @@ fn test_full_workflow() {
 
     // Task 3 should now be available (its dependency task 2 is done)
     let avail = idx.available(None).unwrap();
-    assert!(avail.contains(&3));
-    assert!(!avail.contains(&4)); // still blocked by 3
+    assert!(avail.contains(&tid(3)));
+    assert!(!avail.contains(&tid(4))); // still blocked by 3
 
     // Finish task 3
     let mut t3 = store.read(3).unwrap();
@@ -114,7 +123,7 @@ fn test_full_workflow() {
 
     // Task 4 should now be available
     let avail = idx.available(None).unwrap();
-    assert!(avail.contains(&4));
+    assert!(avail.contains(&tid(4)));
 
     // Verify tree structure
     let roots = idx.roots().unwrap();
@@ -565,7 +574,7 @@ fn test_depend_rolls_back_on_partial_failure() {
     let repo = Repo::open(dir.path()).unwrap();
     let avail = repo.index.available(None).unwrap();
     assert!(
-        avail.contains(&1),
+        avail.contains(&tid(1)),
         "task 1 should still be available (not blocked)"
     );
 }
@@ -1047,7 +1056,11 @@ fn test_doctor_healthy_repo_structure() {
     assert_eq!(config["version"], 2);
     assert!(dir.path().join(".tak/counter.json").exists());
     assert!(dir.path().join(".tak/tasks").is_dir());
-    assert!(dir.path().join(".tak/tasks/1.json").exists());
+    assert!(
+        dir.path()
+            .join(format!(".tak/tasks/{}.json", task_id_hex(1)))
+            .exists()
+    );
     assert!(dir.path().join(".tak/index.db").exists());
 }
 
@@ -1081,11 +1094,20 @@ fn test_doctor_detects_dangling_parent() {
         .unwrap();
 
     // Delete parent file directly
-    fs::remove_file(dir.path().join(".tak/tasks/1.json")).unwrap();
+    fs::remove_file(
+        dir.path()
+            .join(format!(".tak/tasks/{}.json", task_id_hex(1))),
+    )
+    .unwrap();
 
-    let child: tak::model::Task =
-        serde_json::from_str(&fs::read_to_string(dir.path().join(".tak/tasks/2.json")).unwrap())
-            .unwrap();
+    let child: tak::model::Task = serde_json::from_str(
+        &fs::read_to_string(
+            dir.path()
+                .join(format!(".tak/tasks/{}.json", task_id_hex(2))),
+        )
+        .unwrap(),
+    )
+    .unwrap();
     assert_eq!(
         child.parent,
         Some(1),
@@ -1122,11 +1144,20 @@ fn test_doctor_detects_dangling_dep() {
         )
         .unwrap();
 
-    fs::remove_file(dir.path().join(".tak/tasks/1.json")).unwrap();
+    fs::remove_file(
+        dir.path()
+            .join(format!(".tak/tasks/{}.json", task_id_hex(1))),
+    )
+    .unwrap();
 
-    let task: tak::model::Task =
-        serde_json::from_str(&fs::read_to_string(dir.path().join(".tak/tasks/2.json")).unwrap())
-            .unwrap();
+    let task: tak::model::Task = serde_json::from_str(
+        &fs::read_to_string(
+            dir.path()
+                .join(format!(".tak/tasks/{}.json", task_id_hex(2))),
+        )
+        .unwrap(),
+    )
+    .unwrap();
     assert!(
         task.depends_on.iter().any(|d| d.id == 1),
         "dep on deleted task remains"
@@ -1723,7 +1754,11 @@ fn test_context_set_and_read() {
     .unwrap();
 
     // Verify context file was created
-    assert!(dir.path().join(".tak/context/1.md").exists());
+    assert!(
+        dir.path()
+            .join(format!(".tak/context/{}.md", task_id_hex(1)))
+            .exists()
+    );
 
     // Read context back via sidecar store
     let repo = tak::store::repo::Repo::open(dir.path()).unwrap();
@@ -1757,10 +1792,18 @@ fn test_context_clear() {
 
     // Set then clear
     tak::commands::context::run(dir.path(), 1, Some("notes".into()), false, Format::Json).unwrap();
-    assert!(dir.path().join(".tak/context/1.md").exists());
+    assert!(
+        dir.path()
+            .join(format!(".tak/context/{}.md", task_id_hex(1)))
+            .exists()
+    );
 
     tak::commands::context::run(dir.path(), 1, None, true, Format::Json).unwrap();
-    assert!(!dir.path().join(".tak/context/1.md").exists());
+    assert!(
+        !dir.path()
+            .join(format!(".tak/context/{}.md", task_id_hex(1)))
+            .exists()
+    );
 }
 
 #[test]
@@ -1919,14 +1962,30 @@ fn test_delete_cleans_up_sidecars() {
     tak::commands::lifecycle::start(dir.path(), 1, None, Format::Json).unwrap();
     tak::commands::lifecycle::finish(dir.path(), 1, Format::Json).unwrap();
 
-    assert!(dir.path().join(".tak/context/1.md").exists());
-    assert!(dir.path().join(".tak/history/1.jsonl").exists());
+    assert!(
+        dir.path()
+            .join(format!(".tak/context/{}.md", task_id_hex(1)))
+            .exists()
+    );
+    assert!(
+        dir.path()
+            .join(format!(".tak/history/{}.jsonl", task_id_hex(1)))
+            .exists()
+    );
 
     // Delete task — should also clean up sidecars
     tak::commands::delete::run(dir.path(), 1, false, Format::Json).unwrap();
 
-    assert!(!dir.path().join(".tak/context/1.md").exists());
-    assert!(!dir.path().join(".tak/history/1.jsonl").exists());
+    assert!(
+        !dir.path()
+            .join(format!(".tak/context/{}.md", task_id_hex(1)))
+            .exists()
+    );
+    assert!(
+        !dir.path()
+            .join(format!(".tak/history/{}.jsonl", task_id_hex(1)))
+            .exists()
+    );
 }
 
 #[test]
