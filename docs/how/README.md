@@ -33,3 +33,4 @@ Each page should include:
 - [`coordination-verbosity.md`](./coordination-verbosity.md) — low/medium/high coordination trigger matrix and concrete message examples
 - [`channel-contract.md`](./channel-contract.md) — normative channel-role contract for mesh/blackboard/context/history with concrete usage examples
 - [`isolated-verification.md`](./isolated-verification.md) — when and how to use temporary git worktrees for targeted verification in noisy multi-agent lanes
+- [`meta-refinement-workflow.md`](./meta-refinement-workflow.md) — practical proposal -> `meta` refinement loops with handoff and closeout examples
