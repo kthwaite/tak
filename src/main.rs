@@ -238,6 +238,10 @@ enum Commands {
     /// Display the parent-child task hierarchy
     Tree {
         /// Root task ID (omit for full tree)
+        #[arg(value_name = "ID")]
+        root_id: Option<String>,
+        /// Root task ID (named form)
+        #[arg(long = "id", value_name = "ID", conflicts_with = "root_id")]
         id: Option<String>,
         /// Show only pending tasks
         #[arg(long)]
@@ -797,9 +801,13 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
         Commands::Orphan { id } => {
             tak::commands::deps::orphan(&root, resolve_task_id_arg(&root, id)?, format)
         }
-        Commands::Tree { id, pending } => tak::commands::tree::run(
+        Commands::Tree {
+            root_id,
+            id,
+            pending,
+        } => tak::commands::tree::run(
             &root,
-            resolve_optional_task_id_arg(&root, id)?,
+            resolve_optional_task_id_arg(&root, id.or(root_id))?,
             pending,
             format,
         ),
@@ -999,12 +1007,61 @@ mod tests {
     fn parse_tree_pending_flag() {
         let cli = Cli::parse_from(["tak", "tree", "--pending"]);
         match cli.command {
-            Commands::Tree { id, pending } => {
+            Commands::Tree {
+                root_id,
+                id,
+                pending,
+            } => {
+                assert!(root_id.is_none());
                 assert!(id.is_none());
                 assert!(pending);
             }
             _ => panic!("expected tree command"),
         }
+    }
+
+    #[test]
+    fn parse_tree_positional_id() {
+        let cli = Cli::parse_from(["tak", "tree", "123"]);
+        match cli.command {
+            Commands::Tree {
+                root_id,
+                id,
+                pending,
+            } => {
+                assert_eq!(root_id.as_deref(), Some("123"));
+                assert!(id.is_none());
+                assert!(!pending);
+            }
+            _ => panic!("expected tree command"),
+        }
+    }
+
+    #[test]
+    fn parse_tree_named_id() {
+        let cli = Cli::parse_from(["tak", "tree", "--id", "123"]);
+        match cli.command {
+            Commands::Tree {
+                root_id,
+                id,
+                pending,
+            } => {
+                assert!(root_id.is_none());
+                assert_eq!(id.as_deref(), Some("123"));
+                assert!(!pending);
+            }
+            _ => panic!("expected tree command"),
+        }
+    }
+
+    #[test]
+    fn parse_tree_rejects_both_positional_and_named_id() {
+        let err = match Cli::try_parse_from(["tak", "tree", "123", "--id", "456"]) {
+            Ok(_) => panic!("expected clap parse error"),
+            Err(err) => err,
+        };
+        let rendered = err.to_string();
+        assert!(rendered.contains("cannot be used with"));
     }
 }
 
