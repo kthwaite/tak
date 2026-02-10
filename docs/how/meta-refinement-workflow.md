@@ -2,6 +2,10 @@
 
 This page documents practical, current-state guidance for using `kind=meta` tasks to refine rough proposals into executable Tak work.
 
+Related design/policy references:
+- [`docs/rfcs/0003-idea-kind-and-pupal-phase.md`](../rfcs/0003-idea-kind-and-pupal-phase.md)
+- Feature [#81] Define pupal-phase policy and operator guidance
+
 ## What this workflow does
 
 Use a `meta` task when the primary output is **better task structure**, not direct product/code changes.
@@ -19,6 +23,17 @@ Typical outcomes of a meta loop:
 - `meta` tasks use the same lifecycle transitions (`start`, `handoff`, `finish`, etc.) and sidecar history logging.
 - Coordination channels (mesh/blackboard) are communication layers; final planning state must be persisted in task files.
 - Claim/next behavior is unchanged: if a `meta` task is pending + unblocked, it can be claimed like other work.
+
+## Scope boundary with RFC-0003 and #81 policy work
+
+This page is **implementation guidance** for `kind=meta` operations (task #36 scope). It intentionally does **not** define final intake/promotion policy for idea-first workflows.
+
+Policy decisions such as:
+- when concepts must start as `kind=idea`,
+- required promotion gates,
+- defer/reject governance,
+
+belong to RFC-0003 policy finalization under task #81.
 
 ## When to choose `meta` vs implementation kinds
 
