@@ -122,7 +122,7 @@ For task-taking commands, `TASK_ID` accepts canonical 16-hex IDs, unique hex pre
 | `undepend TASK_IDS --on TASK_IDS` | Remove dependency edges in bulk (`--quiet`) |
 | `reparent TASK_IDS --to TASK_ID` | Change parent in bulk (`--quiet`; comma-separated IDs) |
 | `orphan TASK_ID` | Remove parent (`--quiet`) |
-| `tree [TASK_ID]` | Display parent-child hierarchy (`--pending`, `--sort id\|created\|priority\|estimate`) |
+| `tree [TASK_ID]` | Display parent-child hierarchy (default dirty subtrees; `--all` for full tree, `--pending` for strict pending-only, `--sort id\|created\|priority\|estimate`) |
 | `next` | Show next available task (`--assignee`) |
 | `wait` | Block until a path reservation clears or a task unblocks (`--path`/`--on-task`, `--timeout`) |
 | `context TASK_ID` | Read/write context notes (`--set TEXT`, `--clear`) |

@@ -371,11 +371,14 @@ enum Commands {
         /// Root task ID (canonical hex, unique prefix, or legacy decimal; named form)
         #[arg(long = "id", value_name = "ID", conflicts_with = "root_id")]
         id: Option<String>,
-        /// Show only pending tasks
-        #[arg(long)]
+        /// Show full tree (including fully done branches)
+        #[arg(long, conflicts_with = "pending")]
+        all: bool,
+        /// Show only pending tasks (stricter than default dirty view)
+        #[arg(long, conflicts_with = "all")]
         pending: bool,
-        /// Sort roots/siblings by id, created time, priority, or estimate
-        #[arg(long, value_enum, default_value = "id")]
+        /// Sort roots/siblings by id, created time, priority, or estimate (default: created)
+        #[arg(long, value_enum, default_value = "created")]
         sort: tak::commands::tree::TreeSort,
     },
     /// Clear a task's assignee without changing status
@@ -1186,15 +1189,26 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
         Commands::Tree {
             root_id,
             id,
+            all,
             pending,
             sort,
-        } => tak::commands::tree::run(
-            &root,
-            resolve_optional_task_id_arg(&root, id.or(root_id))?,
-            pending,
-            sort,
-            format,
-        ),
+        } => {
+            let scope = if all {
+                tak::commands::tree::TreeScope::All
+            } else if pending {
+                tak::commands::tree::TreeScope::Pending
+            } else {
+                tak::commands::tree::TreeScope::Dirty
+            };
+
+            tak::commands::tree::run(
+                &root,
+                resolve_optional_task_id_arg(&root, id.or(root_id))?,
+                scope,
+                sort,
+                format,
+            )
+        }
         Commands::Next { assignee } => tak::commands::next::run(&root, assignee, format),
         Commands::Wait {
             path,
@@ -2075,13 +2089,36 @@ mod tests {
             Commands::Tree {
                 root_id,
                 id,
+                all,
                 pending,
                 sort,
             } => {
                 assert!(root_id.is_none());
                 assert!(id.is_none());
+                assert!(!all);
                 assert!(pending);
-                assert_eq!(sort, tak::commands::tree::TreeSort::Id);
+                assert_eq!(sort, tak::commands::tree::TreeSort::Created);
+            }
+            _ => panic!("expected tree command"),
+        }
+    }
+
+    #[test]
+    fn parse_tree_all_flag() {
+        let cli = Cli::parse_from(["tak", "tree", "--all"]);
+        match cli.command {
+            Commands::Tree {
+                root_id,
+                id,
+                all,
+                pending,
+                sort,
+            } => {
+                assert!(root_id.is_none());
+                assert!(id.is_none());
+                assert!(all);
+                assert!(!pending);
+                assert_eq!(sort, tak::commands::tree::TreeSort::Created);
             }
             _ => panic!("expected tree command"),
         }
@@ -2094,13 +2131,15 @@ mod tests {
             Commands::Tree {
                 root_id,
                 id,
+                all,
                 pending,
                 sort,
             } => {
                 assert_eq!(root_id.as_deref(), Some("123"));
                 assert!(id.is_none());
+                assert!(!all);
                 assert!(!pending);
-                assert_eq!(sort, tak::commands::tree::TreeSort::Id);
+                assert_eq!(sort, tak::commands::tree::TreeSort::Created);
             }
             _ => panic!("expected tree command"),
         }
@@ -2113,13 +2152,15 @@ mod tests {
             Commands::Tree {
                 root_id,
                 id,
+                all,
                 pending,
                 sort,
             } => {
                 assert!(root_id.is_none());
                 assert_eq!(id.as_deref(), Some("123"));
+                assert!(!all);
                 assert!(!pending);
-                assert_eq!(sort, tak::commands::tree::TreeSort::Id);
+                assert_eq!(sort, tak::commands::tree::TreeSort::Created);
             }
             _ => panic!("expected tree command"),
         }
@@ -2132,11 +2173,13 @@ mod tests {
             Commands::Tree {
                 root_id,
                 id,
+                all,
                 pending,
                 sort,
             } => {
                 assert!(root_id.is_none());
                 assert!(id.is_none());
+                assert!(!all);
                 assert!(!pending);
                 assert_eq!(sort, tak::commands::tree::TreeSort::Priority);
             }
@@ -2766,6 +2809,16 @@ mod tests {
     #[test]
     fn parse_tree_rejects_both_positional_and_named_id() {
         let err = match Cli::try_parse_from(["tak", "tree", "123", "--id", "456"]) {
+            Ok(_) => panic!("expected clap parse error"),
+            Err(err) => err,
+        };
+        let rendered = err.to_string();
+        assert!(rendered.contains("cannot be used with"));
+    }
+
+    #[test]
+    fn parse_tree_rejects_all_and_pending_together() {
+        let err = match Cli::try_parse_from(["tak", "tree", "--all", "--pending"]) {
             Ok(_) => panic!("expected clap parse error"),
             Err(err) => err,
         };

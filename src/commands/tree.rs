@@ -22,6 +22,13 @@ pub enum TreeSort {
     Estimate,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TreeScope {
+    Dirty,
+    All,
+    Pending,
+}
+
 #[derive(Debug, Serialize)]
 struct TreeNode {
     id: String,
@@ -32,12 +39,83 @@ struct TreeNode {
     children: Vec<TreeNode>,
 }
 
-fn collect_tasks(all_tasks: Vec<Task>, pending_only: bool) -> HashMap<u64, Task> {
-    all_tasks
-        .into_iter()
-        .filter(|task| !pending_only || task.status == Status::Pending)
-        .map(|task| (task.id, task))
-        .collect()
+fn collect_tasks_for_scope(
+    all_tasks: Vec<Task>,
+    scope: TreeScope,
+    sort: TreeSort,
+) -> HashMap<u64, Task> {
+    let all: HashMap<u64, Task> = all_tasks.into_iter().map(|task| (task.id, task)).collect();
+
+    match scope {
+        TreeScope::All => all,
+        TreeScope::Pending => all
+            .into_iter()
+            .filter(|(_, task)| task.status == Status::Pending)
+            .collect(),
+        TreeScope::Dirty => {
+            let all_children_map = build_children_map(&all, false, sort);
+            let included_ids = collect_dirty_root_subtree_ids(&all, &all_children_map);
+            all.into_iter()
+                .filter(|(id, _)| included_ids.contains(id))
+                .collect()
+        }
+    }
+}
+
+fn collect_dirty_root_subtree_ids(
+    tasks: &HashMap<u64, Task>,
+    children_map: &HashMap<Option<u64>, Vec<u64>>,
+) -> HashSet<u64> {
+    let root_ids: HashSet<u64> = tasks
+        .values()
+        .filter(|task| task.status != Status::Done)
+        .map(|task| find_root_id(task.id, tasks))
+        .collect();
+
+    collect_subtree_ids(&root_ids, children_map)
+}
+
+fn find_root_id(task_id: u64, tasks: &HashMap<u64, Task>) -> u64 {
+    let mut current = task_id;
+    let mut visited = HashSet::new();
+
+    loop {
+        if !visited.insert(current) {
+            // Defensive cycle guard; lifecycle constraints should prevent this.
+            return current;
+        }
+
+        let Some(task) = tasks.get(&current) else {
+            return current;
+        };
+
+        match task.parent {
+            Some(parent_id) if tasks.contains_key(&parent_id) => {
+                current = parent_id;
+            }
+            _ => return current,
+        }
+    }
+}
+
+fn collect_subtree_ids(
+    root_ids: &HashSet<u64>,
+    children_map: &HashMap<Option<u64>, Vec<u64>>,
+) -> HashSet<u64> {
+    let mut included = HashSet::new();
+    let mut stack: Vec<u64> = root_ids.iter().copied().collect();
+
+    while let Some(task_id) = stack.pop() {
+        if !included.insert(task_id) {
+            continue;
+        }
+
+        if let Some(children) = children_map.get(&Some(task_id)) {
+            stack.extend(children.iter().copied());
+        }
+    }
+
+    included
 }
 
 fn estimate_rank(estimate: Option<Estimate>) -> u8 {
@@ -84,12 +162,12 @@ fn compare_task_ids(left: u64, right: u64, tasks: &HashMap<u64, Task>, sort: Tre
 
 fn build_children_map(
     tasks: &HashMap<u64, Task>,
-    pending_only: bool,
+    promote_missing_parents: bool,
     sort: TreeSort,
 ) -> HashMap<Option<u64>, Vec<u64>> {
     let mut children_map: HashMap<Option<u64>, Vec<u64>> = HashMap::new();
     for task in tasks.values() {
-        let parent = if pending_only {
+        let parent = if promote_missing_parents {
             task.parent.filter(|pid| tasks.contains_key(pid))
         } else {
             task.parent
@@ -200,7 +278,7 @@ fn print_tree_minimal(node: &TreeNode, depth: usize) {
 pub fn run(
     repo_root: &Path,
     id: Option<u64>,
-    pending_only: bool,
+    scope: TreeScope,
     sort: TreeSort,
     format: Format,
 ) -> Result<()> {
@@ -209,10 +287,11 @@ pub fn run(
 
     // Pre-load all tasks into memory (one pass over files)
     let all_tasks = repo.store.list_all()?;
-    let tasks = collect_tasks(all_tasks, pending_only);
+    let tasks = collect_tasks_for_scope(all_tasks, scope, sort);
 
     // Build parent→children index in memory
-    let children_map = build_children_map(&tasks, pending_only, sort);
+    let promote_missing_parents = matches!(scope, TreeScope::Dirty | TreeScope::Pending);
+    let children_map = build_children_map(&tasks, promote_missing_parents, sort);
 
     if let Some(root_id) = id {
         if let Some(tree) = build_tree(root_id, &children_map, &tasks, &blocked_ids) {
@@ -252,10 +331,14 @@ pub fn run(
 mod tests {
     use super::*;
     use crate::model::{Estimate, Kind, Priority};
-    use chrono::Utc;
+    use chrono::{Duration, Utc};
 
-    fn task(id: u64, status: Status, parent: Option<u64>) -> Task {
-        let now = Utc::now();
+    fn task_with_created(
+        id: u64,
+        status: Status,
+        parent: Option<u64>,
+        created_at: chrono::DateTime<Utc>,
+    ) -> Task {
         Task {
             id,
             title: format!("task-{id}"),
@@ -271,10 +354,14 @@ mod tests {
             git: crate::model::GitInfo::default(),
             execution: crate::model::Execution::default(),
             learnings: vec![],
-            created_at: now,
-            updated_at: now,
+            created_at,
+            updated_at: created_at,
             extensions: serde_json::Map::new(),
         }
+    }
+
+    fn task(id: u64, status: Status, parent: Option<u64>) -> Task {
+        task_with_created(id, status, parent, Utc::now())
     }
 
     #[test]
@@ -286,7 +373,7 @@ mod tests {
             task(4, Status::Pending, None),
         ];
 
-        let filtered = collect_tasks(tasks, true);
+        let filtered = collect_tasks_for_scope(tasks, TreeScope::Pending, TreeSort::Id);
         let children_map = build_children_map(&filtered, true, TreeSort::Id);
         let roots = children_map.get(&None).cloned().unwrap_or_default();
         assert_eq!(roots, vec![2, 4]);
@@ -304,7 +391,7 @@ mod tests {
             task(12, Status::Pending, Some(10)),
         ];
 
-        let filtered = collect_tasks(tasks, true);
+        let filtered = collect_tasks_for_scope(tasks, TreeScope::Pending, TreeSort::Id);
         let children_map = build_children_map(&filtered, true, TreeSort::Id);
 
         let tree = build_tree(10, &children_map, &filtered, &HashSet::new()).unwrap();
@@ -319,17 +406,91 @@ mod tests {
             task(2, Status::Pending, Some(1)),
         ];
 
-        let filtered = collect_tasks(tasks, true);
+        let filtered = collect_tasks_for_scope(tasks, TreeScope::Pending, TreeSort::Id);
         let children_map = build_children_map(&filtered, true, TreeSort::Id);
 
         assert!(build_tree(1, &children_map, &filtered, &HashSet::new()).is_none());
     }
 
     #[test]
+    fn dirty_filter_includes_root_and_full_root_subtree_for_dirty_descendants() {
+        let tasks = vec![
+            task(1, Status::Done, None),
+            task(2, Status::InProgress, Some(1)),
+            task(3, Status::Done, Some(2)),
+            task(4, Status::Done, Some(1)),
+            task(5, Status::Done, None),
+        ];
+
+        let filtered = collect_tasks_for_scope(tasks, TreeScope::Dirty, TreeSort::Id);
+        let children_map = build_children_map(&filtered, true, TreeSort::Id);
+        let roots = children_map.get(&None).cloned().unwrap_or_default();
+
+        assert_eq!(roots, vec![1]);
+        assert!(filtered.contains_key(&1));
+        assert!(filtered.contains_key(&2));
+        assert!(filtered.contains_key(&3));
+        assert!(filtered.contains_key(&4));
+        assert!(!filtered.contains_key(&5));
+
+        let tree = build_tree(1, &children_map, &filtered, &HashSet::new()).unwrap();
+        let child_ids: Vec<String> = tree.children.iter().map(|child| child.id.clone()).collect();
+        assert_eq!(child_ids, vec![format_tree_id(2), format_tree_id(4)]);
+
+        let nested_child_ids: Vec<String> = tree.children[0]
+            .children
+            .iter()
+            .map(|child| child.id.clone())
+            .collect();
+        assert_eq!(nested_child_ids, vec![format_tree_id(3)]);
+    }
+
+    #[test]
+    fn dirty_filter_includes_cancelled_roots() {
+        let tasks = vec![
+            task(10, Status::Cancelled, None),
+            task(11, Status::Done, Some(10)),
+        ];
+
+        let filtered = collect_tasks_for_scope(tasks, TreeScope::Dirty, TreeSort::Id);
+        let children_map = build_children_map(&filtered, true, TreeSort::Id);
+        let roots = children_map.get(&None).cloned().unwrap_or_default();
+
+        assert_eq!(roots, vec![10]);
+
+        let tree = build_tree(10, &children_map, &filtered, &HashSet::new()).unwrap();
+        let child_ids: Vec<String> = tree.children.iter().map(|child| child.id.clone()).collect();
+        assert_eq!(child_ids, vec![format_tree_id(11)]);
+    }
+
+    #[test]
+    fn dirty_filter_includes_each_root_with_any_dirty_descendant() {
+        let tasks = vec![
+            task(1, Status::Done, None),
+            task(2, Status::Pending, Some(1)),
+            task(3, Status::Done, Some(1)),
+            task(10, Status::Done, None),
+            task(11, Status::Done, Some(10)),
+            task(20, Status::InProgress, None),
+        ];
+
+        let filtered = collect_tasks_for_scope(tasks, TreeScope::Dirty, TreeSort::Id);
+        let children_map = build_children_map(&filtered, true, TreeSort::Id);
+        let roots = children_map.get(&None).cloned().unwrap_or_default();
+
+        assert_eq!(roots, vec![1, 20]);
+        assert!(filtered.contains_key(&1));
+        assert!(filtered.contains_key(&2));
+        assert!(filtered.contains_key(&3));
+        assert!(!filtered.contains_key(&10));
+        assert!(!filtered.contains_key(&11));
+    }
+
+    #[test]
     fn build_tree_uses_hex_task_ids() {
         let tasks = vec![task(42, Status::Pending, None)];
 
-        let filtered = collect_tasks(tasks, false);
+        let filtered = collect_tasks_for_scope(tasks, TreeScope::All, TreeSort::Id);
         let children_map = build_children_map(&filtered, false, TreeSort::Id);
         let tree = build_tree(42, &children_map, &filtered, &HashSet::new()).unwrap();
 
@@ -337,17 +498,35 @@ mod tests {
     }
 
     #[test]
-    fn non_pending_tree_keeps_original_parent_links() {
+    fn all_scope_keeps_original_parent_links() {
         let tasks = vec![
             task(1, Status::Done, None),
             task(2, Status::Pending, Some(1)),
         ];
 
-        let unfiltered = collect_tasks(tasks, false);
+        let unfiltered = collect_tasks_for_scope(tasks, TreeScope::All, TreeSort::Id);
         let children_map = build_children_map(&unfiltered, false, TreeSort::Id);
         let roots = children_map.get(&None).cloned().unwrap_or_default();
 
         assert_eq!(roots, vec![1]);
+    }
+
+    #[test]
+    fn tree_sort_created_orders_oldest_first() {
+        let base = Utc::now();
+        let oldest = task_with_created(1, Status::Pending, None, base);
+        let middle = task_with_created(2, Status::Pending, None, base + Duration::seconds(10));
+        let newest = task_with_created(3, Status::Pending, None, base + Duration::seconds(20));
+
+        let tasks = collect_tasks_for_scope(
+            vec![newest, oldest, middle],
+            TreeScope::All,
+            TreeSort::Created,
+        );
+        let children_map = build_children_map(&tasks, false, TreeSort::Created);
+        let roots = children_map.get(&None).cloned().unwrap_or_default();
+
+        assert_eq!(roots, vec![1, 2, 3]);
     }
 
     #[test]
@@ -360,7 +539,7 @@ mod tests {
 
         let none = task(3, Status::Pending, None);
 
-        let tasks = collect_tasks(vec![low, high, none], false);
+        let tasks = collect_tasks_for_scope(vec![low, high, none], TreeScope::All, TreeSort::Id);
         let children_map = build_children_map(&tasks, false, TreeSort::Priority);
 
         let roots = children_map.get(&None).cloned().unwrap_or_default();
@@ -377,7 +556,7 @@ mod tests {
 
         let none = task(3, Status::Pending, None);
 
-        let tasks = collect_tasks(vec![large, small, none], false);
+        let tasks = collect_tasks_for_scope(vec![large, small, none], TreeScope::All, TreeSort::Id);
         let children_map = build_children_map(&tasks, false, TreeSort::Estimate);
 
         let roots = children_map.get(&None).cloned().unwrap_or_default();
