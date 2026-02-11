@@ -1,0 +1,38 @@
+{
+  "id": 227196793135923782,
+  "title": "Add docs/how/metrics-burndown.md with interpretation guidance",
+  "description": "Write an operator guide that explains burndown and completion-time semantics, lead vs cycle definitions, data-quality caveats, and troubleshooting tips.",
+  "status": "done",
+  "kind": "task",
+  "parent": 8766767369406659174,
+  "depends_on": [
+    {
+      "id": 12659565396058063485
+    }
+  ],
+  "assignee": "daring-newyork-7295",
+  "tags": [
+    "docs",
+    "metrics"
+  ],
+  "planning": {
+    "priority": "medium",
+    "estimate": "s"
+  },
+  "git": {
+    "branch": "develop",
+    "start_commit": "84939db43282e11e8337dc560e143cec7ed7b4cc",
+    "end_commit": "8a36f38d9730ed2ca4573d02b58348a79dab5e28",
+    "commits": [
+      "8a36f38 refactor(workspace): split runtime into tak-core and thin tak-cli"
+    ]
+  },
+  "execution": {
+    "attempt_count": 1
+  },
+  "learnings": [
+    23
+  ],
+  "created_at": "2026-02-10T17:34:19.610124Z",
+  "updated_at": "2026-02-11T00:57:01.671737Z"
+}

@@ -1,0 +1,15 @@
+{
+  "id": 23,
+  "title": "Separate operator interpretation from subsystem internals in docs/how",
+  "description": "For metrics docs, maintain one implementation-facing page (invariants + code pointers) and a separate operator-facing guide (how to interpret outputs and troubleshoot). This prevents semantic guidance from getting buried in internals.",
+  "category": "pattern",
+  "tags": [
+    "docs",
+    "metrics"
+  ],
+  "task_ids": [
+    227196793135923782
+  ],
+  "created_at": "2026-02-11T00:56:57.897909Z",
+  "updated_at": "2026-02-11T00:56:57.897909Z"
+}
