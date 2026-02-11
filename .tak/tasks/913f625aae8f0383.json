@@ -2,8 +2,9 @@
   "id": 10466192200647508867,
   "title": "Crate split: tak-core library + thin tak-cli wrapper",
   "description": "Refactor tak into a multi-crate workspace where `tak-core` owns domain, storage, lifecycle, and command execution logic while `tak-cli` becomes a thin CLI adapter focused on argument parsing, output selection, and process exit semantics.",
-  "status": "pending",
+  "status": "done",
   "kind": "epic",
+  "assignee": "gentle-balrog-dc0d",
   "tags": [
     "architecture",
     "cli",
@@ -28,6 +29,17 @@
     "estimate": "xl",
     "risk": "high"
   },
+  "git": {
+    "branch": "develop",
+    "start_commit": "8a36f38d9730ed2ca4573d02b58348a79dab5e28",
+    "end_commit": "8a36f38d9730ed2ca4573d02b58348a79dab5e28"
+  },
+  "execution": {
+    "attempt_count": 1
+  },
+  "learnings": [
+    24
+  ],
   "created_at": "2026-02-11T00:04:03.618357Z",
-  "updated_at": "2026-02-11T00:04:03.618357Z"
+  "updated_at": "2026-02-11T00:59:07.534011Z"
 }
