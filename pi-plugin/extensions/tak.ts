@@ -1,5 +1,8 @@
-import { existsSync } from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { isAbsolute, join, relative } from "node:path";
+import { spawn } from "node:child_process";
+import { createInterface } from "node:readline";
 
 import {
 	DEFAULT_MAX_BYTES,
@@ -108,6 +111,23 @@ interface TherapistObservation {
 	recommendations?: string[];
 	interview?: string;
 	metrics?: Record<string, unknown>;
+}
+
+interface TherapistRpcTurn {
+	question: string;
+	answer: string;
+}
+
+interface TherapistRpcInterviewResult {
+	session: string;
+	requestedBy?: string;
+	turns: TherapistRpcTurn[];
+}
+
+interface TherapistRpcSessionTarget {
+	rpcSession: string;
+	displaySession: string;
+	cleanup?: () => void;
 }
 
 interface TakFilters {
@@ -244,7 +264,7 @@ const TAK_HELP = `
 /tak depend|undepend|reparent|orphan <task-id> [...options]
                                    Dependency/structure shortcuts for task graph edits
 /tak therapist [offline|online|log]
-                                   Run workflow diagnosis/interview and append observations
+                                   Offline/log use tak CLI observations; online runs a multi-turn RPC interview on the current session
 /tak <task-id>                     Open a specific task
 
 Sources:
@@ -393,6 +413,9 @@ const SOURCE_SET: Set<string> = new Set([
 ]);
 
 const HEARTBEAT_INTERVAL_FALLBACK_MS = 30_000;
+const THERAPIST_RPC_REQUEST_TIMEOUT_MS = 30_000;
+const THERAPIST_RPC_AGENT_TIMEOUT_MS = 120_000;
+const THERAPIST_RPC_SHUTDOWN_TIMEOUT_MS = 1_500;
 
 function parseTakError(stderr: string): string | undefined {
 	const trimmed = stderr.trim();
@@ -1887,6 +1910,373 @@ function truncateText(text: string, maxChars: number): string {
 	return `${normalized.slice(0, Math.max(1, maxChars - 1))}…`;
 }
 
+function therapistPiBinary(): string {
+	const configured = process.env.TAK_THERAPIST_PI_BIN;
+	const trimmed = typeof configured === "string" ? configured.trim() : "";
+	return trimmed || "pi";
+}
+
+function cloneSessionForTherapistRpc(sessionPath: string): TherapistRpcSessionTarget {
+	const snapshotDir = mkdtempSync(join(tmpdir(), "tak-therapist-session-"));
+	const snapshotPath = join(snapshotDir, "session.jsonl");
+	copyFileSync(sessionPath, snapshotPath);
+
+	return {
+		rpcSession: snapshotPath,
+		displaySession: sessionPath,
+		cleanup: () => rmSync(snapshotDir, { recursive: true, force: true }),
+	};
+}
+
+function resolveTherapistRpcSessionTarget(
+	sessionOverride: string | undefined,
+	currentSessionFile: string | undefined,
+	currentSessionId: string | undefined,
+): TherapistRpcSessionTarget | null {
+	const override = sessionOverride?.trim();
+	if (override) {
+		if (existsSync(override)) {
+			return cloneSessionForTherapistRpc(override);
+		}
+		return { rpcSession: override, displaySession: override };
+	}
+
+	if (currentSessionFile && existsSync(currentSessionFile)) {
+		return cloneSessionForTherapistRpc(currentSessionFile);
+	}
+
+	const fallbackId = currentSessionId?.trim();
+	if (fallbackId) {
+		return { rpcSession: fallbackId, displaySession: fallbackId };
+	}
+
+	return null;
+}
+
+function buildTherapistRpcQuestions(sessionLabel: string): string[] {
+	return [
+		[
+			`You are the resurrected agent from session \`${sessionLabel}\`.`,
+			"Question 1/3:",
+			"- Reconstruct the work context in 3-5 bullets.",
+			"- Identify the key /tak workflow friction points or coordination conflicts you experienced.",
+			"Use two headings: `Context recap` and `Friction hotspots`.",
+		].join("\n"),
+		[
+			"Question 2/3 (follow-up):",
+			"For the top three friction hotspots, provide:",
+			"- What happened",
+			"- Why it happened (root cause)",
+			"- Which missing signal/feedback would have prevented the delay",
+			"Keep it specific and operational.",
+		].join("\n"),
+		[
+			"Question 3/3 (action plan):",
+			"Provide:",
+			"1) Top 3 interface/workflow improvements ranked by impact",
+			"2) Two experiments with measurable success criteria",
+			"3) A concise handoff note the next agent can apply immediately",
+			"Use clear bullets.",
+		].join("\n"),
+	];
+}
+
+async function runTherapistRpcInterview(
+	sessionSelector: string,
+	options: {
+		cwd: string;
+		displaySession: string;
+		requestedBy?: string;
+		onProgress?: (status: string) => void;
+	},
+): Promise<TherapistRpcInterviewResult> {
+	const piBin = therapistPiBinary();
+	const child = spawn(
+		piBin,
+		[
+			"--mode",
+			"rpc",
+			"--session",
+			sessionSelector,
+			"--no-tools",
+			"--no-extensions",
+			"--no-skills",
+			"--no-prompt-templates",
+		],
+		{
+			cwd: options.cwd,
+			stdio: ["pipe", "pipe", "pipe"],
+		},
+	);
+
+	if (!child.stdin || !child.stdout || !child.stderr) {
+		throw new Error("failed to initialize pi rpc stdio streams");
+	}
+
+	const lineReader = createInterface({
+		input: child.stdout,
+		crlfDelay: Infinity,
+	});
+
+	let stderr = "";
+	child.stderr.on("data", (chunk) => {
+		stderr += String(chunk);
+	});
+
+	const withStderr = (message: string): string => {
+		const details = stderr.trim();
+		if (!details) return message;
+		return `${message} (stderr: ${truncateText(details, 260)})`;
+	};
+
+	type PendingRequest = {
+		resolve: (payload: Record<string, unknown>) => void;
+		reject: (error: Error) => void;
+		timer: ReturnType<typeof setTimeout>;
+	};
+	const pendingRequests = new Map<string, PendingRequest>();
+
+	type AgentEndWaiter = {
+		resolve: () => void;
+		reject: (error: Error) => void;
+		timer: ReturnType<typeof setTimeout>;
+	};
+	const agentEndWaiters: AgentEndWaiter[] = [];
+	let bufferedAgentEndEvents = 0;
+	let requestCounter = 0;
+	let terminalError: Error | null = null;
+
+	const rejectInflight = (error: Error): void => {
+		for (const pending of pendingRequests.values()) {
+			clearTimeout(pending.timer);
+			pending.reject(error);
+		}
+		pendingRequests.clear();
+
+		for (const waiter of agentEndWaiters.splice(0)) {
+			clearTimeout(waiter.timer);
+			waiter.reject(error);
+		}
+	};
+
+	const setTerminalError = (message: string): void => {
+		if (terminalError) return;
+		terminalError = new Error(withStderr(message));
+		rejectInflight(terminalError);
+	};
+
+	child.on("error", (error) => {
+		setTerminalError(`failed to start pi rpc subprocess: ${error.message}`);
+	});
+
+	child.on("exit", (code, signal) => {
+		if (terminalError) return;
+		if (code === 0) return;
+		if (signal) {
+			setTerminalError(`pi rpc subprocess exited via signal ${signal}`);
+			return;
+		}
+		setTerminalError(`pi rpc subprocess exited with code ${code ?? "unknown"}`);
+	});
+
+	lineReader.on("line", (line) => {
+		let event: unknown;
+		try {
+			event = JSON.parse(line);
+		} catch {
+			return;
+		}
+		if (!isRecord(event)) return;
+
+		if (event.type === "response" && typeof event.id === "string") {
+			const pending = pendingRequests.get(event.id);
+			if (!pending) return;
+			pendingRequests.delete(event.id);
+			clearTimeout(pending.timer);
+			pending.resolve(event);
+			return;
+		}
+
+		if (event.type === "agent_end") {
+			const waiter = agentEndWaiters.shift();
+			if (waiter) {
+				clearTimeout(waiter.timer);
+				waiter.resolve();
+			} else {
+				bufferedAgentEndEvents += 1;
+			}
+		}
+	});
+
+	const sendRpc = async (
+		command: Record<string, unknown>,
+		timeoutMs = THERAPIST_RPC_REQUEST_TIMEOUT_MS,
+	): Promise<Record<string, unknown>> => {
+		if (terminalError) throw terminalError;
+		if (!child.stdin.writable) {
+			throw new Error(withStderr("pi rpc subprocess stdin is unavailable"));
+		}
+
+		const requestId = `tak-therapist-${++requestCounter}`;
+		const commandName = typeof command.type === "string" ? command.type : "command";
+		const payload = { ...command, id: requestId };
+
+		return await new Promise<Record<string, unknown>>((resolve, reject) => {
+			const timer = setTimeout(() => {
+				pendingRequests.delete(requestId);
+				reject(new Error(withStderr(`pi rpc ${commandName} timed out after ${timeoutMs}ms`)));
+			}, timeoutMs);
+
+			pendingRequests.set(requestId, {
+				resolve,
+				reject,
+				timer,
+			});
+
+			child.stdin.write(`${JSON.stringify(payload)}\n`, (writeError) => {
+				if (!writeError) return;
+				clearTimeout(timer);
+				pendingRequests.delete(requestId);
+				reject(new Error(withStderr(`failed to send pi rpc ${commandName}: ${writeError.message}`)));
+			});
+		});
+	};
+
+	const sendRpcSuccess = async (
+		command: Record<string, unknown>,
+		timeoutMs = THERAPIST_RPC_REQUEST_TIMEOUT_MS,
+	): Promise<Record<string, unknown>> => {
+		const response = await sendRpc(command, timeoutMs);
+		if (response.success === true) return response;
+		const commandName = typeof command.type === "string" ? command.type : "command";
+		const errorMessage = typeof response.error === "string" ? response.error : `pi rpc ${commandName} failed`;
+		throw new Error(withStderr(`pi rpc ${commandName} failed: ${errorMessage}`));
+	};
+
+	const waitForAgentEnd = async (timeoutMs = THERAPIST_RPC_AGENT_TIMEOUT_MS): Promise<void> => {
+		if (bufferedAgentEndEvents > 0) {
+			bufferedAgentEndEvents -= 1;
+			return;
+		}
+
+		await new Promise<void>((resolve, reject) => {
+			const waiter: AgentEndWaiter = {
+				resolve,
+				reject,
+				timer: setTimeout(() => {
+					const index = agentEndWaiters.indexOf(waiter);
+					if (index >= 0) {
+						agentEndWaiters.splice(index, 1);
+					}
+					reject(new Error(withStderr(`timed out waiting for agent_end after ${timeoutMs}ms`)));
+				}, timeoutMs),
+			};
+			agentEndWaiters.push(waiter);
+		});
+	};
+
+	const questions = buildTherapistRpcQuestions(options.displaySession);
+	const turns: TherapistRpcTurn[] = [];
+
+	try {
+		for (let index = 0; index < questions.length; index += 1) {
+			const question = questions[index]!;
+			const turnLabel = `turn ${index + 1}/${questions.length}`;
+
+			options.onProgress?.(`${turnLabel}: sending prompt`);
+			await sendRpcSuccess({ type: "prompt", message: question });
+
+			options.onProgress?.(`${turnLabel}: waiting for response`);
+			await waitForAgentEnd();
+
+			options.onProgress?.(`${turnLabel}: retrieving answer`);
+			const response = await sendRpcSuccess({ type: "get_last_assistant_text" });
+			const data = isRecord(response.data) ? response.data : null;
+			const answer = typeof data?.text === "string" ? data.text.trim() : "";
+			if (!answer) {
+				throw new Error(withStderr(`${turnLabel}: rpc returned empty assistant text`));
+			}
+
+			turns.push({ question, answer });
+		}
+
+		return {
+			session: options.displaySession,
+			requestedBy: options.requestedBy,
+			turns,
+		};
+	} finally {
+		try {
+			lineReader.close();
+		} catch {
+			// Ignore close errors during cleanup.
+		}
+
+		try {
+			child.stdin.end();
+		} catch {
+			// Ignore close errors during cleanup.
+		}
+
+		if (child.exitCode === null && !child.killed) {
+			await new Promise<void>((resolve) => {
+				const onExit = () => {
+					clearTimeout(timeout);
+					resolve();
+				};
+				const timeout = setTimeout(() => {
+					child.off("exit", onExit);
+					if (child.exitCode === null && !child.killed) {
+						try {
+							child.kill("SIGKILL");
+						} catch {
+							// Ignore force-kill failures during cleanup.
+						}
+					}
+					resolve();
+				}, THERAPIST_RPC_SHUTDOWN_TIMEOUT_MS);
+
+				child.once("exit", onExit);
+				try {
+					child.kill("SIGTERM");
+				} catch {
+					clearTimeout(timeout);
+					child.off("exit", onExit);
+					resolve();
+				}
+			});
+		}
+	}
+}
+
+function formatTherapistRpcInterview(result: TherapistRpcInterviewResult): string {
+	const lines: string[] = ["# tak therapist online (multi-turn rpc)"];
+	lines.push(`session: ${result.session}`);
+	if (result.requestedBy) lines.push(`requested_by: ${result.requestedBy}`);
+	lines.push(`turns: ${result.turns.length}`);
+
+	for (let index = 0; index < result.turns.length; index += 1) {
+		const turn = result.turns[index]!;
+		lines.push(
+			"",
+			`## Q${index + 1}`,
+			turn.question,
+			"",
+			`### A${index + 1}`,
+			turn.answer,
+		);
+	}
+
+	lines.push(
+		"",
+		"Next:",
+		"- Capture follow-up actions in a blackboard status/blocker note.",
+		"- Use `tak therapist offline` and `tak therapist log` for persisted observations.",
+	);
+
+	return lines.join("\n");
+}
+
 function formatTherapistObservation(observation: TherapistObservation): string {
 	const lines: string[] = [];
 	lines.push(`# tak therapist ${observation.mode}`);
@@ -2654,24 +3044,66 @@ export default function takPiExtension(pi: ExtensionAPI) {
 
 			if (parsed.mode === "therapist") {
 				const action = parsed.therapistAction ?? "offline";
-				const therapistArgs = ["therapist", action];
+				const requestedBy = parsed.therapistBy ?? agentName;
 
+				if (action === "online") {
+					const sessionTarget = resolveTherapistRpcSessionTarget(
+						parsed.therapistSession,
+						ctx.sessionManager.getSessionFile(),
+						ctx.sessionManager.getSessionId(),
+					);
+					if (!sessionTarget) {
+						ctx.ui.notify(
+							"No active session found. Provide session:<id|path> for /tak therapist online.",
+							"warning",
+						);
+						return;
+					}
+
+					try {
+						ctx.ui.notify(`Starting tak therapist online RPC interview for ${sessionTarget.displaySession}`, "info");
+						const interview = await runTherapistRpcInterview(sessionTarget.rpcSession, {
+							cwd: ctx.cwd,
+							displaySession: sessionTarget.displaySession,
+							requestedBy,
+							onProgress: (status) => {
+								ctx.ui.setStatus("tak", `therapist online: ${status}`);
+							},
+						});
+
+						ctx.ui.setEditorText(formatTherapistRpcInterview(interview));
+						ctx.ui.notify("tak therapist online interview completed", "info");
+					} catch (error) {
+						const message = error instanceof Error ? error.message : String(error);
+						ctx.ui.setEditorText(
+							[
+								"# tak therapist online (multi-turn rpc)",
+								`session: ${sessionTarget.displaySession}`,
+								`requested_by: ${requestedBy ?? "unknown"}`,
+								"status: failed",
+								"",
+								message,
+							].join("\n"),
+						);
+						ctx.ui.notify(message, "error");
+					} finally {
+						ctx.ui.setStatus("tak", undefined);
+						sessionTarget.cleanup?.();
+					}
+
+					await refreshStatus(ctx);
+					return;
+				}
+
+				const therapistArgs = ["therapist", action];
 				if ((action === "offline" || action === "log") && parsed.filters.limit) {
 					therapistArgs.push("--limit", String(parsed.filters.limit));
 				}
-
-				if (action === "online" && parsed.therapistSession) {
-					therapistArgs.push("--session", parsed.therapistSession);
-				}
-
-				const requestedBy = parsed.therapistBy ?? agentName;
-				if ((action === "offline" || action === "online") && requestedBy) {
+				if (action === "offline" && requestedBy) {
 					therapistArgs.push("--by", requestedBy);
 				}
 
-				const therapistResult = await runTak(pi, therapistArgs, {
-					timeoutMs: action === "online" ? 120000 : 30000,
-				});
+				const therapistResult = await runTak(pi, therapistArgs, { timeoutMs: 30000 });
 				if (!therapistResult.ok) {
 					ctx.ui.notify(therapistResult.errorMessage ?? "tak therapist failed", "error");
 					return;
