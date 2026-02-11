@@ -1,0 +1,15 @@
+[package]
+name = "tak-cli"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "tak-cli"
+path = "src/main.rs"
+
+[dependencies]
+tak-core = { path = "../tak-core" }
+
+[dev-dependencies]
+serde_json = "1"
+tempfile = "3"

@@ -1,0 +1,17 @@
+{
+  "id": 12,
+  "title": "Write boundary contract before first file move in a crate split",
+  "description": "Before moving files, lock a short contract for ownership, error boundary, and forbidden dependency directions. This reduces churn during fast refactors because every extraction PR can be checked against a single source-of-truth document.",
+  "category": "process",
+  "tags": [
+    "architecture",
+    "crates"
+  ],
+  "task_ids": [
+    1321711062920635701,
+    7975772183030600028,
+    9405790756130668929
+  ],
+  "created_at": "2026-02-11T00:19:41.044572Z",
+  "updated_at": "2026-02-11T00:22:47.341246Z"
+}

@@ -1,16 +1,12 @@
 [package]
-name = "tak"
+name = "tak-core"
 version = "0.1.0"
 edition = "2024"
 
-[workspace]
-members = [
-    "crates/tak-core",
-    "crates/tak-cli",
-]
+[lib]
+path = "src/lib.rs"
 
 [dependencies]
-tak-core = { path = "crates/tak-core" }
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
 colored = "3.1.1"

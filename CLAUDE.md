@@ -5,15 +5,18 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Build & Test Commands
 
 ```bash
-cargo build                    # Build debug
-cargo build --release          # Build release
-cargo test                     # Run all ~410 tests (unit + integration)
-cargo test model::tests        # Run unit tests in a specific module
-cargo test --test integration  # Run the main integration test binary
+cargo build                              # Build debug (workspace default package)
+cargo build --release                    # Build release
+cargo test                               # Run default-package test suite
+cargo test --workspace                   # Run all workspace crate tests
+cargo test -p tak-core                   # Run tak-core crate tests
+cargo test -p tak-cli --tests            # Run tak-cli wrapper/guardrail tests
+cargo test model::tests                  # Run unit tests in a specific module
+cargo test --test integration            # Run the main integration test binary
 cargo test --test work_done_integration  # Run a specific integration test binary
-cargo test test_name           # Run a single test by name
-cargo clippy                   # Lint
-cargo fmt --check              # Check formatting
+cargo test test_name                     # Run a single test by name
+cargo clippy --workspace                 # Lint workspace crates
+cargo fmt --check                        # Check formatting
 ```
 
 No external SQLite needed — rusqlite bundles it via the `bundled` feature.
@@ -54,7 +57,16 @@ Tasks are JSON files in `.tak/tasks/` (the git-committed source of truth). A git
 - Resolution order is exact match first (hex or legacy decimal), then unique prefix match.
 - Exact legacy decimal matches win over prefix interpretation for digit-only input.
 
-### Source Layout
+### Workspace crate layout
+
+- **`crates/tak-core/`** — primary library crate owning domain model, storage/index runtime, command handlers, metrics logic, and shared CLI facade helpers.
+- **`crates/tak-cli/`** — thin wrapper binary crate; should stay focused on process entrypoint/exit mapping and delegate parsing/dispatch logic to `tak-core`.
+- **`src/lib.rs`** — compatibility re-export shim (`pub use tak_core::*`) for the root package.
+- **`src/main.rs`** — root `tak` binary entrypoint; currently still available for compatibility while workspace migration completes.
+
+When adding core behavior, prefer editing files under `crates/tak-core/src/...` rather than the root `src/` shim.
+
+### Source Layout (tak-core)
 
 - **`src/model.rs`** — `Task`, `Status` (pending/in_progress/done/cancelled), `Kind` (epic/feature/task/bug/meta), `Dependency` (id/dep_type/reason), `DepType` (hard/soft), `Contract` (objective/acceptance_criteria/verification/constraints), `Planning` (priority/estimate/required_skills/risk), `Execution` (attempt_count/last_error/handoff_summary/blocked_reason), `Priority` (critical/high/medium/low), `Estimate` (xs/s/m/l/xl), `Risk` (low/medium/high), `GitInfo` (branch/start_commit/end_commit/commits/pr), `Learning` (id/title/description/category/tags/task_ids/timestamps), `LearningCategory` (insight/pitfall/pattern/tool/process)
 - **`src/git.rs`** — `current_head_info()` returns branch + SHA; `commits_since()` returns one-line summaries between two SHAs via git2 revwalk

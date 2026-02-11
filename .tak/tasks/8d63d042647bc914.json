@@ -1,0 +1,30 @@
+{
+  "id": 10188215765614446868,
+  "title": "Inventory current module coupling and command entry points",
+  "description": "Map which src modules are business logic vs CLI glue, including how `main.rs` invokes command handlers and where clap/output concerns currently leak into core behavior.",
+  "status": "done",
+  "kind": "task",
+  "parent": 1321711062920635701,
+  "assignee": "gentle-balrog-dc0d",
+  "tags": [
+    "architecture",
+    "inventory"
+  ],
+  "planning": {
+    "priority": "high",
+    "estimate": "s"
+  },
+  "git": {
+    "branch": "develop",
+    "start_commit": "195389d41e98d954baaf1935cb230ffe4b8b52e0",
+    "end_commit": "195389d41e98d954baaf1935cb230ffe4b8b52e0"
+  },
+  "execution": {
+    "attempt_count": 1
+  },
+  "learnings": [
+    10
+  ],
+  "created_at": "2026-02-11T00:04:26.687214Z",
+  "updated_at": "2026-02-11T00:17:51.783894Z"
+}

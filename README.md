@@ -10,6 +10,27 @@ Tak is built around a **bottom-up, society-of-agents** model: specialized worker
 cargo install --path .
 ```
 
+## Workspace layout (for contributors)
+
+Tak now uses a workspace split:
+
+- `crates/tak-core/` — core domain/storage/command/metrics library logic.
+- `crates/tak-cli/` — thin wrapper binary that delegates to `tak-core`.
+- `src/lib.rs` — root-package compatibility re-export shim.
+
+Rule of thumb:
+- add/modify behavior in `crates/tak-core/src/...`,
+- keep `crates/tak-cli` focused on process wrapper concerns.
+
+Targeted verification commands:
+
+```bash
+cargo test -p tak-core
+cargo test -p tak-cli --tests
+cargo test -p tak --no-run
+cargo test --workspace --no-run
+```
+
 ## Quick Start
 
 ```bash

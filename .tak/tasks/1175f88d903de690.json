@@ -1,0 +1,38 @@
+{
+  "id": 1258184957813974672,
+  "title": "Create workspace layout with tak-core and tak-cli crates",
+  "description": "Restructure Cargo manifests into a workspace, introduce `crates/tak-core` (lib) and `crates/tak-cli` (bin) scaffolds, and keep existing build/test entrypoints intact.",
+  "status": "done",
+  "kind": "task",
+  "parent": 3933792901357682877,
+  "depends_on": [
+    {
+      "id": 7975772183030600028
+    }
+  ],
+  "assignee": "gentle-balrog-dc0d",
+  "tags": [
+    "cargo",
+    "workspace"
+  ],
+  "planning": {
+    "priority": "high",
+    "estimate": "s"
+  },
+  "git": {
+    "branch": "develop",
+    "start_commit": "195389d41e98d954baaf1935cb230ffe4b8b52e0",
+    "end_commit": "e5dccc60bfb4cfe408868a41230f4f4840064579",
+    "commits": [
+      "e5dccc6 feat(pi-plugin): run therapist online via multi-turn current-session rpc"
+    ]
+  },
+  "execution": {
+    "attempt_count": 1
+  },
+  "learnings": [
+    13
+  ],
+  "created_at": "2026-02-11T00:04:40.843355Z",
+  "updated_at": "2026-02-11T00:21:57.227234Z"
+}

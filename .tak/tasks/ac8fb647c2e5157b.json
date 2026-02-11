@@ -1,0 +1,37 @@
+{
+  "id": 12434357515521955195,
+  "title": "Add tak-core facade for command execution and repo access",
+  "description": "Provide stable library entrypoints that tak-cli can call for command execution, including context initialization, ID resolution helpers, output payload typing, and error translation hooks.",
+  "status": "done",
+  "kind": "task",
+  "parent": 3933792901357682877,
+  "depends_on": [
+    {
+      "id": 16130368790404132715
+    }
+  ],
+  "assignee": "gentle-balrog-dc0d",
+  "tags": [
+    "api",
+    "core",
+    "facade"
+  ],
+  "planning": {
+    "priority": "high",
+    "estimate": "m",
+    "risk": "medium"
+  },
+  "git": {
+    "branch": "develop",
+    "start_commit": "e5dccc60bfb4cfe408868a41230f4f4840064579",
+    "end_commit": "e5dccc60bfb4cfe408868a41230f4f4840064579"
+  },
+  "execution": {
+    "attempt_count": 1
+  },
+  "learnings": [
+    15
+  ],
+  "created_at": "2026-02-11T00:04:47.384823Z",
+  "updated_at": "2026-02-11T00:33:49.702773Z"
+}

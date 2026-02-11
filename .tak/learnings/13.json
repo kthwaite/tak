@@ -1,0 +1,16 @@
+{
+  "id": 13,
+  "title": "Scaffold workspace crates before moving existing root package code",
+  "description": "A low-risk first step for single-crate-to-workspace migration is to keep the existing root package untouched, add `[workspace]` members, and introduce compile-only scaffold crates with path deps. This keeps existing `cargo test -p <root>` entrypoints stable while opening a landing zone for later moves.",
+  "category": "pattern",
+  "tags": [
+    "migration",
+    "workspace"
+  ],
+  "task_ids": [
+    1258184957813974672,
+    3933792901357682877
+  ],
+  "created_at": "2026-02-11T00:21:57.226218Z",
+  "updated_at": "2026-02-11T00:34:04.785045Z"
+}

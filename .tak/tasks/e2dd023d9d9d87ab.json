@@ -1,0 +1,40 @@
+{
+  "id": 16347224686085375915,
+  "title": "Migrate tak-cli to thin adapter over tak-core",
+  "description": "Refactor CLI crate so clap parsing, command dispatch, and exit/output handling delegate into tak-core command execution APIs.",
+  "status": "done",
+  "kind": "feature",
+  "parent": 10466192200647508867,
+  "depends_on": [
+    {
+      "id": 1321711062920635701
+    },
+    {
+      "id": 3933792901357682877
+    }
+  ],
+  "assignee": "gentle-balrog-dc0d",
+  "tags": [
+    "cli",
+    "core",
+    "delegation"
+  ],
+  "planning": {
+    "priority": "high",
+    "estimate": "l",
+    "risk": "medium"
+  },
+  "git": {
+    "branch": "develop",
+    "start_commit": "f4d33dd404f91a0844566e7329bf0423110f1a53",
+    "end_commit": "f4d33dd404f91a0844566e7329bf0423110f1a53"
+  },
+  "execution": {
+    "attempt_count": 1
+  },
+  "learnings": [
+    16
+  ],
+  "created_at": "2026-02-11T00:04:18.876731Z",
+  "updated_at": "2026-02-11T00:44:17.249896Z"
+}

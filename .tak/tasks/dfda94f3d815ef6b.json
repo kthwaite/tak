@@ -1,0 +1,37 @@
+{
+  "id": 16130368790404132715,
+  "title": "Extract domain/store/command runtime modules into tak-core",
+  "description": "Move reusable internals from current `src/` into tak-core with minimal semantic changes, including model/store/lifecycle/coordination logic and command handlers that should become library-owned.",
+  "status": "done",
+  "kind": "task",
+  "parent": 3933792901357682877,
+  "depends_on": [
+    {
+      "id": 1258184957813974672
+    }
+  ],
+  "assignee": "gentle-balrog-dc0d",
+  "tags": [
+    "core",
+    "extraction",
+    "refactor"
+  ],
+  "planning": {
+    "priority": "high",
+    "estimate": "l",
+    "risk": "high"
+  },
+  "git": {
+    "branch": "develop",
+    "start_commit": "e5dccc60bfb4cfe408868a41230f4f4840064579",
+    "end_commit": "e5dccc60bfb4cfe408868a41230f4f4840064579"
+  },
+  "execution": {
+    "attempt_count": 1
+  },
+  "learnings": [
+    14
+  ],
+  "created_at": "2026-02-11T00:04:44.026215Z",
+  "updated_at": "2026-02-11T00:28:21.036997Z"
+}

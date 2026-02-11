@@ -1,0 +1,36 @@
+{
+  "id": 12556956257163579701,
+  "title": "Define lightweight migration notes for fast crate-split rollout",
+  "description": "Capture minimal rollout guidance (expected break windows, quick rollback handle, and coordination notes) optimized for fast-moving refactor work rather than heavyweight phased release management.",
+  "status": "done",
+  "kind": "meta",
+  "parent": 17895949971587967198,
+  "depends_on": [
+    {
+      "id": 7975772183030600028
+    }
+  ],
+  "assignee": "gentle-balrog-dc0d",
+  "tags": [
+    "migration",
+    "planning",
+    "release"
+  ],
+  "planning": {
+    "priority": "low",
+    "estimate": "xs"
+  },
+  "git": {
+    "branch": "develop",
+    "start_commit": "84939db43282e11e8337dc560e143cec7ed7b4cc",
+    "end_commit": "84939db43282e11e8337dc560e143cec7ed7b4cc"
+  },
+  "execution": {
+    "attempt_count": 1
+  },
+  "learnings": [
+    22
+  ],
+  "created_at": "2026-02-11T00:05:06.468264Z",
+  "updated_at": "2026-02-11T00:49:26.582772Z"
+}

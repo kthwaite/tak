@@ -1,0 +1,37 @@
+{
+  "id": 17895949971587967198,
+  "title": "Parity verification, docs, and rollout for crate split",
+  "description": "Add regression coverage, migration documentation, and staged rollout safeguards so the crate split lands safely.",
+  "status": "done",
+  "kind": "feature",
+  "parent": 10466192200647508867,
+  "depends_on": [
+    {
+      "id": 16347224686085375915
+    }
+  ],
+  "assignee": "gentle-balrog-dc0d",
+  "tags": [
+    "docs",
+    "rollout",
+    "test"
+  ],
+  "planning": {
+    "priority": "medium",
+    "estimate": "m",
+    "risk": "medium"
+  },
+  "git": {
+    "branch": "develop",
+    "start_commit": "84939db43282e11e8337dc560e143cec7ed7b4cc",
+    "end_commit": "84939db43282e11e8337dc560e143cec7ed7b4cc"
+  },
+  "execution": {
+    "attempt_count": 1
+  },
+  "learnings": [
+    20
+  ],
+  "created_at": "2026-02-11T00:04:21.259787Z",
+  "updated_at": "2026-02-11T00:49:48.968361Z"
+}

@@ -10,7 +10,7 @@ use crate::commands::create::derive_traceability;
 use crate::error::{Result, TakError};
 use crate::model::{Contract, Estimate, Kind, Planning, Priority, Risk, Task};
 use crate::output::{self, Format};
-use crate::store::repo::{resolve_task_id_input, Repo};
+use crate::store::repo::{Repo, resolve_task_id_input};
 use crate::task_id::TaskId;
 
 #[derive(Debug, Deserialize)]

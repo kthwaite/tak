@@ -1840,6 +1840,39 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "tak-core",
+ "tempfile",
+ "thiserror 2.0.18",
+ "uuid",
+]
+
+[[package]]
+name = "tak-cli"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "tak-core",
+ "tempfile",
+]
+
+[[package]]
+name = "tak-core"
+version = "0.1.0"
+dependencies = [
+ "assert_cmd",
+ "chrono",
+ "clap",
+ "colored",
+ "crossterm",
+ "fs2",
+ "getrandom 0.4.1",
+ "git2",
+ "predicates",
+ "ratatui",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "serde_yaml",
  "tempfile",
  "thiserror 2.0.18",
  "uuid",

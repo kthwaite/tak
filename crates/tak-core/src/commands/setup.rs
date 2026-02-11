@@ -7,15 +7,18 @@ use crate::error::{Result, TakError};
 use crate::output::Format;
 
 // Embedded Claude Code plugin assets — compiled into the binary.
-const PLUGIN_JSON: &str = include_str!("../../claude-plugin/.claude-plugin/plugin.json");
-const SKILL_TASK_MGMT: &str = include_str!("../../claude-plugin/skills/task-management/SKILL.md");
-const SKILL_EPIC_PLAN: &str = include_str!("../../claude-plugin/skills/epic-planning/SKILL.md");
-const SKILL_TASK_EXEC: &str = include_str!("../../claude-plugin/skills/task-execution/SKILL.md");
+const PLUGIN_JSON: &str = include_str!("../../../../claude-plugin/.claude-plugin/plugin.json");
+const SKILL_TASK_MGMT: &str =
+    include_str!("../../../../claude-plugin/skills/task-management/SKILL.md");
+const SKILL_EPIC_PLAN: &str =
+    include_str!("../../../../claude-plugin/skills/epic-planning/SKILL.md");
+const SKILL_TASK_EXEC: &str =
+    include_str!("../../../../claude-plugin/skills/task-execution/SKILL.md");
 
 // Embedded pi integration assets — compiled into the binary.
-const PI_EXTENSION_TAK: &str = include_str!("../../pi-plugin/extensions/tak.ts");
+const PI_EXTENSION_TAK: &str = include_str!("../../../../pi-plugin/extensions/tak.ts");
 const PI_SKILL_COORDINATION: &str =
-    include_str!("../../pi-plugin/skills/tak-coordination/SKILL.md");
+    include_str!("../../../../pi-plugin/skills/tak-coordination/SKILL.md");
 
 const PI_SYSTEM_APPEND_START: &str = "<!-- tak:pi-system:start -->";
 const PI_SYSTEM_APPEND_END: &str = "<!-- tak:pi-system:end -->";

@@ -1,0 +1,36 @@
+{
+  "id": 11000230343142768629,
+  "title": "Add guardrails preventing business-logic regressions into tak-cli",
+  "description": "Introduce architectural checks (module visibility, linting conventions, or tests) that fail if tak-cli re-accumulates domain/store/command business logic.",
+  "status": "done",
+  "kind": "task",
+  "parent": 16347224686085375915,
+  "depends_on": [
+    {
+      "id": 13656241451779159178
+    }
+  ],
+  "assignee": "gentle-balrog-dc0d",
+  "tags": [
+    "architecture",
+    "cli",
+    "guardrails"
+  ],
+  "planning": {
+    "priority": "medium",
+    "estimate": "m"
+  },
+  "git": {
+    "branch": "develop",
+    "start_commit": "f4d33dd404f91a0844566e7329bf0423110f1a53",
+    "end_commit": "f4d33dd404f91a0844566e7329bf0423110f1a53"
+  },
+  "execution": {
+    "attempt_count": 1
+  },
+  "learnings": [
+    19
+  ],
+  "created_at": "2026-02-11T00:04:56.632162Z",
+  "updated_at": "2026-02-11T00:43:52.989372Z"
+}

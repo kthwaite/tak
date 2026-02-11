@@ -38,3 +38,4 @@ Each page should include:
 - [`pupal-phase-policy.md`](./pupal-phase-policy.md) — idea-first intake policy, promotion gates, and explicit defer/reject outcomes
 - [`pi-coordination-db-json-contract.md`](./pi-coordination-db-json-contract.md) — extension-facing JSON mapping contract for CoordinationDb-backed mesh/blackboard/work flows
 - [`import-v2.md`](./import-v2.md) — strict YAML plan schema, symbolic dependency semantics, rollback behavior, and legacy-shape migration notes
+- [`workspace-architecture.md`](./workspace-architecture.md) — crate boundaries (`tak-core` vs `tak-cli`), code-placement guidance, and workspace-targeted verification commands

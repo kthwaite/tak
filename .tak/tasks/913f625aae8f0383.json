@@ -1,0 +1,33 @@
+{
+  "id": 10466192200647508867,
+  "title": "Crate split: tak-core library + thin tak-cli wrapper",
+  "description": "Refactor tak into a multi-crate workspace where `tak-core` owns domain, storage, lifecycle, and command execution logic while `tak-cli` becomes a thin CLI adapter focused on argument parsing, output selection, and process exit semantics.",
+  "status": "pending",
+  "kind": "epic",
+  "tags": [
+    "architecture",
+    "cli",
+    "core",
+    "crates",
+    "refactor"
+  ],
+  "contract": {
+    "objective": "Modularize tak into reusable crates without changing user-visible behavior, with tak-cli delegating command execution to tak-core.",
+    "acceptance_criteria": [
+      "Workspace includes `tak-core` (library crate) and `tak-cli` (binary crate) with documented module ownership boundaries.",
+      "All command execution paths used by `tak-cli` flow through stable `tak-core` APIs rather than direct command-module coupling.",
+      "Behavior/output parity is preserved for existing command surfaces via regression coverage.",
+      "Architecture and migration docs explain crate boundaries and contributor workflow."
+    ],
+    "verification": [
+      "cargo test"
+    ]
+  },
+  "planning": {
+    "priority": "high",
+    "estimate": "xl",
+    "risk": "high"
+  },
+  "created_at": "2026-02-11T00:04:03.618357Z",
+  "updated_at": "2026-02-11T00:04:03.618357Z"
+}

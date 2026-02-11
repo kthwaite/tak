@@ -1,0 +1,32 @@
+{
+  "id": 7975772183030600028,
+  "title": "Record crate-split architecture decisions from kickoff",
+  "description": "Capture and document agreed decisions: keep output policy in core, keep CLI-only features in tak-cli, move functional behavior to tak-core, use thiserror in tak-core + anyhow in tak-cli, concentrate most tests in tak-core with CLI smoke/contracts, keep setup/doctor/plugin paths unchanged initially, and keep tak-core internal-only (no versioned public API yet). Also record optional future tak-app split as non-blocking spike.",
+  "status": "done",
+  "kind": "meta",
+  "parent": 1321711062920635701,
+  "assignee": "gentle-balrog-dc0d",
+  "tags": [
+    "adr",
+    "architecture",
+    "open-questions"
+  ],
+  "planning": {
+    "priority": "high",
+    "estimate": "m",
+    "risk": "high"
+  },
+  "git": {
+    "branch": "develop",
+    "start_commit": "195389d41e98d954baaf1935cb230ffe4b8b52e0",
+    "end_commit": "195389d41e98d954baaf1935cb230ffe4b8b52e0"
+  },
+  "execution": {
+    "attempt_count": 1
+  },
+  "learnings": [
+    12
+  ],
+  "created_at": "2026-02-11T00:04:32.350047Z",
+  "updated_at": "2026-02-11T00:19:57.989880Z"
+}

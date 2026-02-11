@@ -1,11 +1,11 @@
+use crate::commands::blackboard::BlackboardTemplate;
+use crate::metrics::{CompletionMetric, MetricsBucket};
+use crate::model::{DepType, Estimate, Kind, LearningCategory, Priority, Risk, Status};
+use crate::output::Format;
+use crate::store::coordination_db::BlackboardStatus;
+use crate::store::work::{WorkClaimStrategy, WorkCoordinationVerbosity, WorkVerifyMode};
 use chrono::NaiveDate;
 use clap::{Parser, Subcommand, ValueEnum};
-use tak::commands::blackboard::BlackboardTemplate;
-use tak::metrics::{CompletionMetric, MetricsBucket};
-use tak::model::{DepType, Estimate, Kind, LearningCategory, Priority, Risk, Status};
-use tak::output::Format;
-use tak::store::coordination_db::BlackboardStatus;
-use tak::store::work::{WorkClaimStrategy, WorkCoordinationVerbosity, WorkVerifyMode};
 
 #[derive(Parser)]
 #[command(
@@ -353,7 +353,7 @@ enum Commands {
     Tui {
         /// Start in this section
         #[arg(long, value_enum, default_value = "tasks")]
-        focus: tak::commands::tui::TuiSection,
+        focus: crate::commands::tui::TuiSection,
         /// Initial search query
         #[arg(long)]
         query: Option<String>,
@@ -379,7 +379,7 @@ enum Commands {
         pending: bool,
         /// Sort roots/siblings by id, created time, priority, or estimate (default: created)
         #[arg(long, value_enum, default_value = "created")]
-        sort: tak::commands::tree::TreeSort,
+        sort: crate::commands::tree::TreeSort,
     },
     /// Clear a task's assignee without changing status
     Unassign {
@@ -876,22 +876,22 @@ enum TherapistAction {
     },
 }
 
-fn resolve_task_id_arg(repo_root: &std::path::Path, input: String) -> tak::error::Result<u64> {
-    tak::facade::resolve_task_id_arg(repo_root, input)
+fn resolve_task_id_arg(repo_root: &std::path::Path, input: String) -> crate::error::Result<u64> {
+    crate::facade::resolve_task_id_arg(repo_root, input)
 }
 
 fn resolve_optional_task_id_arg(
     repo_root: &std::path::Path,
     input: Option<String>,
-) -> tak::error::Result<Option<u64>> {
-    tak::facade::resolve_optional_task_id_arg(repo_root, input)
+) -> crate::error::Result<Option<u64>> {
+    crate::facade::resolve_optional_task_id_arg(repo_root, input)
 }
 
 fn resolve_task_id_args(
     repo_root: &std::path::Path,
     inputs: Vec<String>,
-) -> tak::error::Result<Vec<u64>> {
-    tak::facade::resolve_task_id_args(repo_root, inputs)
+) -> crate::error::Result<Vec<u64>> {
+    crate::facade::resolve_task_id_args(repo_root, inputs)
 }
 
 fn resolve_effective_coordination_verbosity(
@@ -899,7 +899,7 @@ fn resolve_effective_coordination_verbosity(
     agent: Option<&str>,
     override_level: Option<WorkCoordinationVerbosity>,
 ) -> WorkCoordinationVerbosity {
-    tak::facade::resolve_effective_coordination_verbosity(repo_root, agent, override_level)
+    crate::facade::resolve_effective_coordination_verbosity(repo_root, agent, override_level)
 }
 
 fn apply_coordination_verbosity_label(
@@ -907,7 +907,7 @@ fn apply_coordination_verbosity_label(
     level: WorkCoordinationVerbosity,
     explicit_override: bool,
 ) -> String {
-    tak::facade::apply_coordination_verbosity_label(message, level, explicit_override)
+    crate::facade::apply_coordination_verbosity_label(message, level, explicit_override)
 }
 
 fn maybe_add_verbosity_tag(
@@ -915,22 +915,22 @@ fn maybe_add_verbosity_tag(
     level: WorkCoordinationVerbosity,
     explicit_override: bool,
 ) {
-    tak::facade::maybe_add_verbosity_tag(tags, level, explicit_override)
+    crate::facade::maybe_add_verbosity_tag(tags, level, explicit_override)
 }
 
 fn task_assignee_for_verbosity(
     repo_root: &std::path::Path,
     task_id: u64,
-) -> tak::error::Result<Option<String>> {
-    tak::facade::task_assignee_for_verbosity(repo_root, task_id)
+) -> crate::error::Result<Option<String>> {
+    crate::facade::task_assignee_for_verbosity(repo_root, task_id)
 }
 
-fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
+fn run(cli: Cli, format: Format) -> crate::error::Result<()> {
     // Commands dispatched before `.tak` repo discovery
     match &cli.command {
         Commands::Init => {
             let cwd = std::env::current_dir()?;
-            return tak::commands::init::run(&cwd);
+            return crate::commands::init::run(&cwd);
         }
         Commands::Setup {
             global,
@@ -940,17 +940,17 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
             skills,
             pi,
         } => {
-            return tak::commands::setup::run(
+            return crate::commands::setup::run(
                 *global, *check, *remove, *plugin, *skills, *pi, format,
             );
         }
         Commands::Doctor { fix } => {
-            return tak::commands::doctor::run(*fix, format);
+            return crate::commands::doctor::run(*fix, format);
         }
         _ => {}
     }
 
-    let root = tak::store::repo::find_repo_root()?;
+    let root = crate::store::repo::find_repo_root()?;
 
     match cli.command {
         Commands::Init | Commands::Setup { .. } | Commands::Doctor { .. } => unreachable!(),
@@ -972,19 +972,19 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
         } => {
             let parent = resolve_optional_task_id_arg(&root, parent)?;
             let depends_on = resolve_task_id_args(&root, depends_on)?;
-            let contract = tak::model::Contract {
+            let contract = crate::model::Contract {
                 objective,
                 acceptance_criteria: criterion,
                 verification: verify,
                 constraints: constraint,
             };
-            let planning = tak::model::Planning {
+            let planning = crate::model::Planning {
                 priority,
                 estimate,
                 required_skills: skill,
                 risk,
             };
-            tak::commands::create::run(
+            crate::commands::create::run(
                 &root,
                 title,
                 kind,
@@ -998,10 +998,10 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
             )
         }
         Commands::Delete { id, force } => {
-            tak::commands::delete::run(&root, resolve_task_id_arg(&root, id)?, force, format)
+            crate::commands::delete::run(&root, resolve_task_id_arg(&root, id)?, force, format)
         }
         Commands::Show { id } => {
-            tak::commands::show::run(&root, resolve_task_id_arg(&root, id)?, format)
+            crate::commands::show::run(&root, resolve_task_id_arg(&root, id)?, format)
         }
         Commands::List {
             status,
@@ -1014,7 +1014,7 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
             priority,
         } => {
             let children_of = resolve_optional_task_id_arg(&root, children_of)?;
-            tak::commands::list::run(
+            crate::commands::list::run(
                 &root,
                 status,
                 kind,
@@ -1042,7 +1042,7 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
             skill,
             risk,
             pr,
-        } => tak::commands::edit::run(
+        } => crate::commands::edit::run(
             &root,
             resolve_task_id_arg(&root, id)?,
             title,
@@ -1061,8 +1061,8 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
             format,
         ),
         Commands::Start { id, assignee } => {
-            let assignee = assignee.or_else(tak::agent::resolve_agent);
-            tak::commands::lifecycle::start(
+            let assignee = assignee.or_else(crate::agent::resolve_agent);
+            crate::commands::lifecycle::start(
                 &root,
                 resolve_task_id_arg(&root, id)?,
                 assignee,
@@ -1076,9 +1076,9 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
             force,
         } => {
             let assignee = assignee
-                .or_else(tak::agent::resolve_agent)
-                .unwrap_or_else(tak::agent::generated_fallback);
-            tak::commands::takeover::run(
+                .or_else(crate::agent::resolve_agent)
+                .unwrap_or_else(crate::agent::generated_fallback);
+            crate::commands::takeover::run(
                 &root,
                 resolve_task_id_arg(&root, id)?,
                 assignee,
@@ -1088,11 +1088,14 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
             )
         }
         Commands::Finish { id } => {
-            tak::commands::lifecycle::finish(&root, resolve_task_id_arg(&root, id)?, format)
+            crate::commands::lifecycle::finish(&root, resolve_task_id_arg(&root, id)?, format)
         }
-        Commands::Cancel { id, reason } => {
-            tak::commands::lifecycle::cancel(&root, resolve_task_id_arg(&root, id)?, reason, format)
-        }
+        Commands::Cancel { id, reason } => crate::commands::lifecycle::cancel(
+            &root,
+            resolve_task_id_arg(&root, id)?,
+            reason,
+            format,
+        ),
         Commands::Handoff {
             id,
             summary,
@@ -1104,22 +1107,22 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
                 resolve_effective_coordination_verbosity(&root, assignee.as_deref(), verbosity);
             let summary =
                 apply_coordination_verbosity_label(&summary, effective, verbosity.is_some());
-            tak::commands::lifecycle::handoff(&root, task_id, summary, format)
+            crate::commands::lifecycle::handoff(&root, task_id, summary, format)
         }
         Commands::Import { source, dry_run } => {
-            tak::commands::import::run(&root, source, dry_run, format)
+            crate::commands::import::run(&root, source, dry_run, format)
         }
         Commands::Claim { assignee, tag } => {
             let assignee = assignee
-                .or_else(tak::agent::resolve_agent)
-                .unwrap_or_else(tak::agent::generated_fallback);
-            tak::commands::claim::run(&root, assignee, tag, format)
+                .or_else(crate::agent::resolve_agent)
+                .unwrap_or_else(crate::agent::generated_fallback);
+            crate::commands::claim::run(&root, assignee, tag, format)
         }
         Commands::Reopen { id } => {
-            tak::commands::lifecycle::reopen(&root, resolve_task_id_arg(&root, id)?, format)
+            crate::commands::lifecycle::reopen(&root, resolve_task_id_arg(&root, id)?, format)
         }
         Commands::Unassign { id } => {
-            tak::commands::lifecycle::unassign(&root, resolve_task_id_arg(&root, id)?, format)
+            crate::commands::lifecycle::unassign(&root, resolve_task_id_arg(&root, id)?, format)
         }
         Commands::Depend {
             ids,
@@ -1127,7 +1130,7 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
             dep_type,
             reason,
             quiet,
-        } => tak::commands::deps::depend(
+        } => crate::commands::deps::depend(
             &root,
             resolve_task_id_args(&root, ids)?,
             resolve_task_id_args(&root, on)?,
@@ -1136,14 +1139,14 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
             format,
             quiet,
         ),
-        Commands::Undepend { ids, on, quiet } => tak::commands::deps::undepend(
+        Commands::Undepend { ids, on, quiet } => crate::commands::deps::undepend(
             &root,
             resolve_task_id_args(&root, ids)?,
             resolve_task_id_args(&root, on)?,
             format,
             quiet,
         ),
-        Commands::Reparent { ids, to, quiet } => tak::commands::deps::reparent(
+        Commands::Reparent { ids, to, quiet } => crate::commands::deps::reparent(
             &root,
             resolve_task_id_args(&root, ids)?,
             resolve_task_id_arg(&root, to)?,
@@ -1151,7 +1154,7 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
             quiet,
         ),
         Commands::Orphan { id, quiet } => {
-            tak::commands::deps::orphan(&root, resolve_task_id_arg(&root, id)?, format, quiet)
+            crate::commands::deps::orphan(&root, resolve_task_id_arg(&root, id)?, format, quiet)
         }
         Commands::Tree {
             root_id,
@@ -1161,14 +1164,14 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
             sort,
         } => {
             let scope = if all {
-                tak::commands::tree::TreeScope::All
+                crate::commands::tree::TreeScope::All
             } else if pending {
-                tak::commands::tree::TreeScope::Pending
+                crate::commands::tree::TreeScope::Pending
             } else {
-                tak::commands::tree::TreeScope::Dirty
+                crate::commands::tree::TreeScope::Dirty
             };
 
-            tak::commands::tree::run(
+            crate::commands::tree::run(
                 &root,
                 resolve_optional_task_id_arg(&root, id.or(root_id))?,
                 scope,
@@ -1176,12 +1179,12 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
                 format,
             )
         }
-        Commands::Next { assignee } => tak::commands::next::run(&root, assignee, format),
+        Commands::Next { assignee } => crate::commands::next::run(&root, assignee, format),
         Commands::Wait {
             path,
             on_task,
             timeout,
-        } => tak::commands::wait::run(
+        } => crate::commands::wait::run(
             &root,
             path,
             resolve_optional_task_id_arg(&root, on_task)?,
@@ -1199,7 +1202,7 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
             force_reclaim,
             pause,
         } => match action.unwrap_or(WorkAction::Start) {
-            WorkAction::Start => tak::commands::work::start_or_resume_with_strategy_force(
+            WorkAction::Start => crate::commands::work::start_or_resume_with_strategy_force(
                 &root,
                 assignee,
                 tag,
@@ -1210,22 +1213,26 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
                 force_reclaim,
                 format,
             ),
-            WorkAction::Status => tak::commands::work::status(&root, assignee, format),
-            WorkAction::Stop => tak::commands::work::stop(&root, assignee, format),
-            WorkAction::Done => tak::commands::work::done(&root, assignee, pause, format),
+            WorkAction::Status => crate::commands::work::status(&root, assignee, format),
+            WorkAction::Stop => crate::commands::work::stop(&root, assignee, format),
+            WorkAction::Done => crate::commands::work::done(&root, assignee, pause, format),
         },
-        Commands::Verify { id, path } => tak::commands::verify::run_with_scope(
+        Commands::Verify { id, path } => crate::commands::verify::run_with_scope(
             &root,
             resolve_task_id_arg(&root, id)?,
             path,
             format,
         ),
         Commands::Log { id } => {
-            tak::commands::log::run(&root, resolve_task_id_arg(&root, id)?, format)
+            crate::commands::log::run(&root, resolve_task_id_arg(&root, id)?, format)
         }
-        Commands::Context { id, set, clear } => {
-            tak::commands::context::run(&root, resolve_task_id_arg(&root, id)?, set, clear, format)
-        }
+        Commands::Context { id, set, clear } => crate::commands::context::run(
+            &root,
+            resolve_task_id_arg(&root, id)?,
+            set,
+            clear,
+            format,
+        ),
         Commands::Learn { action } => match action {
             LearnAction::Add {
                 title,
@@ -1233,7 +1240,7 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
                 category,
                 tag,
                 task_ids,
-            } => tak::commands::learn::add(
+            } => crate::commands::learn::add(
                 &root,
                 title,
                 description,
@@ -1246,14 +1253,14 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
                 category,
                 tag,
                 task_id,
-            } => tak::commands::learn::list(
+            } => crate::commands::learn::list(
                 &root,
                 category,
                 tag,
                 resolve_optional_task_id_arg(&root, task_id)?,
                 format,
             ),
-            LearnAction::Show { id } => tak::commands::learn::show(&root, id, format),
+            LearnAction::Show { id } => crate::commands::learn::show(&root, id, format),
             LearnAction::Edit {
                 id,
                 title,
@@ -1262,7 +1269,7 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
                 tag,
                 add_task,
                 remove_task,
-            } => tak::commands::learn::edit(
+            } => crate::commands::learn::edit(
                 &root,
                 id,
                 title,
@@ -1273,9 +1280,9 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
                 resolve_task_id_args(&root, remove_task)?,
                 format,
             ),
-            LearnAction::Remove { id } => tak::commands::learn::remove(&root, id, format),
+            LearnAction::Remove { id } => crate::commands::learn::remove(&root, id, format),
             LearnAction::Suggest { task_id } => {
-                tak::commands::learn::suggest(&root, resolve_task_id_arg(&root, task_id)?, format)
+                crate::commands::learn::suggest(&root, resolve_task_id_arg(&root, task_id)?, format)
             }
         },
         Commands::Metrics { action } => match action {
@@ -1288,7 +1295,7 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
                 assignee,
                 children_of,
                 include_cancelled,
-            } => tak::commands::metrics::burndown(
+            } => crate::commands::metrics::burndown(
                 &root,
                 from,
                 to,
@@ -1310,7 +1317,7 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
                 assignee,
                 children_of,
                 include_cancelled,
-            } => tak::commands::metrics::completion_time(
+            } => crate::commands::metrics::completion_time(
                 &root,
                 from,
                 to,
@@ -1333,7 +1340,7 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
                 assignee,
                 children_of,
                 include_cancelled,
-            } => tak::commands::metrics::tui(
+            } => crate::commands::metrics::tui(
                 &root,
                 from,
                 to,
@@ -1347,15 +1354,15 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
                 format,
             ),
         },
-        Commands::Tui { focus, query } => tak::commands::tui::run(&root, focus, query, format),
+        Commands::Tui { focus, query } => crate::commands::tui::run(&root, focus, query, format),
         Commands::Mesh { action } => match action {
             MeshAction::Join { name, session_id } => {
-                tak::commands::mesh::join(&root, name.as_deref(), session_id.as_deref(), format)
+                crate::commands::mesh::join(&root, name.as_deref(), session_id.as_deref(), format)
             }
             MeshAction::Leave { name } => {
-                tak::commands::mesh::leave(&root, name.as_deref(), format)
+                crate::commands::mesh::leave(&root, name.as_deref(), format)
             }
-            MeshAction::List => tak::commands::mesh::list(&root, format),
+            MeshAction::List => crate::commands::mesh::list(&root, format),
             MeshAction::Send {
                 from,
                 to,
@@ -1366,7 +1373,7 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
                     resolve_effective_coordination_verbosity(&root, Some(&from), verbosity);
                 let message =
                     apply_coordination_verbosity_label(&message, effective, verbosity.is_some());
-                tak::commands::mesh::send(&root, &from, &to, &message, format)
+                crate::commands::mesh::send(&root, &from, &to, &message, format)
             }
             MeshAction::Broadcast {
                 from,
@@ -1377,7 +1384,7 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
                     resolve_effective_coordination_verbosity(&root, Some(&from), verbosity);
                 let message =
                     apply_coordination_verbosity_label(&message, effective, verbosity.is_some());
-                tak::commands::mesh::broadcast(&root, &from, &message, format)
+                crate::commands::mesh::broadcast(&root, &from, &message, format)
             }
             MeshAction::Inbox {
                 name,
@@ -1386,7 +1393,7 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
                 ack,
                 ack_ids,
                 ack_before,
-            } => tak::commands::mesh::inbox_with_filters(
+            } => crate::commands::mesh::inbox_with_filters(
                 &root,
                 &name,
                 ack,
@@ -1396,7 +1403,7 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
                 recent_secs,
                 format,
             ),
-            MeshAction::Heartbeat { name, session_id } => tak::commands::mesh::heartbeat(
+            MeshAction::Heartbeat { name, session_id } => crate::commands::mesh::heartbeat(
                 &root,
                 name.as_deref(),
                 session_id.as_deref(),
@@ -1406,25 +1413,25 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
                 stale,
                 dry_run,
                 ttl_seconds,
-            } => tak::commands::mesh::cleanup(&root, stale, dry_run, ttl_seconds, format),
-            MeshAction::Blockers { paths } => tak::commands::mesh::blockers(&root, paths, format),
+            } => crate::commands::mesh::cleanup(&root, stale, dry_run, ttl_seconds, format),
+            MeshAction::Blockers { paths } => crate::commands::mesh::blockers(&root, paths, format),
             MeshAction::Reservations { name, paths } => {
-                tak::commands::mesh::reservations(&root, name.as_deref(), paths, format)
+                crate::commands::mesh::reservations(&root, name.as_deref(), paths, format)
             }
             MeshAction::Reserve {
                 name,
                 paths,
                 reason,
-            } => tak::commands::mesh::reserve(&root, &name, paths, reason.as_deref(), format),
+            } => crate::commands::mesh::reserve(&root, &name, paths, reason.as_deref(), format),
             MeshAction::Release { name, paths, all } => {
-                tak::commands::mesh::release(&root, &name, paths, all, format)
+                crate::commands::mesh::release(&root, &name, paths, all, format)
             }
             MeshAction::Feed {
                 limit,
                 event_types,
                 recent_secs,
                 include_heartbeat,
-            } => tak::commands::mesh::feed_with_filters(
+            } => crate::commands::mesh::feed_with_filters(
                 &root,
                 limit,
                 event_types,
@@ -1450,11 +1457,11 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
                     apply_coordination_verbosity_label(&message, effective, verbosity.is_some());
                 maybe_add_verbosity_tag(&mut tag, effective, verbosity.is_some());
 
-                tak::commands::blackboard::post_with_options(
+                crate::commands::blackboard::post_with_options(
                     &root,
                     &from,
                     &message,
-                    tak::commands::blackboard::BlackboardPostOptions {
+                    crate::commands::blackboard::BlackboardPostOptions {
                         template,
                         since_note,
                         no_change_since,
@@ -1471,7 +1478,7 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
                 from_agent,
                 recent_secs,
                 limit,
-            } => tak::commands::blackboard::list_with_filters(
+            } => crate::commands::blackboard::list_with_filters(
                 &root,
                 status,
                 tag,
@@ -1481,24 +1488,24 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
                 limit,
                 format,
             ),
-            BlackboardAction::Show { id } => tak::commands::blackboard::show(&root, id, format),
+            BlackboardAction::Show { id } => crate::commands::blackboard::show(&root, id, format),
             BlackboardAction::Close { id, by, reason } => {
-                tak::commands::blackboard::close(&root, id, &by, reason.as_deref(), format)
+                crate::commands::blackboard::close(&root, id, &by, reason.as_deref(), format)
             }
             BlackboardAction::Reopen { id, by } => {
-                tak::commands::blackboard::reopen(&root, id, &by, format)
+                crate::commands::blackboard::reopen(&root, id, &by, format)
             }
         },
         Commands::Therapist { action } => match action {
             TherapistAction::Offline { by, limit } => {
-                tak::commands::therapist::offline(&root, by, limit, format)
+                crate::commands::therapist::offline(&root, by, limit, format)
             }
             TherapistAction::Online {
                 session,
                 session_dir,
                 by,
-            } => tak::commands::therapist::online(&root, session, session_dir, by, format),
-            TherapistAction::Log { limit } => tak::commands::therapist::log(&root, limit, format),
+            } => crate::commands::therapist::online(&root, session, session_dir, by, format),
+            TherapistAction::Log { limit } => crate::commands::therapist::log(&root, limit, format),
         },
         Commands::MigrateIds {
             dry_run,
@@ -1507,19 +1514,19 @@ fn run(cli: Cli, format: Format) -> tak::error::Result<()> {
             force,
         } => {
             let dry_run = dry_run || !apply;
-            tak::commands::migrate_ids::run(&root, dry_run, force, rekey_random, format)
+            crate::commands::migrate_ids::run(&root, dry_run, force, rekey_random, format)
         }
-        Commands::Reindex => tak::commands::reindex::run(&root),
+        Commands::Reindex => crate::commands::reindex::run(&root),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::TakError;
+    use crate::model::{Contract, Kind, Planning};
+    use crate::store::files::FileStore;
     use std::collections::HashMap;
-    use tak::error::TakError;
-    use tak::model::{Contract, Kind, Planning};
-    use tak::store::files::FileStore;
     use tempfile::tempdir;
 
     fn init_repo_with_tasks(count: usize) -> (tempfile::TempDir, Vec<u64>) {
@@ -2064,7 +2071,7 @@ mod tests {
                 assert!(id.is_none());
                 assert!(!all);
                 assert!(pending);
-                assert_eq!(sort, tak::commands::tree::TreeSort::Created);
+                assert_eq!(sort, crate::commands::tree::TreeSort::Created);
             }
             _ => panic!("expected tree command"),
         }
@@ -2085,7 +2092,7 @@ mod tests {
                 assert!(id.is_none());
                 assert!(all);
                 assert!(!pending);
-                assert_eq!(sort, tak::commands::tree::TreeSort::Created);
+                assert_eq!(sort, crate::commands::tree::TreeSort::Created);
             }
             _ => panic!("expected tree command"),
         }
@@ -2106,7 +2113,7 @@ mod tests {
                 assert!(id.is_none());
                 assert!(!all);
                 assert!(!pending);
-                assert_eq!(sort, tak::commands::tree::TreeSort::Created);
+                assert_eq!(sort, crate::commands::tree::TreeSort::Created);
             }
             _ => panic!("expected tree command"),
         }
@@ -2127,7 +2134,7 @@ mod tests {
                 assert_eq!(id.as_deref(), Some("123"));
                 assert!(!all);
                 assert!(!pending);
-                assert_eq!(sort, tak::commands::tree::TreeSort::Created);
+                assert_eq!(sort, crate::commands::tree::TreeSort::Created);
             }
             _ => panic!("expected tree command"),
         }
@@ -2148,7 +2155,7 @@ mod tests {
                 assert!(id.is_none());
                 assert!(!all);
                 assert!(!pending);
-                assert_eq!(sort, tak::commands::tree::TreeSort::Priority);
+                assert_eq!(sort, crate::commands::tree::TreeSort::Priority);
             }
             _ => panic!("expected tree command"),
         }
@@ -2744,7 +2751,7 @@ mod tests {
         let cli = Cli::parse_from(["tak", "tui"]);
         match cli.command {
             Commands::Tui { focus, query } => {
-                assert_eq!(focus, tak::commands::tui::TuiSection::Tasks);
+                assert_eq!(focus, crate::commands::tui::TuiSection::Tasks);
                 assert!(query.is_none());
             }
             _ => panic!("expected tui command"),
@@ -2756,7 +2763,7 @@ mod tests {
         let cli = Cli::parse_from(["tak", "tui", "--focus", "mesh", "--query", "stale"]);
         match cli.command {
             Commands::Tui { focus, query } => {
-                assert_eq!(focus, tak::commands::tui::TuiSection::Mesh);
+                assert_eq!(focus, crate::commands::tui::TuiSection::Mesh);
                 assert_eq!(query.as_deref(), Some("stale"));
             }
             _ => panic!("expected tui command"),
@@ -2782,27 +2789,21 @@ mod tests {
         let rendered = err.to_string();
         assert!(rendered.contains("cannot be used with"));
     }
-
-    #[test]
-    fn parse_tree_rejects_all_and_pending_together() {
-        let err = match Cli::try_parse_from(["tak", "tree", "--all", "--pending"]) {
-            Ok(_) => panic!("expected clap parse error"),
-            Err(err) => err,
-        };
-        let rendered = err.to_string();
-        assert!(rendered.contains("cannot be used with"));
-    }
 }
 
-fn main() {
+pub fn run_cli() -> i32 {
     let cli = Cli::parse();
     let format = if cli.pretty {
         Format::Pretty
     } else {
         cli.format
     };
-    if let Err(e) = run(cli, format) {
-        eprintln!("{}", tak::facade::render_error_message(&e, format));
-        std::process::exit(1);
+
+    match run(cli, format) {
+        Ok(()) => 0,
+        Err(e) => {
+            eprintln!("{}", crate::facade::render_error_message(&e, format));
+            1
+        }
     }
 }

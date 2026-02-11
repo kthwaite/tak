@@ -1,0 +1,16 @@
+{
+  "id": 20,
+  "title": "Use dedicated smoke tests for the new wrapper binary during crate splits",
+  "description": "When introducing a replacement CLI binary in a workspace, add crate-local smoke tests that execute the new binary end-to-end (init/create/show/list + error-envelope checks). This catches wrapper regressions early without requiring full cross-binary diff tooling.",
+  "category": "pattern",
+  "tags": [
+    "cli",
+    "test"
+  ],
+  "task_ids": [
+    1312536608148964356,
+    17895949971587967198
+  ],
+  "created_at": "2026-02-11T00:46:32.915750Z",
+  "updated_at": "2026-02-11T00:49:43.321650Z"
+}

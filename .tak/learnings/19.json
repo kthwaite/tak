@@ -1,0 +1,15 @@
+{
+  "id": 19,
+  "title": "Use source-shape tests as architecture guardrails for thin wrapper crates",
+  "description": "When a crate is intended to stay a thin adapter, add small tests that inspect source/manifests (e.g., wrapper call exists, forbidden imports absent, dependency list constrained). These fail fast if business logic creeps back in without requiring heavyweight static-analysis tooling.",
+  "category": "pattern",
+  "tags": [
+    "architecture",
+    "guardrails"
+  ],
+  "task_ids": [
+    11000230343142768629
+  ],
+  "created_at": "2026-02-11T00:43:49.063087Z",
+  "updated_at": "2026-02-11T00:43:49.063087Z"
+}
