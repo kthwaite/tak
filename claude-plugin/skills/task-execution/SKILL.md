@@ -34,8 +34,35 @@ tak work stop [--assignee <agent>]
 When the user requests `/tak work`, interpret it as:
 
 ```text
-/tak work [tag:<tag>] [limit:<n>] [verify:isolated|local] [strategy:<strategy>]
+/tak work [tag:<tag>] [limit:<n>] [verify:isolated|local] [strategy:<strategy>] [auto|cue:auto|cue:editor]
 ```
+
+- Default (`cue:editor`) behavior: run `tak work` as normal reconciliation/claim flow.
+- `auto` / `cue:auto` behavior: **do not auto-claim** a new task. Instead cue the current epic and candidate leaf tasks so the agent/user chooses explicitly.
+
+### `/tak work auto` (epic-cue mode, no auto-claim)
+
+When user intent is `/tak work auto` (or `cue:auto`), use this flow:
+
+1. Resolve identity (`--assignee` or `TAK_AGENT`) and check current ownership:
+   ```bash
+   tak work status --assignee <agent>
+   ```
+2. If `current_task` exists, continue that task (normal cue/resume).
+3. If no current task, build cue context without claiming:
+   ```bash
+   tak list
+   tak list --available [--tag <tag>]
+   tak list --status pending --kind epic [--tag <tag>]
+   ```
+4. From available tasks, prefer **pending leaves with valid ancestors** (no open children; no done/cancelled/missing/cyclic ancestors).
+5. Pick the “current epic” as oldest pending epic (prefer one with ready leaf candidates), then present candidate leaf tasks and ask for explicit selection.
+6. Start selected task explicitly:
+   ```bash
+   tak start <task-id> --assignee <agent>
+   ```
+
+Use standard `tak work` claiming mode only when cue mode is editor/default or when user explicitly asks to claim now.
 
 ### JSON output contract
 
@@ -74,7 +101,7 @@ Every `tak work` call returns:
 | `no_work` | No available tasks matching your filters | Stop loop; loop is auto-deactivated |
 | `limit_reached` | Processed count hit the `--limit` ceiling | Stop loop; loop is auto-deactivated |
 
-### What `tak work` handles automatically
+### What standard `tak work` (claiming mode) handles automatically
 
 - Agent identity resolution (`--assignee` > `TAK_AGENT` env > generated fallback)
 - Detecting and resuming your current in-progress task
@@ -125,7 +152,9 @@ Every `tak work` call returns:
    tak mesh release --name <agent> --all
    ```
 
-7. **Iterate**: call `tak work` again. It will detect the previous task is done, increment `processed`, decrement `remaining`, and claim the next task (or stop if limit reached / no work).
+7. **Iterate**:
+   - Claiming mode: call `tak work` again; it will detect previous completion, advance counters, and claim the next task.
+   - Auto cue mode: call `/tak work auto` again to refresh epic context and pick the next leaf explicitly.
 
 ### Blocker cooperation
 

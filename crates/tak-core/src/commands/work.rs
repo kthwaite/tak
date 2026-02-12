@@ -531,7 +531,7 @@ fn reconcile_start_or_resume_with_force(
         state,
         None,
         vec![],
-        "no available work; run `tak next` or adjust filters".into(),
+        "no available work; inspect `tak list --available` and pick the right leaf task".into(),
     ))
 }
 

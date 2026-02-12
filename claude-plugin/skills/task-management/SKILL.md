@@ -42,13 +42,14 @@ tak reindex
 
 ## Session default in tak repos
 
-1. Check ready work: `tak list --available` (or `tak next`)
+1. Check ready work: `tak list --available` (or `tak next` for the first eligible pending leaf)
 2. Inspect: `tak show <id>`
 3. Transition with lifecycle commands (`claim/start/handoff/finish/cancel/reopen`)
 4. Coordinate with mesh + blackboard when other agents are active
 5. Reindex after pull/merge/switch: `tak reindex`
 
 > If the user asks for `/tak work` behavior, use the **tak-task-execution** skill flow.
+> For `/tak work auto` / `cue:auto`, follow cue-only behavior: present current epic + candidate leaf tasks and require explicit task choice (no auto-claim).
 
 ## Required cycle closeout: learnings must be committed
 

@@ -251,7 +251,7 @@ const TAK_HELP = `
 /tak [source] [filters]            Pick work from tak (default source: ready)
 /tak claim [tag:<tag>]             Atomically claim next task
 /tak work [tag:<tag>] [limit:<n>] [verify:isolated|local] [auto|cue:auto|cue:editor]
-                                   Start/resume autonomous work loop
+                                   Start/resume work loop (auto mode cues epic/task choice)
 /tak work status|stop              Inspect or stop work loop
 /tak mesh [summary|send|broadcast|reserve|release|feed|blockers]
                                    Mesh action parity: summary + coordination subcommands
@@ -306,9 +306,9 @@ Filters (space-separated):
 - no-change-since       (for /tak blackboard post with since-note)
 
 Work mode notes:
-- Automatically claims the next available task for you.
-- When the current task is finished/handed off/cancelled, the next task is auto-claimed.
-- Cue mode defaults to editor prefill; use auto (or cue:auto) to push each claimed task as a user message.
+- /tak work (default cue:editor) activates the CLI work loop and auto-claims tasks.
+- /tak work auto (cue:auto) does not auto-claim; it cues the current epic plus candidate leaf tasks so you can choose explicitly.
+- If you already own an in-progress task, /tak work auto cues that task immediately.
 - In work mode, edits are blocked unless the path is reserved by your agent.
 - With verify:isolated (default), local build/test/check commands are blocked only when reservation scope overlaps (or when scope is undefined while peers hold reservations).
 
@@ -1454,6 +1454,79 @@ function sortTasksUrgentThenOldest(tasks: TakTask[]): TakTask[] {
 	});
 }
 
+function sortTasksOldestFirst(tasks: TakTask[]): TakTask[] {
+	return [...tasks].sort((a, b) => {
+		const createdDiff = parseTimestamp(a.created_at) - parseTimestamp(b.created_at);
+		if (createdDiff !== 0) return createdDiff;
+		return compareTaskIds(a.id, b.id);
+	});
+}
+
+function isOpenTaskStatus(status: TaskStatus): boolean {
+	return status === "pending" || status === "in_progress";
+}
+
+function hasOpenChildren(taskId: string, tasksById: Map<string, TakTask>): boolean {
+	for (const candidate of tasksById.values()) {
+		if (candidate.parent === taskId && isOpenTaskStatus(candidate.status)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+function hasInvalidAncestors(task: TakTask, tasksById: Map<string, TakTask>): boolean {
+	const visited = new Set<string>();
+	let parentId = task.parent;
+
+	while (parentId) {
+		if (visited.has(parentId)) {
+			return true;
+		}
+		visited.add(parentId);
+
+		const parent = tasksById.get(parentId);
+		if (!parent) {
+			return true;
+		}
+
+		if (parent.status === "done" || parent.status === "cancelled") {
+			return true;
+		}
+
+		parentId = parent.parent;
+	}
+
+	return false;
+}
+
+function isPendingLeafWithValidAncestors(task: TakTask, tasksById: Map<string, TakTask>): boolean {
+	if (task.status !== "pending") return false;
+	if (hasOpenChildren(task.id, tasksById)) return false;
+	if (hasInvalidAncestors(task, tasksById)) return false;
+	return true;
+}
+
+function rootEpicId(taskId: string, tasksById: Map<string, TakTask>): string | undefined {
+	const visited = new Set<string>();
+	let currentId: string | undefined = taskId;
+	let rootEpic: string | undefined;
+
+	while (currentId) {
+		if (visited.has(currentId)) break;
+		visited.add(currentId);
+
+		const task = tasksById.get(currentId);
+		if (!task) break;
+		if (task.kind === "epic") {
+			rootEpic = task.id;
+		}
+		currentId = task.parent;
+	}
+
+	return rootEpic;
+}
+
 function taskAgeLabel(task: TakTask): string {
 	const ts = parseTimestamp(task.created_at);
 	if (!Number.isFinite(ts) || ts === Number.MAX_SAFE_INTEGER) return "age:?";
@@ -2520,10 +2593,8 @@ export default function takPiExtension(pi: ExtensionAPI) {
 		}
 	}
 
-	function cueTaskForWorkLoop(ctx: ExtensionContext, task: TakTask, notes: BlackboardNote[]): void {
-		const cueText = buildTaskEditorText(task, agentName, notes, { workLoop });
-
-		if (workLoop.cueMode === "auto") {
+	function deliverCueText(ctx: ExtensionContext, cueText: string, cueMode: WorkCueMode): void {
+		if (cueMode === "auto") {
 			try {
 				if (ctx.isIdle()) {
 					pi.sendUserMessage(cueText);
@@ -2538,6 +2609,104 @@ export default function takPiExtension(pi: ExtensionAPI) {
 		}
 
 		ctx.ui.setEditorText(cueText);
+	}
+
+	function cueTaskForWorkLoop(ctx: ExtensionContext, task: TakTask, notes: BlackboardNote[]): void {
+		const cueText = buildTaskEditorText(task, agentName, notes, { workLoop });
+		deliverCueText(ctx, cueText, workLoop.cueMode);
+	}
+
+	async function cueCurrentEpicSelectionForAutoWork(
+		ctx: ExtensionContext,
+		options?: { tag?: string; limit?: number },
+	): Promise<boolean> {
+		const availableArgs = ["list", "--available"];
+		if (options?.tag) availableArgs.push("--tag", options.tag);
+
+		const pendingEpicArgs = ["list", "--status", "pending", "--kind", "epic"];
+		if (options?.tag) pendingEpicArgs.push("--tag", options.tag);
+
+		const [allResult, availableResult, pendingEpicResult] = await Promise.all([
+			runTak(pi, ["list"]),
+			runTak(pi, availableArgs),
+			runTak(pi, pendingEpicArgs),
+		]);
+
+		if (!allResult.ok || !availableResult.ok || !pendingEpicResult.ok) {
+			ctx.ui.notify(
+				allResult.errorMessage ?? availableResult.errorMessage ?? pendingEpicResult.errorMessage ?? "Could not build /tak work auto epic cue",
+				"warning",
+			);
+			return false;
+		}
+
+		const allTasks = coerceTakTaskArray(allResult.parsed);
+		const tasksById = new Map(allTasks.map((task) => [task.id, task]));
+
+		const readyLeaves = sortTasksUrgentThenOldest(coerceTakTaskArray(availableResult.parsed)).filter((task) =>
+			isPendingLeafWithValidAncestors(task, tasksById),
+		);
+		const pendingEpics = sortTasksOldestFirst(coerceTakTaskArray(pendingEpicResult.parsed));
+
+		let currentEpic: TakTask | undefined;
+		for (const epic of pendingEpics) {
+			const hasScopedLeaf = readyLeaves.some((task) => rootEpicId(task.id, tasksById) === epic.id);
+			if (hasScopedLeaf) {
+				currentEpic = epic;
+				break;
+			}
+		}
+		if (!currentEpic && pendingEpics.length > 0) {
+			currentEpic = pendingEpics[0];
+		}
+
+		let scopedLeaves = readyLeaves;
+		if (currentEpic) {
+			scopedLeaves = readyLeaves.filter((task) => rootEpicId(task.id, tasksById) === currentEpic.id);
+		}
+
+		const maxItems = options?.limit && options.limit > 0 ? options.limit : 6;
+		const lines = [
+			"# /tak work auto",
+			"Auto mode cues the current epic first and asks you to choose the next task explicitly.",
+		];
+
+		if (currentEpic) {
+			lines.push(
+				"",
+				`current epic: #${currentEpic.id} ${currentEpic.title}`,
+				`epic priority: ${taskPriorityLabel(currentEpic)} • ${taskAgeLabel(currentEpic)}`,
+			);
+		} else {
+			lines.push("", "current epic: (none pending)");
+		}
+
+		if (scopedLeaves.length > 0) {
+			lines.push("", "candidate pending leaves:");
+			for (const task of scopedLeaves.slice(0, maxItems)) {
+				lines.push(`- #${task.id} [${taskPriorityLabel(task)}] ${task.title}`);
+			}
+		} else if (readyLeaves.length > 0) {
+			lines.push("", "No ready leaf tasks found under the current epic.", "Other ready leaves:");
+			for (const task of readyLeaves.slice(0, maxItems)) {
+				const epicRef = rootEpicId(task.id, tasksById);
+				lines.push(
+					`- #${task.id} [${taskPriorityLabel(task)}] ${task.title}${epicRef ? ` (epic:${epicRef})` : ""}`,
+				);
+			}
+		} else {
+			lines.push("", "No ready leaf tasks found for the current filters.");
+		}
+
+		lines.push(
+			"",
+			"Choose one task id and start it explicitly:",
+			agentName ? `- tak start <task-id> --assignee ${agentName}` : "- tak start <task-id> --assignee <agent-name>",
+			"- Then continue with /tak work status (or /tak work once the task is in progress).",
+		);
+
+		deliverCueText(ctx, lines.join("\n"), "auto");
+		return true;
 	}
 
 	function applyWorkLoopFromRuntime(
@@ -2826,6 +2995,42 @@ export default function takPiExtension(pi: ExtensionAPI) {
 				}
 
 				const cueMode = parsed.filters.workCueMode ?? workLoop.cueMode ?? "editor";
+				if (cueMode === "auto") {
+					const statusResponse = await runTakWorkAction(ctx, "status");
+					if (statusResponse) {
+						await handleTakWorkResponse(ctx, statusResponse, { cueMode });
+						if (statusResponse.currentTask) {
+							const notes = await fetchOpenTaskNotes(statusResponse.currentTask.id);
+							cueTaskForWorkLoop(ctx, statusResponse.currentTask, notes);
+							ctx.ui.notify(
+								`Auto cue refreshed current task #${statusResponse.currentTask.id}: ${statusResponse.currentTask.title}`,
+								"info",
+							);
+							await refreshStatus(ctx);
+							return;
+						}
+
+						if (statusResponse.loop.active) {
+							const stopResponse = await runTakWorkAction(ctx, "stop");
+							if (stopResponse) {
+								await handleTakWorkResponse(ctx, stopResponse, { cueMode });
+							} else {
+								resetWorkLoop();
+							}
+						}
+					}
+
+					const cued = await cueCurrentEpicSelectionForAutoWork(ctx, {
+						tag: parsed.filters.tag,
+						limit: parsed.filters.limit,
+					});
+					if (cued) {
+						ctx.ui.notify("Posted /tak work auto epic cue; choose a task to start.", "info");
+						await refreshStatus(ctx);
+						return;
+					}
+				}
+
 				const response = await runTakWorkAction(ctx, "start", {
 					tag: parsed.filters.tag,
 					limit: parsed.filters.limit,
